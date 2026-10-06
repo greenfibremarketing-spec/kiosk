@@ -1,0 +1,52 @@
+{
+  "name": "greenfibre-kiosk",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "build": "next build",
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "dist": "next build && electron-builder --win"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.2.5",
+    "@fontsource/nunito": "5.2.5",
+    "@mediapipe/tasks-vision": "1.0.1",
+    "electron-log": "5.4.4",
+    "next": "16.3.8",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.greenfibre.kiosk",
+    "productName": "GreenFibre Kiosk",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config.json",
+      "out/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": false,
+      "runAfterFinish": true
+    }
+  }
+}

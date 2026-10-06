@@ -1,0 +1,10 @@
+{
+  "enterCm": 100,
+  "exitCm": 150,
+  "enterDwellMs": 600,
+  "exitGraceMs": 6000,
+  "focalPx": 580,
+  "fps": 6,
+  "cameraLabel": "",
+  "touchKeepEngagedMs": 30000
+}
