@@ -2,14 +2,14 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
 const DEFAULT_CONFIG = {
-  enterCm: 100,
-  exitCm: 150,
-  enterDwellMs: 600,
-  exitGraceMs: 6000,
+  enterCm: 170,
+  exitCm: 220,
+  enterDwellMs: 250,
+  exitGraceMs: 2000,
   focalPx: 580,
-  fps: 6,
+  fps: 8,
   cameraLabel: "",
-  touchKeepEngagedMs: 30000
+  touchKeepEngagedMs: 10000
 };
 
 export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
@@ -34,7 +34,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
   const dwellStartRef = useRef(null);
   const graceStartRef = useRef(null);
   const touchExpiryRef = useRef(0);
-  const lastFrameTimeRef = useRef(Date.now());
+  const lastTimestampRef = useRef(0);
   const cameraFailuresRef = useRef(0);
   const fpsCountRef = useRef({ frames: 0, lastCheck: Date.now(), currentFps: 0 });
 
@@ -219,6 +219,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
 
     function processFrame() {
       const now = Date.now();
+      const perfNow = performance.now();
       const video = videoRef.current;
       const detector = detectorRef.current;
 
@@ -235,16 +236,14 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         return;
       }
 
-      // Ensure video is actively presenting new frames to avoid Media Foundation buffer locks
-      if (video.currentTime === lastFrameTimeRef.current) {
-        timerId = setTimeout(processFrame, 50);
+      if (perfNow <= lastTimestampRef.current) {
+        timerId = setTimeout(processFrame, targetInterval);
         return;
       }
-
-      lastFrameTimeRef.current = video.currentTime;
+      lastTimestampRef.current = perfNow;
 
       try {
-        const detections = detector.detectForVideo(video, now).detections || [];
+        const detections = detector.detectForVideo(video, perfNow).detections || [];
         let validFaces = [];
 
         for (const face of detections) {
@@ -284,8 +283,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         let isPresentClose = false;
 
         if (closest) {
-          // Exponential moving average: smooth = 0.35 * raw + 0.65 * prev
-          currentSmooth = Math.round(0.35 * closest.rawCm + 0.65 * currentSmooth);
+          currentSmooth = Math.round(0.4 * closest.rawCm + 0.6 * currentSmooth);
           smoothDistanceRef.current = currentSmooth;
 
           setDebugStats({
@@ -298,18 +296,18 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
             cameraActive: true
           });
 
-          if (currentSmooth <= (config.enterCm || 100)) {
+          if (currentSmooth <= (config.enterCm || 170)) {
             isPresentClose = true;
           }
         } else {
-          // No face detected
-          currentSmooth = Math.round(0.1 * 300 + 0.9 * currentSmooth);
-          smoothDistanceRef.current = currentSmooth;
+          // No face detected -> immediately set smooth distance far
+          currentSmooth = 300;
+          smoothDistanceRef.current = 300;
 
           setDebugStats({
             facePx: 0,
             rawCm: 0,
-            smoothCm: currentSmooth,
+            smoothCm: 300,
             fps: fpsCountRef.current.currentFps,
             facesCount: 0,
             isFacing: false,
@@ -318,14 +316,12 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         }
 
         // State Machine Decision Logic
-        const isTouchActive = now < touchExpiryRef.current;
-
         if (state === "IDLE") {
           if (isPresentClose) {
             if (!dwellStartRef.current) {
               dwellStartRef.current = now;
-            } else if (now - dwellStartRef.current >= (config.enterDwellMs || 600)) {
-              // Person stood close for >= enterDwellMs -> Switch to ENGAGED
+            } else if (now - dwellStartRef.current >= (config.enterDwellMs || 250)) {
+              // Person stood in front of kiosk -> Switch to ENGAGED (Greenie arrives)
               dwellStartRef.current = null;
               updateMainState("ENGAGED");
               if (onEnterEngaged) onEnterEngaged();
@@ -334,15 +330,19 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
             dwellStartRef.current = null;
           }
         } else if (state === "ENGAGED") {
-          // Check exit condition: far or no face, unless touch lock is active
-          const isFarOrGone = !closest || currentSmooth > (config.exitCm || 150);
+          // Check exit condition: no face detected or person moved past exitCm
+          const isFarOrGone = !closest || currentSmooth > (config.exitCm || 220);
 
-          if (isFarOrGone && !isTouchActive) {
+          if (isFarOrGone) {
+            const isTouchActive = now < touchExpiryRef.current;
+            const graceRequired = isTouchActive ? 5000 : (config.exitGraceMs || 2000);
+
             if (!graceStartRef.current) {
               graceStartRef.current = now;
-            } else if (now - graceStartRef.current >= (config.exitGraceMs || 6000)) {
-              // Absence confirmed for >= exitGraceMs -> Switch to IDLE
+            } else if (now - graceStartRef.current >= graceRequired) {
+              // Absence confirmed for 2s -> Switch back to IDLE (Promo attract video)
               graceStartRef.current = null;
+              touchExpiryRef.current = 0;
               updateMainState("IDLE");
               if (onExitToIdle) onExitToIdle();
             }

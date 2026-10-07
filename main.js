@@ -28,6 +28,8 @@ protocol.registerSchemesAsPrivileged([
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-gesture-requirement-for-media-playback");
+app.commandLine.appendSwitch("log-level", "3");
+app.commandLine.appendSwitch("silent-debugger-extension-api");
 
 let win;
 let kioskCurrentState = "IDLE";
@@ -41,10 +43,10 @@ function loadConfig() {
     log.error("Failed to load config.json:", e);
   }
   return {
-    enterCm: 100,
-    exitCm: 150,
-    enterDwellMs: 600,
-    exitGraceMs: 6000,
+    enterCm: 180,
+    exitCm: 230,
+    enterDwellMs: 300,
+    exitGraceMs: 5000,
     focalPx: 580,
     fps: 6,
     cameraLabel: "",

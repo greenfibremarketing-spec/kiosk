@@ -1,9 +1,12 @@
+"use client";
+
 const OPTIONS = [
-  { label: "Show all", query: "Show all products" },
-  { label: "Corporate gifts", query: "Corporate gift sets" },
-  { label: "Drinkware", query: "Eco drinkware" },
-  { label: "Kitchen & dining", query: "Kitchen and dining products" },
-  { label: "Rice husk info", query: "Tell me about rice husk biocomposite" }
+  { label: "🌾 Rice Husk Story", query: "Tell me about rice husk biocomposite" },
+  { label: "🎁 Corporate Gifts", query: "Corporate gift sets" },
+  { label: "🍵 Drinkware", query: "Eco drinkware" },
+  { label: "🥣 Kitchen & Dining", query: "Kitchen and dining products" },
+  { label: "💃 Happy Dance", query: "Can you do a happy dance?" },
+  { label: "✨ Sustainability", query: "How are GreenFibre products made?" },
 ];
 
 export default function QuickReplies({ onPick }) {

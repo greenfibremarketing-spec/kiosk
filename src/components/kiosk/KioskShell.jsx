@@ -23,6 +23,10 @@ export default function KioskShell() {
         config={k.presence.config}
         onCalibrate={k.presence.calibrate100Cm}
         onCloseDebug={() => k.presence.setDebugOpen(false)}
+        onQuickPick={k.send}
+        listening={k.listening}
+        onTalk={k.talk}
+        signals={k.signals}
       />
 
       <ProductShowcase
