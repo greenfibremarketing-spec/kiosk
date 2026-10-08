@@ -258,13 +258,24 @@ export function useKiosk() {
 
     const unHypo = window.kiosk.onSpeechHypothesis((text) => {
       if (text && text.trim()) {
+        const clean = text.trim();
         // If avatar is speaking when user starts speaking, interrupt immediately
         if (convStateRef.current === S.SPEAKING) {
           interruptAvatar();
           setConv(S.LISTENING);
           pendingTranscriptRef.current = "";
         }
-        setLiveTranscript(text);
+        
+        // Show the streaming hypothesis live on screen
+        const currentPending = pendingTranscriptRef.current.trim();
+        if (currentPending && !clean.toLowerCase().startsWith(currentPending.toLowerCase())) {
+          setLiveTranscript(`${currentPending} ${clean}`);
+        } else {
+          setLiveTranscript(clean);
+        }
+
+        // Keep turn open while hypothesis is actively streaming
+        clearTimeout(eotTimerRef.current);
       }
     });
 
@@ -275,9 +286,29 @@ export function useKiosk() {
           setConv(S.LISTENING);
         }
         console.log("[STT Native Final]:", text);
-        pendingTranscriptRef.current = (pendingTranscriptRef.current + " " + text).trim();
+        
+        const incoming = text.trim();
+        const current = pendingTranscriptRef.current.trim();
+        
+        if (!current) {
+          pendingTranscriptRef.current = incoming;
+        } else if (incoming.toLowerCase() === current.toLowerCase()) {
+          pendingTranscriptRef.current = current;
+        } else if (incoming.toLowerCase().startsWith(current.toLowerCase())) {
+          pendingTranscriptRef.current = incoming;
+        } else if (current.toLowerCase().endsWith(incoming.toLowerCase())) {
+          pendingTranscriptRef.current = current;
+        } else {
+          pendingTranscriptRef.current = `${current} ${incoming}`;
+        }
+        
         setLiveTranscript(pendingTranscriptRef.current);
-        finaliseAndSendRef.current?.();
+
+        // Debounce end-of-turn: wait 900ms of silence so the user can finish their complete sentence
+        clearTimeout(eotTimerRef.current);
+        eotTimerRef.current = setTimeout(() => {
+          finaliseAndSendRef.current?.();
+        }, speechConfig.endOfTurnSilenceMs || 900);
       }
     });
 
@@ -285,7 +316,7 @@ export function useKiosk() {
       unHypo?.();
       unFinal?.();
     };
-  }, [isEngaged]);
+  }, [isEngaged, interruptAvatar, setConv]);
 
   // ── Web Speech API — browser fallback (feeds pendingTranscriptRef) ────────
   useEffect(() => {

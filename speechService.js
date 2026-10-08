@@ -30,71 +30,43 @@ public class SpeechWorker {
 
     public void Start() {
         try {
-            engine = new SpeechRecognitionEngine();
+            // Initialize speech recognition engine with best available English culture
+            RecognizerInfo selectedInfo = null;
+            foreach (RecognizerInfo config in SpeechRecognitionEngine.InstalledRecognizers()) {
+                if (config.Culture.Name.StartsWith("en", StringComparison.OrdinalIgnoreCase)) {
+                    selectedInfo = config;
+                    if (config.Culture.Name.Equals("en-IN", StringComparison.OrdinalIgnoreCase)) {
+                        break;
+                    }
+                }
+            }
+
+            if (selectedInfo != null) {
+                engine = new SpeechRecognitionEngine(selectedInfo);
+            } else {
+                engine = new SpeechRecognitionEngine();
+            }
+
             engine.SetInputToDefaultAudioDevice();
 
-            // 1. Rich Kiosk Conversational Domain Grammar
-            var greetings = new Choices(new string[] {
-                "hello", "hi", "hey", "hey greenie", "hello greenie", "hi greenie",
-                "good morning", "good afternoon", "good evening", "namaste", "how are you",
-                "who are you", "what can you do", "help me", "tell me about yourself",
-                "what is greenfibre", "about greenfibre"
-            });
+            // Configure speech timeouts for natural continuous speech
+            engine.InitialSilenceTimeout = TimeSpan.FromSeconds(6);
+            engine.BabbleTimeout = TimeSpan.FromMilliseconds(0);
+            engine.EndSilenceTimeout = TimeSpan.FromMilliseconds(700);
+            engine.EndSilenceTimeoutAmbiguous = TimeSpan.FromMilliseconds(600);
 
-            var leadIns = new Choices(new string[] {
-                "show me", "tell me about", "what is", "what are", "do you have",
-                "can i see", "i want to see", "i want", "i need", "can you show",
-                "can you tell me about", "how much is", "what is the price of",
-                "tell me price of", "show all"
-            });
-
-            var items = new Choices(new string[] {
-                "products", "all products", "catalog", "collection", "entire collection",
-                "viora bottle", "viora", "eco bottle", "bottle", "bottles",
-                "statement mug", "ceramic mug", "coffee mug", "mug", "mugs",
-                "origin tumbler", "travel tumbler", "tumbler", "tumblers", "travel flask", "flask",
-                "flora bowl", "salad bowl", "soup bowl", "bowl", "bowls",
-                "zen bento", "bento box", "bento", "lunch box",
-                "pantry canister", "canister", "canisters", "jar", "eco harvest canister",
-                "terra desk", "desk valet", "desk organizer", "organizer",
-                "luxury hamper", "gift hamper", "hamper", "hampers", "gift box",
-                "gifts", "drinkware", "kitchen", "office", "dining", "stationery",
-                "rice husk", "greenfibre", "bulk discount", "corporate gifts",
-                "discounts", "pricing", "corporate orders", "custom branding"
-            });
-
-            var qBuilder = new GrammarBuilder();
-            qBuilder.Append(leadIns);
-            qBuilder.Append(items);
-
-            var directQueries = new Choices(new string[] {
-                "yes", "no", "sure", "thank you", "thanks", "bye", "goodbye",
-                "bulk inquiry", "corporate pricing", "custom branding", "plastic free",
-                "how much", "what is price", "show products", "show gifts", "show mugs",
-                "show bottles", "show bowls", "tell me more"
-            });
-
-            var rootChoices = new Choices();
-            rootChoices.Add(new GrammarBuilder(greetings));
-            rootChoices.Add(qBuilder);
-            rootChoices.Add(directQueries);
-
-            var kioskGrammar = new Grammar(new GrammarBuilder(rootChoices));
-            kioskGrammar.Name = "KioskIntents";
-            kioskGrammar.Weight = 1.0f;
-            engine.LoadGrammar(kioskGrammar);
-
-            // 2. Freeform Dictation Grammar for general conversational queries
+            // 1. Natural Open-Domain Dictation Grammar (1.0 weight)
+            // Does NOT force speech into a tiny static choices box
             var dictation = new DictationGrammar();
-            dictation.Name = "FreeformDictation";
-            dictation.Weight = 0.25f;
+            dictation.Name = "NaturalDictation";
+            dictation.Weight = 1.0f;
             engine.LoadGrammar(dictation);
 
             engine.SpeechHypothesized += (s, e) => {
                 if (e.Result != null && !string.IsNullOrWhiteSpace(e.Result.Text)) {
                     var txt = e.Result.Text.Trim();
-                    if (txt.Length > 1) {
-                        Console.WriteLine("{\\"type\\":\\"hypothesis\\",\\"text\\":\\"" + Escape(txt) + "\\"}");
+                    if (txt.Length >= 2) {
+                        Console.WriteLine("{\"type\":\"hypothesis\",\"text\":\"" + Escape(txt) + "\"}");
                     }
                 }
             };
@@ -102,17 +74,17 @@ public class SpeechWorker {
             engine.SpeechRecognized += (s, e) => {
                 if (e.Result != null && !string.IsNullOrWhiteSpace(e.Result.Text)) {
                     var txt = e.Result.Text.Trim();
-                    // Filter single characters and extreme phonetic noise
-                    if (txt.Length > 1 && e.Result.Confidence >= 0.18f) {
-                        Console.WriteLine("{\\"type\\":\\"final\\",\\"text\\":\\"" + Escape(txt) + "\\",\\"confidence\\":" + e.Result.Confidence.ToString(CultureInfo.InvariantCulture) + "}");
+                    // Reject single-letter hallucinations and low confidence artifacts
+                    if (txt.Length >= 2 && e.Result.Confidence >= 0.25f) {
+                        Console.WriteLine("{\"type\":\"final\",\"text\":\"" + Escape(txt) + "\",\"confidence\":" + e.Result.Confidence.ToString(CultureInfo.InvariantCulture) + "}");
                     }
                 }
             };
 
             engine.RecognizeAsync(RecognizeMode.Multiple);
-            Console.WriteLine("{\\"type\\":\\"ready\\"}");
+            Console.WriteLine("{\"type\":\"ready\"}");
         } catch (Exception ex) {
-            Console.WriteLine("{\\"type\\":\\"error\\",\\"message\\":\\"" + Escape(ex.Message) + "\\"}");
+            Console.WriteLine("{\"type\":\"error\",\"message\":\"" + Escape(ex.Message) + "\"}");
         }
     }
 
@@ -126,7 +98,7 @@ public class SpeechWorker {
 
     private string Escape(string s) {
         if (s == null) return "";
-        return s.Replace("\\\\", "\\\\\\\\").Replace("\\"", "\\\\\\"").Replace("\\r", "").Replace("\\n", " ");
+        return s.Replace("\\\\", "\\\\\\\\").Replace("\\\"", "\\\\\\\"").Replace("\\r", "").Replace("\\n", " ");
     }
 }
 "@
