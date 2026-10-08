@@ -4,11 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export function useSpeech({ onTranscript, isEngaged = false } = {}) {
   const [speaking, setSpeaking] = useState(false);
   const [listening, setListening] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState("");
   const recognitionRef = useRef(null);
   const shouldListenRef = useRef(false);
   const isSpeakingRef = useRef(false);
   const isRunningRef = useRef(false);
   const restartTimerRef = useRef(null);
+  const clearLiveTimerRef = useRef(null);
   const onTranscriptRef = useRef(onTranscript);
 
   useEffect(() => {
@@ -26,7 +28,6 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
 
     if (recognitionRef.current && isRunningRef.current) {
       try {
-        // Use stop() instead of abort() for graceful pipe teardown
         recognitionRef.current.stop();
       } catch (_) {}
       isRunningRef.current = false;
@@ -44,7 +45,6 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
     shouldListenRef.current = true;
     clearTimeout(restartTimerRef.current);
 
-    // If already running, do not re-create or abort
     if (isRunningRef.current) {
       return;
     }
@@ -53,7 +53,7 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
       if (!recognitionRef.current) {
         const rec = new SpeechRec();
         rec.continuous = true;
-        rec.interimResults = false;
+        rec.interimResults = true;
         rec.lang = "en-IN";
         rec.maxAlternatives = 1;
 
@@ -64,18 +64,37 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
 
         rec.onresult = (event) => {
           if (!shouldListenRef.current || isSpeakingRef.current) return;
-          const lastResultIndex = event.results.length - 1;
-          const text = event.results[lastResultIndex][0]?.transcript?.trim();
-          if (text && onTranscriptRef.current) {
-            onTranscriptRef.current(text);
+
+          let interim = "";
+          let final = "";
+
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const transcript = event.results[i][0]?.transcript || "";
+            if (event.results[i].isFinal) {
+              final += transcript;
+            } else {
+              interim += transcript;
+            }
+          }
+
+          if (interim) {
+            setLiveTranscript(interim);
+          }
+
+          const cleanFinal = final.trim();
+          if (cleanFinal) {
+            setLiveTranscript(cleanFinal);
+            clearTimeout(clearLiveTimerRef.current);
+            clearLiveTimerRef.current = setTimeout(() => setLiveTranscript(""), 4000);
+
+            if (onTranscriptRef.current) {
+              onTranscriptRef.current(cleanFinal);
+            }
           }
         };
 
         rec.onerror = (event) => {
-          // "no-speech" or "aborted" are normal lifecycle events
-          if (event.error === "aborted" || event.error === "no-speech") {
-            // expected normal events
-          } else {
+          if (event.error !== "aborted" && event.error !== "no-speech") {
             console.warn("Speech recognition notice:", event.error);
           }
         };
@@ -84,7 +103,7 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
           isRunningRef.current = false;
           setListening(false);
 
-          // Graceful backoff restart (1000ms debounce allows Chromium audio stream pipe to cleanly close)
+          // Auto-restart listening if engaged and not speaking
           if (shouldListenRef.current && !isSpeakingRef.current) {
             clearTimeout(restartTimerRef.current);
             restartTimerRef.current = setTimeout(() => {
@@ -92,11 +111,10 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
                 try {
                   rec.start();
                 } catch (_) {
-                  // Fallback retry
                   isRunningRef.current = false;
                 }
               }
-            }, 1000);
+            }, 600);
           }
         };
 
@@ -105,14 +123,13 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
 
       recognitionRef.current.start();
     } catch (e) {
-      // If already started or audio pipeline busy, set flag and retry later
       if (e.name !== "InvalidStateError") {
-        console.warn("Speech recognition notice:", e);
+        console.warn("Speech recognition init notice:", e);
       }
     }
   }, []);
 
-  // Determine if recognition should actively be running
+  // Sync listening state with kiosk engagement and avatar speaking state
   useEffect(() => {
     shouldListenRef.current = isEngaged && !speaking;
 
@@ -124,54 +141,24 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
 
     return () => {
       clearTimeout(restartTimerRef.current);
+      clearTimeout(clearLiveTimerRef.current);
     };
   }, [isEngaged, speaking, startContinuousListening, stopContinuousListening]);
 
-  const speak = useCallback((text) => {
-    setSpeaking(true);
-    isSpeakingRef.current = true;
-    stopContinuousListening();
-
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = "en-IN";
-      u.rate = 0.93;
-      u.pitch = 1.12;
-
-      u.onend = () => {
-        setSpeaking(false);
-        isSpeakingRef.current = false;
-      };
-
-      u.onerror = () => {
-        setSpeaking(false);
-        isSpeakingRef.current = false;
-      };
-
-      window.speechSynthesis.speak(u);
+  const toggleListening = useCallback(() => {
+    if (listening) {
+      stopContinuousListening();
     } else {
-      setTimeout(() => {
-        setSpeaking(false);
-        isSpeakingRef.current = false;
-      }, Math.min(8000, (text?.length || 20) * 55));
+      startContinuousListening();
     }
-  }, [stopContinuousListening]);
-
-  const stopSpeaking = useCallback(() => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
-    setSpeaking(false);
-    isSpeakingRef.current = false;
-  }, []);
+  }, [listening, startContinuousListening, stopContinuousListening]);
 
   return {
     speaking,
     listening,
+    liveTranscript,
     setSpeaking,
-    speak,
-    stopSpeaking,
+    toggleListening,
     startContinuousListening,
     stopContinuousListening,
   };

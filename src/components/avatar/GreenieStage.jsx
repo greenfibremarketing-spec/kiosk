@@ -11,6 +11,16 @@ const GreenieStage = forwardRef(function GreenieStage(
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState(null);
 
+  const onStatusRef = useRef(onStatus);
+  const onSpeakingChangeRef = useRef(onSpeakingChange);
+  const onBoundaryRef = useRef(onBoundary);
+
+  useEffect(() => {
+    onStatusRef.current = onStatus;
+    onSpeakingChangeRef.current = onSpeakingChange;
+    onBoundaryRef.current = onBoundary;
+  });
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -20,13 +30,13 @@ const GreenieStage = forwardRef(function GreenieStage(
       avatarInstance = new GreenieAvatar(container, {
         modelUrl: "/avatar/greenie.glb",
         onStatus: (msg) => {
-          onStatus?.(msg);
+          onStatusRef.current?.(msg);
         },
         onSpeakingChange: (speaking) => {
-          onSpeakingChange?.(speaking);
+          onSpeakingChangeRef.current?.(speaking);
         },
         onBoundary: (charIndex) => {
-          onBoundary?.(charIndex);
+          onBoundaryRef.current?.(charIndex);
         },
       });
 
@@ -35,6 +45,9 @@ const GreenieStage = forwardRef(function GreenieStage(
       avatarInstance.ready
         .then(() => {
           setLoaded(true);
+          if (isEngaged) {
+            avatarInstance.setEngaged(true);
+          }
         })
         .catch((err) => {
           console.error("Avatar initialization failed:", err);
@@ -51,7 +64,7 @@ const GreenieStage = forwardRef(function GreenieStage(
       }
       avatarRef.current = null;
     };
-  }, [onSpeakingChange, onStatus, onBoundary]);
+  }, []); // Run once on mount to keep WebGL context stable
 
   useEffect(() => {
     if (avatarRef.current) {
@@ -70,6 +83,7 @@ const GreenieStage = forwardRef(function GreenieStage(
       playSpeech: (url, cues) => avatarRef.current?.playSpeech(url, cues),
       setListening: (active) => avatarRef.current?.setListening(active),
       setEngaged: (engaged) => avatarRef.current?.setEngaged(engaged),
+      setExpression: (name) => avatarRef.current?.setExpression(name),
       getInstance: () => avatarRef.current,
     }),
     []

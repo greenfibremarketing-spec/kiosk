@@ -57,6 +57,10 @@ export class GreenieAvatar {
     this.flyingEntrance = null;
     this._hoverY = 0; // Flight hover height when explaining
 
+    // Expression state (set via setExpression())
+    this._expression = "attentive";
+    this._expressionStart = 0;
+
     // Smooth lerp targets for arm positions
     this._armRTarget = 0.24;
     this._armLTarget = -0.24;
@@ -138,12 +142,21 @@ export class GreenieAvatar {
         this.head = scene.getObjectByName("Head");
         this.mouth = scene.getObjectByName("Mouth");
         this.smile = scene.getObjectByName("Smile");
-        this.eyes = ["Eye_L", "Eye_R"].map((n) => scene.getObjectByName(n));
+        this.eyes = ["Eye_L", "Eye_R"]
+          .map((n) => scene.getObjectByName(n))
+          .filter(Boolean);
+        this.eyes.forEach((eye) => {
+          eye.userData.restPos = eye.position.clone();
+          eye.userData.restScale = eye.scale.clone();
+        });
         this.arm = scene.getObjectByName("Arm_R");
         this.leftArm = scene.getObjectByName("Arm_L");
         this.cheeks = [];
         scene.traverse((o) => {
-          if (o.name && o.name.startsWith("Cheek")) this.cheeks.push(o);
+          if (o.name && o.name.startsWith("Cheek")) {
+            o.userData.restScale = o.scale.clone();
+            this.cheeks.push(o);
+          }
         });
         this.pigtails = ["Pigtail_L", "Pigtail_R"].map((n) =>
           scene.getObjectByName(n)
@@ -164,8 +177,13 @@ export class GreenieAvatar {
         // Attach cute glowing fairy wings to Greenie's back
         this.attachCuteWings(scene);
 
-        // Keep avatar safely off-screen to the left until flyIn entrance is triggered
-        if (!this._arrived && !this.flyingEntrance) {
+        // If engaged or already arrived, position in center, otherwise off-screen
+        if (this._arrived || this._engaged) {
+          if (!this.flyingEntrance) {
+            scene.position.x = 0.0;
+            this._arrived = true;
+          }
+        } else {
           scene.position.x = -10.0;
         }
 
@@ -340,6 +358,18 @@ export class GreenieAvatar {
     this._listening = active;
   }
 
+  /**
+   * setExpression(name)
+   * Drives avatar posture for each conversation state.
+   * Expressions: "listening" | "thinking" | "speaking" | "attentive"
+   * Smooth transitions ~200 ms via the existing lerp in tick().
+   */
+  setExpression(name) {
+    if (this._expression === name) return;
+    this._expression = name;
+    this._expressionStart = performance.now();
+  }
+
   setMouth(shape = "rest", weight = 1) {
     const isRest = shape === "rest" || weight < 0.05;
 
@@ -380,6 +410,10 @@ export class GreenieAvatar {
       this.stop();
       if (this.model) {
         this.model.position.x = -10.0;
+      }
+    } else {
+      if (!this._arrived && !this.flyingEntrance) {
+        this.flyIn(1.8);
       }
     }
   }
@@ -452,6 +486,10 @@ export class GreenieAvatar {
     }
 
     this.stop();
+    this._arrived = true;
+    if (this.model && this.model.position.x < -2.0 && !this.flyingEntrance) {
+      this.model.position.x = 0;
+    }
     const token = this.generation;
     this.text = text;
     this.charIndex = 0;
@@ -464,11 +502,14 @@ export class GreenieAvatar {
     u.rate = rate;
     u.pitch = pitch;
 
-    // Load preferred Google हिन्दी voice
+    // Load preferred voice
     const loadVoices = () => {
       const voices = window.speechSynthesis.getVoices();
       const selected = voice || preferredVoice(voices, lang);
-      if (selected) u.voice = selected;
+      if (selected) {
+        u.voice = selected;
+        u.lang = selected.lang || lang || "en-IN";
+      }
     };
     loadVoices();
     if (window.speechSynthesis.getVoices().length === 0) {
@@ -499,7 +540,7 @@ export class GreenieAvatar {
       this.onSpeakingChange(false);
       this.setStatus("Listening...");
     };
-    u.onerror = () => {
+    u.onerror = (e) => {
       if (token !== this.generation) return;
       this.mode = "idle";
       this.setMouth();
@@ -509,7 +550,16 @@ export class GreenieAvatar {
 
     this.mode = "tts";
     this.setStatus("Explaining...");
-    window.speechSynthesis.speak(u);
+    
+    // Resume audio stream and speak utterance
+    setTimeout(() => {
+      if (token === this.generation && typeof window !== "undefined") {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+        window.speechSynthesis.speak(u);
+      }
+    }, 25);
   }
 
   async playSpeech(audioUrl, cues = []) {
@@ -578,7 +628,12 @@ export class GreenieAvatar {
 
     // --- Reset base pose every frame ---
     if (!this._arrived && !this.flyingEntrance) {
-      this.model.position.x = -10.0;
+      if (this._engaged) {
+        this._arrived = true;
+        this.model.position.x = 0;
+      } else {
+        this.model.position.x = -10.0;
+      }
       this.model.position.y = 0;
       this.model.position.z = 0;
     } else {
@@ -599,11 +654,17 @@ export class GreenieAvatar {
 
     // Cute sweet strawberry-coral blush cheeks with gentle breathing pulse
     if (this.cheeks) {
-      const blushPulse = Math.sin(now / 900) * 0.005;
+      const blushPulse = Math.sin(now / 900) * 0.04;
       this.cheeks.forEach((c) => {
         if (c?.material) {
           c.material.color.set("#ff5a84");
-          c.scale.set(0.145 + blushPulse, 0.09 + blushPulse, 0.024);
+        }
+        if (c?.userData?.restScale) {
+          c.scale.set(
+            c.userData.restScale.x * (1 + blushPulse),
+            c.userData.restScale.y * (1 + blushPulse),
+            c.userData.restScale.z
+          );
         }
       });
     }
@@ -615,15 +676,18 @@ export class GreenieAvatar {
       });
     }
 
-    // Cute happy crescent smiling eyes with natural blink
+    // Natural cute blink animation
     if (this.eyes) {
       const t = now / 1000;
-      const b = t % 5.2;
-      const blink = b > 5.0 ? Math.max(0.05, Math.abs(b - 5.1) / 0.1) : 1;
+      const b = t % 4.5;
+      const blink = b > 4.3 ? Math.max(0.08, Math.abs(b - 4.4) / 0.1) : 1;
       this.eyes.forEach((x) => {
-        if (x) {
-          x.scale.x = 1.06;
-          x.scale.y = 0.88 * blink; // Cute happy anime crescent arch
+        if (x && x.userData?.restScale) {
+          x.scale.set(
+            x.userData.restScale.x,
+            x.userData.restScale.y * blink,
+            x.userData.restScale.z
+          );
         }
       });
     }
@@ -816,8 +880,9 @@ export class GreenieAvatar {
         this.reaction = null;
         this.setStatus(this._listening ? "Listening..." : "Ready to chat");
       } else if (this.reaction.kind === "wink") {
-        if (this.eyes && this.eyes[1]) {
-          this.eyes[1].scale.y = age > 0.25 && age < 1.2 ? 0.08 : 1;
+        if (this.eyes && this.eyes[1] && this.eyes[1].userData?.restScale) {
+          this.eyes[1].scale.y =
+            (age > 0.25 && age < 1.2 ? 0.08 : 1) * this.eyes[1].userData.restScale.y;
         }
         if (this.head && !this.reduced) {
           this.head.rotation.z = -0.14 * envelope;
@@ -832,9 +897,6 @@ export class GreenieAvatar {
         if (this.head && !this.reduced) {
           this.head.rotation.z = 0.12 * envelope;
           this.head.rotation.x = 0.08 * envelope;
-        }
-        if (this.eyes) {
-          this.eyes.forEach((e) => e && (e.scale.y = 1 - 0.28 * envelope));
         }
       } else if (this.reaction.kind === "dance") {
         if (this.cheeks) {
@@ -861,6 +923,83 @@ export class GreenieAvatar {
     this._armLCurrent += (this._armLTarget - this._armLCurrent) * LERP;
     if (this.arm) this.arm.rotation.z = this._armRCurrent;
     if (this.leftArm) this.leftArm.rotation.z = this._armLCurrent;
+
+    // =========================================================
+    // EXPRESSION OVERLAY (convState-driven, 200 ms transition)
+    // Applied on top of the listening/speaking poses above.
+    // =========================================================
+    if (!this.reduced && !this.reaction && !this.flyingEntrance) {
+      const exAge = (now - this._expressionStart) / 1000;
+      const exBlend = Math.min(1, exAge / 0.2); // 200 ms fade-in
+
+      if (this._expression === "listening") {
+        // Eyes forward, head slightly tilted, eyebrows raised
+        if (this.head) {
+          this.head.rotation.z = THREE.MathUtils.lerp(
+            this.head.rotation.z, 0.05 + Math.sin(now / 2400) * 0.015, exBlend * 0.12
+          );
+          this.head.rotation.x = THREE.MathUtils.lerp(
+            this.head.rotation.x, -0.04, exBlend * 0.10
+          );
+        }
+        if (this.eyes) {
+          this.eyes.forEach((e) => {
+            if (e && e.userData?.restPos) {
+              e.position.x = THREE.MathUtils.lerp(e.position.x, e.userData.restPos.x, 0.08);
+              e.position.y = THREE.MathUtils.lerp(e.position.y, e.userData.restPos.y, 0.08);
+            }
+          });
+        }
+      } else if (this._expression === "thinking") {
+        // Eyes glance up-left, subtle head tilt
+        if (this.head) {
+          this.head.rotation.z = THREE.MathUtils.lerp(
+            this.head.rotation.z, -0.08 * exBlend, 0.08
+          );
+          this.head.rotation.x = THREE.MathUtils.lerp(
+            this.head.rotation.x, -0.06 * exBlend, 0.08
+          );
+        }
+        if (this.eyes) {
+          this.eyes.forEach((e) => {
+            if (e && e.userData?.restPos) {
+              const glanceX = e.userData.restPos.x - 0.02 * exBlend;
+              const glanceY = e.userData.restPos.y + 0.02 * exBlend;
+              e.position.x = THREE.MathUtils.lerp(e.position.x, glanceX, 0.08);
+              e.position.y = THREE.MathUtils.lerp(e.position.y, glanceY, 0.08);
+            }
+          });
+        }
+      } else if (this._expression === "speaking") {
+        // Eyes on camera, neutral-positive
+        if (this.head) {
+          this.head.rotation.z = THREE.MathUtils.lerp(this.head.rotation.z, 0, 0.06);
+          this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, 0, 0.06);
+        }
+        if (this.eyes) {
+          this.eyes.forEach((e) => {
+            if (e && e.userData?.restPos) {
+              e.position.x = THREE.MathUtils.lerp(e.position.x, e.userData.restPos.x, 0.08);
+              e.position.y = THREE.MathUtils.lerp(e.position.y, e.userData.restPos.y, 0.08);
+            }
+          });
+        }
+      } else {
+        // attentive / idle: keep eyes at restPos
+        if (this.head) {
+          this.head.rotation.z = THREE.MathUtils.lerp(this.head.rotation.z, 0, 0.06);
+          this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, 0, 0.06);
+        }
+        if (this.eyes) {
+          this.eyes.forEach((e) => {
+            if (e && e.userData?.restPos) {
+              e.position.x = THREE.MathUtils.lerp(e.position.x, e.userData.restPos.x, 0.08);
+              e.position.y = THREE.MathUtils.lerp(e.position.y, e.userData.restPos.y, 0.08);
+            }
+          });
+        }
+      }
+    }
 
     // =========================================================
     // MOUTH LIP SYNC

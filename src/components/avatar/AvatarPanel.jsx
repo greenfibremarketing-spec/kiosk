@@ -1,15 +1,31 @@
 "use client";
+/**
+ * AvatarPanel.jsx (v2)
+ * Wires the conversation state machine into the 3-D avatar:
+ *   - Drives setExpression("listening"|"thinking"|"speaking"|"attentive")
+ *   - Shows a pulsing "Listening" indicator while LISTENING
+ *   - Passes full debug props to DebugOverlay
+ *   - Forwards stageRef back to useKiosk via setStageRef
+ */
 import { useEffect, useRef, useState, useCallback } from "react";
 import GreenieStage from "./GreenieStage";
-import Captions from "./Captions";
+import Captions from "@/components/avatar/Captions";
 import DebugOverlay from "@/components/debug/DebugOverlay";
+import LiveSpeechTester from "@/components/debug/LiveSpeechTester";
+import ListeningIndicator from "@/components/avatar/ListeningIndicator";
 import { preferredVoice } from "@/lib/avatar/voice";
+import VoiceHUD from "./VoiceHUD";
+
+const CUSTOM_VOICE_OPTIONS = { pitch: 1.15, rate: 0.95 };
 
 export default function AvatarPanel({
   caption,
+  speechId = 0,
   speaking,
   onSpeakingChange,
   presenceState = "IDLE",
+  convState = "IDLE",
+  userSpeaking = false,
   onTap,
   videoRef,
   debugOpen,
@@ -18,151 +34,166 @@ export default function AvatarPanel({
   onCalibrate,
   onCloseDebug,
   listening,
+  liveTranscript = "",
+  lastUserSpeech = "",
+  onToggleMic,
   signals = null,
+  onQuickPick,
+  setStageRef,
+  // debug extras
+  vadSpeech,
+  audioLevel,
+  micError,
+  evidence,
+  speakingForMs,
+  silentForMs,
 }) {
   const isEngaged = presenceState === "ENGAGED";
   const attractVideoRef = useRef(null);
   const stageRef = useRef(null);
-  const [avatarStatus, setAvatarStatus] = useState("Ready to chat");
   const [isAvatarSpeaking, setIsAvatarSpeaking] = useState(false);
   const [spokenCharIndex, setSpokenCharIndex] = useState(0);
   const [showGrandLeaves, setShowGrandLeaves] = useState(false);
   const [customVoice, setCustomVoice] = useState(null);
-  const customVoiceOptions = { pitch: 1.15, rate: 0.95 };
 
   const prevEngagedRef = useRef(false);
-  const introTimerRef = useRef(null);
-  const arrivedRef = useRef(false);
+  const introTimerRef  = useRef(null);
+  const arrivedRef     = useRef(false);
   const lastReactionRef = useRef(0);
+  const nodTimerRef    = useRef(null);
 
-  // Permanently lock Google हिन्दी · hi-IN female voice
+  // Forward stageRef to useKiosk so it can interrupt avatar
+  const stageCallbackRef = useCallback((node) => {
+    stageRef.current = node;
+    setStageRef?.(node);
+  }, [setStageRef]);
+
+  // ── Preferred voice init ─────────────────────────────────────────────────
   useEffect(() => {
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      const initVoice = () => {
-        const list = window.speechSynthesis.getVoices();
-        if (list && list.length > 0) {
-          const target = preferredVoice(list, "hi-IN");
-          if (target) {
-            setCustomVoice(target);
-          }
-        }
-      };
-
-      initVoice();
-      window.speechSynthesis.onvoiceschanged = initVoice;
-    }
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    const initVoice = () => {
+      const list = window.speechSynthesis.getVoices();
+      if (list?.length > 0) {
+        const target = preferredVoice(list, "en-IN");
+        if (target) setCustomVoice(target);
+      }
+    };
+    initVoice();
+    window.speechSynthesis.onvoiceschanged = initVoice;
   }, []);
 
-  // 1. Promo Video — play only when IDLE (user not on screen), pause when ENGAGED
+  // ── Promo attract video ──────────────────────────────────────────────────
   useEffect(() => {
     const video = attractVideoRef.current;
     if (!video) return;
-
     video.muted = true;
     video.defaultMuted = true;
-
-    const playVideo = () => {
-      video.muted = true;
-      video.play().catch(() => {});
-    };
-
-    if (!isEngaged) {
-      video.currentTime = 0;
-      playVideo();
-    } else {
-      video.pause();
-    }
-
-    video.addEventListener("loadeddata", playVideo);
-    video.addEventListener("canplay", playVideo);
-    video.addEventListener("ended", () => {
-      video.currentTime = 0;
-      playVideo();
-    });
-
+    const play = () => { video.muted = true; video.play().catch(() => {}); };
+    if (!isEngaged) { video.currentTime = 0; play(); }
+    else { video.pause(); }
+    video.addEventListener("loadeddata", play);
+    video.addEventListener("canplay", play);
+    video.addEventListener("ended", () => { video.currentTime = 0; play(); });
     return () => {
-      video.removeEventListener("loadeddata", playVideo);
-      video.removeEventListener("canplay", playVideo);
+      video.removeEventListener("loadeddata", play);
+      video.removeEventListener("canplay", play);
     };
   }, [isEngaged]);
 
-  // 2. Immediate arrival sequence: Flying Entrance from left WHILE SPEAKING
+  // ── Arrival sequence ─────────────────────────────────────────────────────
   useEffect(() => {
     if (isEngaged && !prevEngagedRef.current) {
       arrivedRef.current = true;
       setShowGrandLeaves(true);
       clearTimeout(introTimerRef.current);
-
-      const runArrivalSequence = () => {
-        if (!stageRef.current) return;
-
-        // Step 1: Immediately fly in from the left (1.8s) + 3D swirling leaf burst
+      if (stageRef.current) {
         stageRef.current.flyIn(1.8);
-
-        // Step 2: Speak greeting IMMEDIATELY as she flies in from the left
         if (caption) {
           stageRef.current.speak(caption, {
             voice: customVoice,
-            pitch: customVoiceOptions.pitch,
-            rate: customVoiceOptions.rate,
-            lang: customVoice?.lang || "hi-IN",
+            pitch: CUSTOM_VOICE_OPTIONS.pitch,
+            rate: CUSTOM_VOICE_OPTIONS.rate,
+            lang: customVoice?.lang || "en-IN",
           });
         }
-
-        introTimerRef.current = setTimeout(() => setShowGrandLeaves(false), 3000);
-      };
-
-      // Run immediately without delays
-      runArrivalSequence();
-
+      }
+      introTimerRef.current = setTimeout(() => setShowGrandLeaves(false), 3000);
     } else if (!isEngaged) {
       arrivedRef.current = false;
       setShowGrandLeaves(false);
       clearTimeout(introTimerRef.current);
-      if (stageRef.current) {
-        stageRef.current.stop();
-        stageRef.current.setEngaged(false);
-      }
+      stageRef.current?.stop();
+      stageRef.current?.setEngaged(false);
     }
-
     prevEngagedRef.current = isEngaged;
-  }, [isEngaged, caption, customVoice, customVoiceOptions]);
+  }, [isEngaged, caption, customVoice]);
 
-  // 3. Caption updates after arrival → speak new captions
-  const prevCaptionRef = useRef(null);
+  // ── Caption / speechId change → speak ────────────────────────────────────
+  const prevSpeechIdRef = useRef(speechId);
+  const prevCaptionRef  = useRef(caption);
   useEffect(() => {
-    if (
-      isEngaged &&
-      caption &&
-      caption !== prevCaptionRef.current &&
-      prevEngagedRef.current &&
-      arrivedRef.current
-    ) {
-      if (stageRef.current && !isAvatarSpeaking) {
-        stageRef.current.speak(caption, {
-          voice: customVoice,
-          pitch: customVoiceOptions.pitch,
-          rate: customVoiceOptions.rate,
-          lang: customVoice?.lang || "hi-IN",
-        });
-      }
+    const changed = speechId !== prevSpeechIdRef.current || caption !== prevCaptionRef.current;
+    if (caption && changed && !userSpeaking && isEngaged) {
+      stageRef.current?.speak(caption, {
+        voice: customVoice,
+        pitch: CUSTOM_VOICE_OPTIONS.pitch,
+        rate: CUSTOM_VOICE_OPTIONS.rate,
+        lang: customVoice?.lang || "en-IN",
+      });
     }
-    prevCaptionRef.current = caption;
-  }, [caption, isEngaged, isAvatarSpeaking, customVoice, customVoiceOptions]);
+    prevSpeechIdRef.current = speechId;
+    prevCaptionRef.current  = caption;
+  }, [caption, speechId, customVoice, userSpeaking, isEngaged]);
 
-  // 4. Drive the ear-cupping listening pose in the 3D avatar
+  // ── Drive avatar expressions from convState ────────────────────────────────
   useEffect(() => {
-    if (stageRef.current) {
-      stageRef.current.setListening(listening && !isAvatarSpeaking);
+    if (!stageRef.current) return;
+    const s = stageRef.current;
+
+    switch (convState) {
+      case "LISTENING":
+        s.setListening(true);
+        s.setExpression?.("listening");
+        // Slow nod every 2–3 s while user speaks
+        clearInterval(nodTimerRef.current);
+        nodTimerRef.current = setInterval(() => {
+          if (stageRef.current) stageRef.current.react?.("nod");
+        }, 2500);
+        break;
+
+      case "THINKING":
+        s.setListening(false);
+        s.setExpression?.("thinking");
+        clearInterval(nodTimerRef.current);
+        break;
+
+      case "SPEAKING":
+        s.setListening(false);
+        s.setExpression?.("speaking");
+        clearInterval(nodTimerRef.current);
+        break;
+
+      default: // IDLE, ATTENTIVE
+        s.setListening(false);
+        s.setExpression?.("attentive");
+        clearInterval(nodTimerRef.current);
+        break;
     }
+  }, [convState]);
+
+  // ── Cleanup nod interval ──────────────────────────────────────────────────
+  useEffect(() => () => clearInterval(nodTimerRef.current), []);
+
+  // ── Listening pose via setListening (legacy bridge) ───────────────────────
+  useEffect(() => {
+    stageRef.current?.setListening(listening && !isAvatarSpeaking);
   }, [listening, isAvatarSpeaking]);
 
-  // 5. Signal-driven avatar reactions
+  // ── Emotion reactions ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!signals || !stageRef.current || isAvatarSpeaking) return;
     const now = Date.now();
     if (now - lastReactionRef.current < 8000) return;
-
     if (signals.smile > 0.65) {
       lastReactionRef.current = now;
       stageRef.current.react("blush");
@@ -172,79 +203,51 @@ export default function AvatarPanel({
     }
   }, [signals, isAvatarSpeaking]);
 
-  const handleSpeakingChange = useCallback(
-    (speakingState) => {
-      setIsAvatarSpeaking(speakingState);
-      onSpeakingChange?.(speakingState);
-    },
-    [onSpeakingChange]
-  );
+  const handleSpeakingChange = useCallback((s) => {
+    setIsAvatarSpeaking(s);
+    onSpeakingChange?.(s);
+  }, [onSpeakingChange]);
 
   return (
     <section className="avatar-immersive" aria-label="GreenFibre Kiosk Display">
-      {/* Webcam element */}
+      {/* Webcam element (hidden, used by MediaPipe) */}
       <video
         ref={videoRef}
-        playsInline
-        muted
-        autoPlay
+        playsInline muted autoPlay
         style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          width: "320px",
-          height: "240px",
-          opacity: 0.001,
-          pointerEvents: "none",
-          zIndex: -1,
+          position: "fixed", top: 0, left: 0,
+          width: "320px", height: "240px",
+          opacity: 0.001, pointerEvents: "none", zIndex: -1,
         }}
-        width={320}
-        height={240}
+        width={320} height={240}
       />
 
-      {/* ── ATTRACT SCREEN (IDLE — nobody near) ── */}
+      {/* ── ATTRACT SCREEN ── */}
       <div
-        className={`kiosk-layer attract-layer ${
-          !isEngaged ? "kiosk-layer--active" : "kiosk-layer--hidden"
-        }`}
-        onClick={onTap}
-        role="button"
-        tabIndex={0}
+        className={`kiosk-layer attract-layer ${!isEngaged ? "kiosk-layer--active" : "kiosk-layer--hidden"}`}
+        onClick={onTap} role="button" tabIndex={0}
       >
         <video
-          ref={attractVideoRef}
-          src="/videos/promo.mp4"
-          autoPlay
-          loop
-          muted
-          playsInline
-          preload="auto"
+          ref={attractVideoRef} src="/videos/promo.mp4"
+          autoPlay loop muted playsInline preload="auto"
           className="attract-video"
         />
         <div className="attract-gradient-overlay" />
-
         <div className="attract-top-brand">
           <span className="attract-brand-badge">🌾 GREENFIBRE</span>
         </div>
-
         <div className="attract-bottom-cta">
           <div className="attract-tap-hint">✨ Touch Screen or Step Closer to Begin</div>
         </div>
       </div>
 
-      {/* ── GREENIE AVATAR SCREEN (ENGAGED — person detected) ── */}
-      <div
-        className={`kiosk-layer greenie-layer ${
-          isEngaged ? "kiosk-layer--active" : "kiosk-layer--hidden"
-        }`}
-      >
-        {/* Grand Opening Floating Leaves Celebration */}
+      {/* ── GREENIE AVATAR SCREEN ── */}
+      <div className={`kiosk-layer greenie-layer ${isEngaged ? "kiosk-layer--active" : "kiosk-layer--hidden"}`}>
         {showGrandLeaves && (
           <div className="grand-opening-leaves-container" aria-hidden="true">
             {[...Array(14)].map((_, i) => (
               <span
-                key={i}
-                className="floating-eco-leaf"
+                key={i} className="floating-eco-leaf"
                 style={{
                   left: `${(i * 7.5 + Math.random() * 5) % 95}%`,
                   animationDelay: `${(i * 0.18).toFixed(2)}s`,
@@ -258,24 +261,48 @@ export default function AvatarPanel({
           </div>
         )}
 
-        {/* 3D Greenie Canvas (With Botanical Studio Stage Background & Fairy Wings) */}
+        {/* Live Speech Testing Monitor (Word-by-word real-time transcription) */}
+        <LiveSpeechTester
+          liveTranscript={liveTranscript}
+          lastUserSpeech={lastUserSpeech}
+          userSpeaking={userSpeaking}
+          vadSpeech={vadSpeech}
+          audioLevel={audioLevel}
+          evidence={evidence}
+          convState={convState}
+        />
+
         <GreenieStage
-          ref={stageRef}
+          ref={stageCallbackRef}
           isEngaged={isEngaged}
-          onStatus={setAvatarStatus}
+          onStatus={() => {}}
           onSpeakingChange={handleSpeakingChange}
           onBoundary={setSpokenCharIndex}
         />
 
-        {/* Dynamic Subtitles In Perfect Sync with Speech */}
+        {/* Dynamic Subtitles / Captions */}
         <div className="greenie-bottom-overlay">
           <Captions
             text={caption}
             speaking={isAvatarSpeaking || speaking}
-            status={avatarStatus}
+            status={isAvatarSpeaking ? "Explaining..." : convState === "LISTENING" ? "Listening..." : "Ready to chat"}
             charIndex={spokenCharIndex}
           />
         </div>
+
+        {/* Pulsing "Listening" indicator */}
+        {convState === "LISTENING" && <ListeningIndicator />}
+
+        <VoiceHUD
+          listening={listening}
+          speaking={isAvatarSpeaking || speaking}
+          liveTranscript={liveTranscript}
+          userSpeaking={userSpeaking}
+          convState={convState}
+          onToggleMic={onToggleMic}
+          micError={micError}
+          audioLevel={audioLevel}
+        />
       </div>
 
       {/* Debug Overlay (Ctrl+Shift+D) */}
@@ -284,7 +311,14 @@ export default function AvatarPanel({
           stats={debugStats}
           config={config}
           state={presenceState}
+          convState={convState}
           signals={signals}
+          vadSpeech={vadSpeech}
+          audioLevel={audioLevel}
+          userSpeaking={userSpeaking}
+          evidence={evidence}
+          speakingForMs={speakingForMs}
+          silentForMs={silentForMs}
           onCalibrate={onCalibrate}
           onClose={onCloseDebug}
         />

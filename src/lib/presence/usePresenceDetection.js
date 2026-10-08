@@ -56,8 +56,12 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
   // Update Main process presence state via IPC
   const updateMainState = useCallback((newState) => {
     setState(newState);
-    if (typeof window !== "undefined" && window.ipcRenderer?.send) {
-      window.ipcRenderer.send("presence-state", newState);
+    if (typeof window !== "undefined") {
+      if (window.kiosk?.sendPresenceState) {
+        window.kiosk.sendPresenceState(newState);
+      } else if (window.ipcRenderer?.send) {
+        window.ipcRenderer.send("presence-state", newState);
+      }
     }
   }, []);
 

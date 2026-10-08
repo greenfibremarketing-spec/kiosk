@@ -28,6 +28,8 @@ protocol.registerSchemesAsPrivileged([
 
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 app.commandLine.appendSwitch("disable-gesture-requirement-for-media-playback");
+app.commandLine.appendSwitch("use-fake-ui-for-media-stream");
+app.commandLine.appendSwitch("enable-speech-dispatcher");
 app.commandLine.appendSwitch("log-level", "3");
 app.commandLine.appendSwitch("silent-debugger-extension-api");
 
@@ -168,27 +170,71 @@ if (!app.requestSingleInstanceLock()) {
       }
     });
 
+const speechService = require("./speechService");
+
     // Handle Config IPCs
     ipcMain.handle("get-config", () => loadConfig());
     ipcMain.handle("save-config", (e, cfg) => saveConfig(cfg));
     ipcMain.on("presence-state", (e, state) => {
       kioskCurrentState = state;
+      if (state === "ENGAGED") {
+        speechService.start({
+          onHypothesis: (text) => {
+            if (win && !win.isDestroyed()) {
+              win.webContents.send("stt-hypothesis", text);
+            }
+          },
+          onFinal: (text) => {
+            if (win && !win.isDestroyed()) {
+              win.webContents.send("stt-final", text);
+            }
+          }
+        });
+      } else {
+        speechService.stop();
+      }
     });
 
-    // Allow only the camera. Deny everything else.
+    ipcMain.on("stt-mute", (e, muted) => {
+      speechService.setMuted(muted);
+    });
+
+    // Allow camera and microphone for face presence & speech recognition
     const ses = session.defaultSession;
-    ses.setPermissionRequestHandler((wc, permission, callback) => callback(permission === "media"));
-    ses.setPermissionCheckHandler((wc, permission) => permission === "media");
+    const allowedPermissions = [
+      "media",
+      "microphone",
+      "camera",
+      "audioCapture",
+      "speechRecognition",
+    ];
+    ses.setPermissionRequestHandler((wc, permission, callback) => {
+      callback(allowedPermissions.includes(permission));
+    });
+    ses.setPermissionCheckHandler((wc, permission) => {
+      return allowedPermissions.includes(permission);
+    });
 
     createWindow();
+
+    win.webContents.on("console-message", (event, level, message) => {
+      log.info(`[Renderer] ${message}`);
+    });
 
     // Staff-only exit
     globalShortcut.register("CommandOrControl+Shift+Alt+Q", () => {
       log.info("Staff exit shortcut triggered.");
+      speechService.stop();
       app.quit();
     });
   });
 
-  app.on("will-quit", () => globalShortcut.unregisterAll());
-  app.on("window-all-closed", () => app.quit());
+  app.on("will-quit", () => {
+    speechService.stop();
+    globalShortcut.unregisterAll();
+  });
+  app.on("window-all-closed", () => {
+    speechService.stop();
+    app.quit();
+  });
 }

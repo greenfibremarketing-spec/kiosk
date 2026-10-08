@@ -1,8 +1,5 @@
-// Default Voice Configuration for Greenie
-// Locked to: "Google हिन्दी · hi-IN" (Warm, natural Google voice)
-// Fallback: Other Hindi / Indian female voices if Google हिन्दी is unavailable
-
-export function preferredVoice(voices, lang = "hi-IN") {
+// Voice Configuration for Greenie (English & Indian English pronunciation)
+export function preferredVoice(voices, lang = "en-IN") {
   if (!voices || voices.length === 0) return null;
 
   return (
@@ -12,31 +9,31 @@ export function preferredVoice(voices, lang = "hi-IN") {
         const name = (v.name || "").toLowerCase();
         const vLang = (v.lang || "").toLowerCase().replace("_", "-");
 
-        // 1. Top Target: "Google हिन्दी" / "Google hi-IN"
+        // 1. Indian English female voices (Heera, Neerja, Swara, Priya, Google en-IN)
         if (
-          name.includes("google") &&
-          (name.includes("हिन्दी") || name.includes("hindi") || vLang.startsWith("hi"))
+          /heera|neerja|swara|priya|sangeeta|veena|aditi/i.test(name) ||
+          (vLang.startsWith("en-in") && /female|heera|neerja/i.test(name))
         ) {
           score += 1000;
         }
 
-        // 2. Exact match for "Google हिन्दी"
-        if (/google\s*हिन्दी/i.test(v.name) || /google\s*hindi/i.test(v.name)) {
+        // 2. Any Indian English voice
+        if (vLang === "en-in" || (vLang.startsWith("en") && name.includes("india"))) {
           score += 800;
         }
 
-        // 3. Any Hindi language voice (hi-IN)
-        if (vLang === "hi-in" || vLang.startsWith("hi")) {
-          score += 500;
+        // 3. Google English voices
+        if (name.includes("google") && vLang.startsWith("en")) {
+          score += 600;
         }
 
-        // 4. Other Google Indian voices
-        if (name.includes("google") && (vLang.includes("in") || name.includes("india"))) {
-          score += 300;
+        // 4. Natural female English voices (Zira, Jenny, Aria, Sonia, Samantha)
+        if (/zira|jenny|aria|sonia|samantha|victoria|karen/i.test(name)) {
+          score += 400;
         }
 
-        // 5. Indian female voices (Swara, Heera, Aditi, Priya, etc.)
-        if (/swara|heera|aditi|priya|neerja|sangeeta|veena|kalpana|geeta/i.test(name)) {
+        // 5. Any English voice
+        if (vLang.startsWith("en")) {
           score += 200;
         }
 
@@ -51,7 +48,7 @@ export function preferredVoice(voices, lang = "hi-IN") {
 }
 
 export function isPreferredFemale(voice) {
-  return /google|हिन्दी|hindi|hi-in|swara|heera|aditi|priya|neerja|sangeeta|veena/i.test(
+  return /heera|neerja|swara|priya|zira|jenny|aria|sonia|samantha/i.test(
     voice?.name || ""
   );
 }

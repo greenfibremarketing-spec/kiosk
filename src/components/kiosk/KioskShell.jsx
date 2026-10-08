@@ -14,8 +14,12 @@ export default function KioskShell() {
     >
       <AvatarPanel
         caption={k.caption}
+        speechId={k.speechId}
         speaking={k.speaking}
+        onSpeakingChange={k.handleSpeakingChange}
         presenceState={k.presence.state}
+        convState={k.convState}
+        userSpeaking={k.userSpeaking}
         onTap={k.presence.triggerTouchEngaged}
         videoRef={k.presence.videoRef}
         debugOpen={k.presence.debugOpen}
@@ -25,8 +29,17 @@ export default function KioskShell() {
         onCloseDebug={() => k.presence.setDebugOpen(false)}
         onQuickPick={k.send}
         listening={k.listening}
-        onTalk={k.talk}
+        liveTranscript={k.liveTranscript}
+        lastUserSpeech={k.lastUserSpeech}
+        onToggleMic={() => {}}
         signals={k.signals}
+        setStageRef={k.setStageRef}
+        vadSpeech={k.vadSpeech}
+        audioLevel={k.audioLevel}
+        micError={k.micError}
+        evidence={k.evidence}
+        speakingForMs={k.speakingForMs}
+        silentForMs={k.silentForMs}
       />
 
       <ProductShowcase
