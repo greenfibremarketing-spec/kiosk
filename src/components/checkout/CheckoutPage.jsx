@@ -1,6 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import ProductArt from "../products/ProductArt";
+import RazorpayModal from "./RazorpayModal";
 
 export default function CheckoutPage({
   order,
@@ -11,7 +12,7 @@ export default function CheckoutPage({
 
   const [qty, setQty] = useState(order.quantity || 1);
   const [includeGiftWrap, setIncludeGiftWrap] = useState(true);
-  const [paymentMethod, setPaymentMethod] = useState("upi"); // "upi" | "card" | "cod"
+  const [isRazorpayOpen, setIsRazorpayOpen] = useState(false);
 
   // Customer form state
   const [formData, setFormData] = useState({
@@ -24,46 +25,45 @@ export default function CheckoutPage({
     pincode: "380054",
   });
 
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
   const unitPrice = product.salePrice || product.price;
   const itemsSubtotal = unitPrice * qty;
-  const grandTotal = itemsSubtotal; // Free shipping and gift wrapping!
+  const grandTotal = itemsSubtotal;
 
   const handleInputChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
-  const handlePlaceOrder = (e) => {
+  const handleProceedToPay = (e) => {
     e.preventDefault();
     if (!formData.fullName || !formData.phone || !formData.address) {
-      alert("Please fill in your name, phone number, and delivery address.");
+      alert("Please enter your name, mobile number, and delivery address.");
       return;
     }
+    // Automatically open the Razorpay payment popup!
+    setIsRazorpayOpen(true);
+  };
 
-    setIsSubmitting(true);
-
-    // Simulate instant secure processing on kiosk
-    setTimeout(() => {
-      const generatedOrderId = "GF-" + Math.floor(100000 + Math.random() * 900000);
-      onOrderSuccess({
-        orderId: generatedOrderId,
-        product,
-        quantity: qty,
-        selectedColor,
-        grandTotal,
-        customer: formData,
-        paymentMethod,
-        includeGiftWrap,
-        timestamp: new Date().toLocaleDateString("en-IN", {
-          day: "numeric",
-          month: "short",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      });
-    }, 900);
+  const handlePaymentSuccess = (paymentDetails) => {
+    setIsRazorpayOpen(false);
+    const generatedOrderId = "GF-" + Math.floor(100000 + Math.random() * 900000);
+    onOrderSuccess({
+      orderId: generatedOrderId,
+      paymentId: paymentDetails.paymentId,
+      product,
+      quantity: qty,
+      selectedColor,
+      grandTotal,
+      customer: formData,
+      paymentMethod: paymentDetails.method || "RAZORPAY_UPI",
+      includeGiftWrap,
+      timestamp: new Date().toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    });
   };
 
   return (
@@ -87,10 +87,13 @@ export default function CheckoutPage({
       </nav>
 
       {/* ── Main Checkout Columns ── */}
-      <form className="checkout-grid" onSubmit={handlePlaceOrder}>
-        {/* Left Column: Order Summary */}
+      <form className="checkout-grid" onSubmit={handleProceedToPay}>
+        {/* Left Column: Order Summary & Eco Bag */}
         <div className="checkout-summary-col">
-          <h2 className="summary-col-title">Order Summary</h2>
+          <div className="summary-header-row">
+            <h2 className="summary-col-title">Order Bag</h2>
+            <span className="bag-count-pill">{qty} Item{qty > 1 ? "s" : ""}</span>
+          </div>
 
           {/* Item Card */}
           <div className="order-item-card">
@@ -99,18 +102,23 @@ export default function CheckoutPage({
             </div>
             <div className="order-item-details">
               <h3 className="order-item-name">{product.name}</h3>
-              <span className="order-item-color">Color: {selectedColor}</span>
+              <span className="order-item-color">Finish: {selectedColor}</span>
               <div className="order-item-qty-row">
                 <div className="checkout-qty-mini">
                   <button
                     type="button"
                     onClick={() => setQty(Math.max(1, qty - 1))}
                     disabled={qty <= 1}
+                    aria-label="Decrease quantity"
                   >
                     −
                   </button>
                   <span>{qty}</span>
-                  <button type="button" onClick={() => setQty(qty + 1)}>
+                  <button
+                    type="button"
+                    onClick={() => setQty(qty + 1)}
+                    aria-label="Increase quantity"
+                  >
                     +
                   </button>
                 </div>
@@ -137,14 +145,14 @@ export default function CheckoutPage({
             <span className="eco-badge-icon">🌾</span>
             <div>
               <strong>100% Upcycled Agricultural Biocomposite</strong>
-              <p>Your order diverts {qty * 210}g of crop residue from farm burning.</p>
+              <p>Your order diverts {qty * 210}g of crop residue from open-field burning.</p>
             </div>
           </div>
 
           {/* Cost Breakdown Table */}
           <div className="checkout-price-table">
             <div className="price-row">
-              <span>Item Subtotal ({qty} item{qty > 1 ? "s" : ""})</span>
+              <span>Item Subtotal ({qty} unit{qty > 1 ? "s" : ""})</span>
               <span>₹{itemsSubtotal}</span>
             </div>
             {savings > 0 && (
@@ -154,7 +162,7 @@ export default function CheckoutPage({
               </div>
             )}
             <div className="price-row">
-              <span>Express Carbon-Neutral Delivery</span>
+              <span>Carbon-Neutral Courier Delivery</span>
               <span className="price-free">FREE</span>
             </div>
             <div className="price-row">
@@ -163,19 +171,22 @@ export default function CheckoutPage({
             </div>
             <div className="price-divider" />
             <div className="price-row price-row--total">
-              <strong>Total Amount</strong>
+              <strong>Grand Total</strong>
               <strong className="grand-total-val">₹{grandTotal}</strong>
             </div>
           </div>
         </div>
 
-        {/* Right Column: Customer Details & Payment */}
+        {/* Right Column: Customer Details & Proceed to Pay CTA */}
         <div className="checkout-form-col">
           {/* Section: Shipping Details */}
           <div className="checkout-card">
             <div className="checkout-card-head">
               <span className="card-num-badge">1</span>
-              <h3>Delivery & Contact Information</h3>
+              <div>
+                <h3>Delivery Address & Contact</h3>
+                <p className="card-head-sub">Where should we deliver your handcrafted eco products?</p>
+              </div>
             </div>
 
             <div className="form-fields-grid">
@@ -191,7 +202,7 @@ export default function CheckoutPage({
               </div>
 
               <div className="form-field form-field--half">
-                <label>Mobile Number (for SMS & WhatsApp Tracking) *</label>
+                <label>Mobile Number (for WhatsApp/SMS tracking) *</label>
                 <input
                   type="tel"
                   required
@@ -212,7 +223,7 @@ export default function CheckoutPage({
               </div>
 
               <div className="form-field form-field--full">
-                <label>Street Address / Apartment *</label>
+                <label>Street Address / Apartment / Landmark *</label>
                 <input
                   type="text"
                   required
@@ -254,92 +265,54 @@ export default function CheckoutPage({
             </div>
           </div>
 
-          {/* Section: Payment Method */}
-          <div className="checkout-card">
-            <div className="checkout-card-head">
-              <span className="card-num-badge">2</span>
-              <h3>Select Payment Method</h3>
-            </div>
-
-            <div className="payment-options-grid">
-              <button
-                type="button"
-                className={`payment-option-card ${paymentMethod === "upi" ? "payment-option-card--active" : ""}`}
-                onClick={() => setPaymentMethod("upi")}
-              >
-                <span className="pay-icon">📱</span>
-                <div className="pay-meta">
-                  <strong>Instant UPI QR Scan</strong>
-                  <span>GPay, PhonePe, Paytm, BHIM</span>
-                </div>
-                <span className="pay-radio">{paymentMethod === "upi" ? "●" : "○"}</span>
-              </button>
-
-              <button
-                type="button"
-                className={`payment-option-card ${paymentMethod === "card" ? "payment-option-card--active" : ""}`}
-                onClick={() => setPaymentMethod("card")}
-              >
-                <span className="pay-icon">💳</span>
-                <div className="pay-meta">
-                  <strong>Contactless Card Tap</strong>
-                  <span>Debit / Credit Cards & POS</span>
-                </div>
-                <span className="pay-radio">{paymentMethod === "card" ? "●" : "○"}</span>
-              </button>
-
-              <button
-                type="button"
-                className={`payment-option-card ${paymentMethod === "cod" ? "payment-option-card--active" : ""}`}
-                onClick={() => setPaymentMethod("cod")}
-              >
-                <span className="pay-icon">💵</span>
-                <div className="pay-meta">
-                  <strong>Pay at Store Counter / Cash</strong>
-                  <span>Collect receipt & pay staff</span>
-                </div>
-                <span className="pay-radio">{paymentMethod === "cod" ? "●" : "○"}</span>
-              </button>
-            </div>
-
-            {/* Simulated Live Payment QR Code if UPI is selected */}
-            {paymentMethod === "upi" && (
-              <div className="upi-qr-display-box">
-                <div className="qr-visual">
-                  <div className="qr-simulated-pattern">
-                    <div className="qr-corner qr-tl" />
-                    <div className="qr-corner qr-tr" />
-                    <div className="qr-corner qr-bl" />
-                    <div className="qr-center-logo">🌾</div>
-                  </div>
-                </div>
-                <div className="qr-instructions">
-                  <strong>Scan QR with any UPI App</strong>
-                  <p>Open Google Pay, PhonePe, or Paytm on your phone to scan and approve ₹{grandTotal}</p>
-                  <span className="qr-live-pill">● QR Code Active • Auto-Verification</span>
+          {/* Section: Proceed to Pay Banner with Razorpay Trust */}
+          <div className="checkout-payment-box">
+            <div className="payment-gateway-strip">
+              <div className="gateway-brand">
+                <span className="gateway-logo">⚡</span>
+                <div>
+                  <strong>Razorpay Secure Checkout</strong>
+                  <span>Supports GPay, PhonePe, Paytm, All Cards & Netbanking</span>
                 </div>
               </div>
-            )}
-          </div>
+              <div className="gateway-badges">
+                <span className="pay-tag">UPI</span>
+                <span className="pay-tag">CARDS</span>
+                <span className="pay-tag">NETBANKING</span>
+              </div>
+            </div>
 
-          {/* Place Order CTA Button */}
-          <button
-            type="submit"
-            className="checkout-submit-btn"
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? (
-              <span className="submitting-spinner">Processing Secure Kiosk Order...</span>
-            ) : (
-              <>
-                <span className="lock-icon">🔒</span>
-                <span className="submit-label">Confirm Order & Pay ₹{grandTotal}</span>
-                <span className="submit-arrow">→</span>
-              </>
-            )}
-          </button>
+            {/* Direct Proceed to Pay Button */}
+            <button
+              type="submit"
+              className="checkout-proceed-btn"
+            >
+              <div className="btn-content-left">
+                <span className="lock-emblem">🔒</span>
+                <span className="btn-main-title">Proceed to Pay</span>
+              </div>
+              <div className="btn-content-right">
+                <span className="btn-amount-badge">₹{grandTotal}</span>
+                <span className="btn-arrow">→</span>
+              </div>
+            </button>
+
+            <p className="checkout-trust-footnote">
+              Clicking &ldquo;Proceed to Pay&rdquo; will open the official Razorpay payment window automatically.
+            </p>
+          </div>
         </div>
       </form>
+
+      {/* ── Official Razorpay Modal Overlay ── */}
+      <RazorpayModal
+        isOpen={isRazorpayOpen}
+        onClose={() => setIsRazorpayOpen(false)}
+        amount={grandTotal}
+        customer={formData}
+        productName={product.name}
+        onPaymentSuccess={handlePaymentSuccess}
+      />
     </div>
   );
 }
