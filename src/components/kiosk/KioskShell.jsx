@@ -49,6 +49,7 @@ export default function KioskShell() {
         onCategory={k.selectCategory}
         onSelect={k.selectProduct}
         onEnquire={k.enquire}
+        onQuickPick={k.send}
       />
     </main>
   );

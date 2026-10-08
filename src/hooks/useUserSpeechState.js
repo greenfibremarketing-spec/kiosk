@@ -34,6 +34,7 @@ export function useUserSpeechState({ vadSpeech = false, audioLevel = 0, face = {
   const speakStartRef  = useRef(null); // when userSpeaking became true
   const silenceStartRef = useRef(null);
   const tickRef        = useRef(null);
+  const lastDurationTickRef = useRef(0);
 
   // Keep stable refs to inputs and state (avoids stale closures in interval)
   const vadRef          = useRef(vadSpeech);
@@ -121,15 +122,21 @@ export function useUserSpeechState({ vadSpeech = false, audioLevel = 0, face = {
 
       // ── 6. Expose evidence & duration counters ─────────────────────────
       const nextEv = hasEvidence ? ev : (userSpeakingRef.current ? evidenceRef.current : "none");
-      evidenceRef.current = nextEv;
-      setEvidence(nextEv);
+      if (evidenceRef.current !== nextEv) {
+        evidenceRef.current = nextEv;
+        setEvidence(nextEv);
+      }
 
-      if (speakStartRef.current) {
-        setSpeakingForMs(now - speakStartRef.current);
-        setSilentForMs(0);
-      } else if (silenceStartRef.current) {
-        setSilentForMs(now - silenceStartRef.current);
-        setSpeakingForMs(0);
+      // Throttle debug duration counters to avoid 17 FPS re-render loops
+      if (now - lastDurationTickRef.current >= 400) {
+        lastDurationTickRef.current = now;
+        if (speakStartRef.current) {
+          setSpeakingForMs(now - speakStartRef.current);
+          setSilentForMs(0);
+        } else if (silenceStartRef.current) {
+          setSilentForMs(now - silenceStartRef.current);
+          setSpeakingForMs(0);
+        }
       }
     }, TICK_MS);
 

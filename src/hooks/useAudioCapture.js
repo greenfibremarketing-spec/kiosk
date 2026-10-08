@@ -156,6 +156,9 @@ export function useAudioCapture({ isEngaged = false } = {}) {
     };
   }, [isEngaged]);
 
+  const lastLevelUpdateRef = useRef(0);
+  const lastLevelValRef = useRef(0);
+
   // ─── RMS polling loop ─────────────────────────────────────────────────────
   useEffect(() => {
     clearInterval(timerRef.current);
@@ -180,8 +183,17 @@ export function useAudioCapture({ isEngaged = false } = {}) {
       }
       const rms = Math.sqrt(sumSq / buf.length);
 
-      setAudioLevel(rms);
-      setVadSpeech(rms > speechConfig.audioLevelThreshold);
+      // Only trigger re-render if vadSpeech state actually changes
+      const isVad = rms > speechConfig.audioLevelThreshold;
+      setVadSpeech((prev) => (prev !== isVad ? isVad : prev));
+
+      // Throttle audioLevel state updates to ~150ms to keep UI 60 FPS smooth
+      const now = Date.now();
+      if (now - lastLevelUpdateRef.current >= 150 || Math.abs(rms - lastLevelValRef.current) > 0.08) {
+        lastLevelUpdateRef.current = now;
+        lastLevelValRef.current = rms;
+        setAudioLevel(rms);
+      }
     }, ANALYSE_INTERVAL_MS);
 
     return () => clearInterval(timerRef.current);

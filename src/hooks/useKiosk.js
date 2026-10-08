@@ -137,6 +137,9 @@ export function useKiosk() {
   // ── Interrupt avatar speech ────────────────────────────────────────────────
   const interruptAvatar = useCallback(() => {
     abortRef.current?.abort();
+    if (typeof window !== "undefined") {
+      try { window.speechSynthesis?.cancel(); } catch (_) {}
+    }
     stageRef.current?.stop();
     setSpeaking(false);
   }, []);
@@ -203,17 +206,7 @@ export function useKiosk() {
     pendingTranscriptRef.current = "";
     setLiveTranscript("");
 
-    if (!text && evidence !== "none" && !vadSpeech) {
-      // Face said they were speaking but we got nothing — re-prompt
-      failureCountRef.current += 1;
-      if (failureCountRef.current >= speechConfig.failuresBeforePTT) {
-        setShowPTT(true);
-      }
-      say("I am here — could you say that once more?");
-      setConv(S.ATTENTIVE);
-      return;
-    }
-
+    // If no text was transcribed, return silently to ATTENTIVE without nagging
     if (!text) {
       setConv(S.ATTENTIVE);
       return;
@@ -222,17 +215,17 @@ export function useKiosk() {
     failureCountRef.current = 0;
     sendTranscript(text, signals);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [evidence, say, sendTranscript, setConv, signals, vadSpeech]);
+  }, [sendTranscript, setConv, signals]);
 
   const finaliseAndSendRef = useRef(finaliseAndSend);
   finaliseAndSendRef.current = finaliseAndSend;
 
-  // ── React to userSpeaking changes ─────────────────────────────────────────
+  // ── React to userSpeaking / vadSpeech changes (Instant Interruption) ──────
   useEffect(() => {
     if (!isEngaged) return;
 
-    if (userSpeaking) {
-      // ① Interrupt avatar if it is speaking
+    if (userSpeaking || vadSpeech) {
+      // ① Interrupt avatar immediately if it is speaking
       if (convStateRef.current === S.SPEAKING) {
         interruptAvatar();
       }
@@ -243,9 +236,6 @@ export function useKiosk() {
       // ③ Enter LISTENING
       setConv(S.LISTENING);
       setListening(true);
-
-      // ④ Clear low-audio nudge timer
-      clearTimeout(lowAudioTimerRef.current);
     } else {
       setListening(false);
 
@@ -256,32 +246,7 @@ export function useKiosk() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userSpeaking, isEngaged]);
-
-  // ── Low-audio nudge: face says speaking but mic stays quiet ──────────────
-  useEffect(() => {
-    clearTimeout(lowAudioTimerRef.current);
-
-    if (
-      face.present &&
-      face.lookingAtScreen &&
-      !vadSpeech &&
-      audioLevel < speechConfig.audioLevelThreshold &&
-      convStateRef.current === S.LISTENING
-    ) {
-      lowAudioTimerRef.current = setTimeout(() => {
-        if (!userSpeakingRef.current && convStateRef.current === S.LISTENING) {
-          say(
-            "I can see you are speaking, but I cannot hear you clearly. " +
-            "Please speak a little closer to the microphone."
-          );
-        }
-      }, speechConfig.lowAudioWithFaceMs);
-    }
-
-    return () => clearTimeout(lowAudioTimerRef.current);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [face.present, face.lookingAtScreen, vadSpeech, audioLevel]);
+  }, [userSpeaking, vadSpeech, isEngaged]);
 
   // ── Native Windows STT (via Electron IPC bridge) ─────────────────────────
   useEffect(() => {
@@ -292,15 +257,23 @@ export function useKiosk() {
     console.log("[STT] Native Windows Speech Bridge active");
 
     const unHypo = window.kiosk.onSpeechHypothesis((text) => {
-      if (convStateRef.current === S.SPEAKING && !userSpeakingRef.current) return;
-      if (text) {
+      if (text && text.trim()) {
+        // If avatar is speaking when user starts speaking, interrupt immediately
+        if (convStateRef.current === S.SPEAKING) {
+          interruptAvatar();
+          setConv(S.LISTENING);
+          pendingTranscriptRef.current = "";
+        }
         setLiveTranscript(text);
       }
     });
 
     const unFinal = window.kiosk.onSpeechFinal((text) => {
-      if (convStateRef.current === S.SPEAKING && !userSpeakingRef.current) return;
       if (text && text.trim()) {
+        if (convStateRef.current === S.SPEAKING) {
+          interruptAvatar();
+          setConv(S.LISTENING);
+        }
         console.log("[STT Native Final]:", text);
         pendingTranscriptRef.current = (pendingTranscriptRef.current + " " + text).trim();
         setLiveTranscript(pendingTranscriptRef.current);

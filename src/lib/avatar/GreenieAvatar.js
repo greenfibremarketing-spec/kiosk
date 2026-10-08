@@ -72,13 +72,17 @@ export class GreenieAvatar {
     this.camera = new THREE.PerspectiveCamera(32, 1, 0.1, 50);
     this.camera.position.set(0, 1.8, 7.4);
 
-    // 2. WebGL Renderer
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // 2. WebGL Renderer (Optimized for butter-smooth 60 FPS)
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
     this.renderer.setPixelRatio(
-      typeof window !== "undefined" ? Math.min(window.devicePixelRatio, 2) : 1
+      typeof window !== "undefined" ? Math.min(window.devicePixelRatio, 1.25) : 1
     );
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.35;
@@ -89,7 +93,7 @@ export class GreenieAvatar {
     const key = new THREE.DirectionalLight(0xfff5e5, 5);
     key.position.set(-3, 5, 5);
     key.castShadow = true;
-    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.mapSize.set(512, 512);
     this.scene.add(key);
 
     const rim = new THREE.DirectionalLight(0xc7e9da, 3.5);
@@ -355,7 +359,13 @@ export class GreenieAvatar {
   }
 
   setListening(active) {
+    const wasListening = this._listening;
     this._listening = active;
+    if (active && !wasListening) {
+      this._listenStart = performance.now();
+      // Polite, respectful acknowledgement nod / bow when user starts speaking
+      this.react("bow");
+    }
   }
 
   /**
@@ -368,6 +378,10 @@ export class GreenieAvatar {
     if (this._expression === name) return;
     this._expression = name;
     this._expressionStart = performance.now();
+    if (name === "listening") {
+      this._listenStart = performance.now();
+      this.react("bow");
+    }
   }
 
   setMouth(shape = "rest", weight = 1) {
@@ -390,13 +404,13 @@ export class GreenieAvatar {
         const dict = this.mouth.morphTargetDictionary;
         if (dict && this.mouth.morphTargetInfluences) {
           this.mouth.morphTargetInfluences.fill(0);
-          if (dict[shape] !== undefined) {
-            this.mouth.morphTargetInfluences[dict[shape]] = THREE.MathUtils.clamp(
-              weight,
-              0,
-              1
-            );
-          }
+        }
+        if (dict && dict[shape] !== undefined) {
+          this.mouth.morphTargetInfluences[dict[shape]] = THREE.MathUtils.clamp(
+            weight,
+            0,
+            1
+          );
         }
       }
     }
@@ -439,14 +453,18 @@ export class GreenieAvatar {
   }
 
   react(kind = "blush") {
-    if (!["blush", "wink", "dance"].includes(kind)) return;
+    if (!["blush", "wink", "dance", "nod", "bow"].includes(kind)) return;
     this.reaction = { kind, start: performance.now() };
-    if (this.mode === "idle") {
+    if (this.mode === "idle" || this._listening) {
       this.setStatus(
         kind === "blush"
           ? "Aww, you made me blush! 🌸"
           : kind === "wink"
           ? "A little wink for you! 😉"
+          : kind === "bow"
+          ? "Listening attentively... 🌿"
+          : kind === "nod"
+          ? "Uh-huh, I hear you! ✨"
           : "Happy eco dance! 💃"
       );
     }
@@ -455,7 +473,7 @@ export class GreenieAvatar {
   stop() {
     this.generation++;
     this.started = 0;
-    if (this.mode === "tts" && typeof window !== "undefined") {
+    if (typeof window !== "undefined") {
       window.speechSynthesis?.cancel();
     }
     if (this.audio) {
@@ -467,9 +485,10 @@ export class GreenieAvatar {
     this.mode = "idle";
     this.reaction = null;
     this.waveStart = -10000;
+    this._hoverY = 0; // instantly cancel flight hover
     this.setMouth();
     this.onSpeakingChange(false);
-    this.setStatus("Ready to chat");
+    this.setStatus("Listening...");
   }
 
   async speak(
@@ -840,21 +859,45 @@ export class GreenieAvatar {
     }
 
     // =========================================================
-    // LISTENING POSE: Both arms raise near ears (ear-cupping)
+    // ACTIVE HUMAN-LIKE LISTENING GESTURES
     // =========================================================
-    if (
-      this._listening &&
+    const isActivelyListening =
+      (this._listening || this._expression === "listening") &&
       this.mode !== "tts" &&
       this.mode !== "audio" &&
-      !this.reaction &&
-      !this._waveActive &&
-      !this.flyingEntrance
-    ) {
-      this._armRTarget = 1.65;
-      this._armLTarget = -1.65;
+      !this.flyingEntrance;
+
+    if (isActivelyListening && !this._waveActive && !this.reaction) {
+      const listenTime = (now - (this._listenStart || now)) / 1000;
+
+      // Natural, graceful receptive arm pose held gently in front of torso with breathing
+      const breathArm = Math.sin(listenTime * 2.2) * 0.03;
+      this._armRTarget = 0.35 + breathArm;
+      this._armLTarget = -0.35 - breathArm;
 
       if (this.head && !this.reduced) {
-        this.head.rotation.z = 0.05;
+        // Natural human active-listening micro-nod cycles ("hmmhuu" nods) every ~1.8s
+        const nodPhase = (listenTime % 1.8) / 1.8;
+        const microNod =
+          nodPhase < 0.4
+            ? Math.sin(nodPhase * Math.PI * 2) * 0.075
+            : 0;
+
+        // Gentle head tilt to the side as humans do when listening attentively
+        const headTilt = Math.sin(listenTime * 1.2) * 0.045;
+
+        this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, 0.06 + microNod, 0.15);
+        this.head.rotation.z = THREE.MathUtils.lerp(this.head.rotation.z, headTilt, 0.12);
+      }
+
+      if (this.model && !this.reduced) {
+        // Slight respectful, attentive lean toward the customer
+        this.model.rotation.x = THREE.MathUtils.lerp(this.model.rotation.x, 0.035, 0.08);
+      }
+
+      // Warm receptive strawberry blush while customer is speaking
+      if (this.cheeks) {
+        this.cheeks.forEach((c) => c?.material?.color.set("#ff5a84"));
       }
     }
 
@@ -869,16 +912,38 @@ export class GreenieAvatar {
     }
 
     // =========================================================
-    // REACTIONS: dance / wink / blush
+    // REACTIONS: dance / wink / blush / bow / nod
     // =========================================================
     if (this.reaction) {
       const age = (now - this.reaction.start) / 1000;
-      const duration = this.reaction.kind === "dance" ? 2.8 : 1.8;
+      let duration = 1.8;
+      if (this.reaction.kind === "dance") duration = 2.8;
+      else if (this.reaction.kind === "bow") duration = 0.9;
+      else if (this.reaction.kind === "nod") duration = 1.1;
+
       const envelope = Math.sin(Math.PI * Math.min(age / duration, 1));
 
       if (age >= duration) {
         this.reaction = null;
         this.setStatus(this._listening ? "Listening..." : "Ready to chat");
+      } else if (this.reaction.kind === "bow") {
+        // Polite, respectful acknowledgement nod / bow ("sir bowing" gesture)
+        if (this.head && !this.reduced) {
+          this.head.rotation.x = 0.22 * envelope;
+          this.head.rotation.z = 0.02 * envelope;
+        }
+        if (this.model && !this.reduced) {
+          this.model.rotation.x = 0.06 * envelope;
+        }
+        this._armRTarget = 0.34 + 0.12 * envelope;
+        this._armLTarget = -0.34 - 0.12 * envelope;
+      } else if (this.reaction.kind === "nod") {
+        // Affirmative active listening double-nod ("hmmhuu / uh-huh" gesture)
+        const doubleNod = Math.sin(age * 12.0) * envelope * 0.14;
+        if (this.head && !this.reduced) {
+          this.head.rotation.x = 0.06 + doubleNod;
+          this.head.rotation.z = Math.sin(age * 5.0) * 0.03 * envelope;
+        }
       } else if (this.reaction.kind === "wink") {
         if (this.eyes && this.eyes[1] && this.eyes[1].userData?.restScale) {
           this.eyes[1].scale.y =

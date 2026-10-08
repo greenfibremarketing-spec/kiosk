@@ -278,19 +278,33 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
           );
         }
 
-        setSignals({
-          present: true,
-          attention,
-          mood: currentMood,
-          moodScore: Math.round(dominantScore * 100),
-          smile: Math.round(smileAvg * 100) / 100,
-          sad: Math.round(sadAvg * 100) / 100,
-          confused: Math.round(confusedAvg * 100) / 100,
-          surprised: Math.round(surprisedAvg * 100) / 100,
-          jawOpen: Math.round(jawOpenScore * 100) / 100,
-          speaking: isSpeakingNow,
-          silenceSec: Math.round(silenceSecRef.current),
-          dwellMs: dwell,
+        setSignals((prev) => {
+          const same =
+            prev.present === true &&
+            prev.attention === attention &&
+            prev.mood === currentMood &&
+            prev.speaking === isSpeakingNow &&
+            Math.abs(prev.smile - smileAvg) < 0.08 &&
+            Math.abs(prev.confused - confusedAvg) < 0.08 &&
+            Math.abs(prev.jawOpen - jawOpenScore) < 0.08 &&
+            Math.abs(prev.silenceSec - Math.round(silenceSecRef.current)) < 1;
+
+          if (same) return prev; // Prevent unnecessary React re-render
+
+          return {
+            present: true,
+            attention,
+            mood: currentMood,
+            moodScore: Math.round(dominantScore * 100),
+            smile: Math.round(smileAvg * 100) / 100,
+            sad: Math.round(sadAvg * 100) / 100,
+            confused: Math.round(confusedAvg * 100) / 100,
+            surprised: Math.round(surprisedAvg * 100) / 100,
+            jawOpen: Math.round(jawOpenScore * 100) / 100,
+            speaking: isSpeakingNow,
+            silenceSec: Math.round(silenceSecRef.current),
+            dwellMs: dwell,
+          };
         });
       } catch (err) {
         console.warn("FaceLandmarker detection notice:", err);
