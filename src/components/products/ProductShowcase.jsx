@@ -2,7 +2,6 @@
 import { useState } from "react";
 import CategoryTabs from "./CategoryTabs";
 import ProductCard from "./ProductCard";
-import ProductDetailModal from "./ProductDetailModal";
 import RightNavbar from "@/components/navigation/RightNavbar";
 import PremiumSidebar from "@/components/navigation/PremiumSidebar";
 import { CATEGORIES } from "@/data/products";
@@ -13,7 +12,6 @@ export default function ProductShowcase({
   products = [],
   onCategory,
   onSelect,
-  onEnquire,
 }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const currentCategory = CATEGORIES.find((c) => c.id === category);
@@ -38,7 +36,7 @@ export default function ProductShowcase({
         totalProducts={products?.length || 8}
       />
 
-      {/* ── All Products Showcase Catalog Page (Restored Like Before) ── */}
+      {/* ── All Products Showcase Catalog Page ── */}
       <section className="showcase" aria-label="Product Catalog">
         {/* Top Header & Counter Bar */}
         <header className="showcase__header">
@@ -71,15 +69,6 @@ export default function ProductShowcase({
           </div>
         </div>
       </section>
-
-      {/* ── Product Detail Modal (Single Kiosk Price & Specs) ── */}
-      {product && (
-        <ProductDetailModal
-          product={product}
-          onClose={() => onSelect?.(null)}
-          onEnquire={onEnquire}
-        />
-      )}
     </div>
   );
 }
