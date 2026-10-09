@@ -20,7 +20,7 @@ class SpeechService {
 
     const psScript = `
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$src = @"
+$src = @'
 using System;
 using System.Globalization;
 using System.Speech.Recognition;
@@ -101,20 +101,24 @@ public class SpeechWorker {
         return s.Replace("\\\\", "\\\\\\\\").Replace("\\\"", "\\\\\\\"").Replace("\\r", "").Replace("\\n", " ");
     }
 }
-"@
+'@
 
-Add-Type -TypeDefinition $src -ReferencedAssemblies "System.Speech"
-$worker = New-Object SpeechWorker
-$worker.Start()
+Add-Type -AssemblyName System.Speech -ErrorAction SilentlyContinue
+Add-Type -TypeDefinition $src -ReferencedAssemblies "System.Speech" -ErrorAction SilentlyContinue
 
-while ($true) {
-    $line = [Console]::In.ReadLine()
-    if ($line -eq $null -or $line -eq "quit") {
-        break
+if (([System.Management.Automation.PSTypeName]'SpeechWorker').Type) {
+    $worker = New-Object SpeechWorker
+    $worker.Start()
+
+    while ($true) {
+        $line = [Console]::In.ReadLine()
+        if ($line -eq $null -or $line -eq "quit") {
+            break
+        }
     }
-}
 
-$worker.Stop()
+    $worker.Stop()
+}
 `;
 
     try {

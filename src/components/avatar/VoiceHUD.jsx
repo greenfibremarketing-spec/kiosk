@@ -2,11 +2,11 @@
 
 /**
  * VoiceHUD.jsx
- * Visual status of the kiosk's always-on voice interface:
+ * Clean, minimal Voice Status Pill for GreenFibre Kiosk:
  *   - SPEAKING: Avatar is talking (interrupable anytime)
- *   - LISTENING: User is speaking (pulsing green + bouncing equalizer)
+ *   - LISTENING: User is speaking (pulsing emerald + bouncing equalizer)
  *   - THINKING: AI processing response
- *   - ATTENTIVE / IDLE: Mic is Online & Ready (live green beacon)
+ *   - ATTENTIVE / IDLE: Mic is Online & Ready (live emerald pulse ring)
  *   - ERROR: Hardware/permission issue
  */
 export default function VoiceHUD({
@@ -26,58 +26,45 @@ export default function VoiceHUD({
   const isOnline    = !isError && (convState === "ATTENTIVE" || convState === "IDLE");
 
   // Dynamic visual parameters
-  let icon = "🎙️";
-  let title = "Microphone Online & Ready";
-  let subtitle = "Speak naturally — Greenie is ready to help";
-  let barBg = "rgba(10, 28, 18, 0.88)";
+  let title = "Microphone Ready";
+  let barBg = "rgba(10, 26, 16, 0.92)";
   let borderStyle = "1.5px solid rgba(34, 197, 94, 0.35)";
-  let orbShadow = "0 0 14px rgba(34, 197, 94, 0.4)";
+  let orbShadow = "0 0 16px rgba(34, 197, 94, 0.35)";
 
   if (isError) {
-    icon = "⚠️";
     title = "Microphone Unavailable";
-    subtitle = String(micError);
-    barBg = "rgba(40, 10, 10, 0.9)";
-    borderStyle = "1.5px solid rgba(239, 68, 68, 0.5)";
-    orbShadow = "0 0 14px rgba(239, 68, 68, 0.4)";
+    barBg = "rgba(36, 10, 10, 0.94)";
+    borderStyle = "1.5px solid rgba(239, 68, 68, 0.6)";
+    orbShadow = "0 0 16px rgba(239, 68, 68, 0.4)";
   } else if (isSpeaking) {
-    icon = "🔊";
     title = "Greenie is speaking...";
-    subtitle = "Speak anytime to interrupt";
-    barBg = "rgba(12, 32, 22, 0.92)";
-    borderStyle = "1.5px solid rgba(16, 185, 129, 0.45)";
-    orbShadow = "0 0 16px rgba(16, 185, 129, 0.4)";
+    barBg = "rgba(10, 28, 18, 0.94)";
+    borderStyle = "1.5px solid rgba(16, 185, 129, 0.55)";
+    orbShadow = "0 0 18px rgba(16, 185, 129, 0.45)";
   } else if (isListening) {
-    icon = "🎙️";
     title = "Listening to you...";
-    subtitle = "Streaming your voice to Greenie";
-    barBg = "rgba(0, 42, 18, 0.95)";
-    borderStyle = "2px solid #00A63E";
-    orbShadow = "0 0 24px rgba(0, 166, 62, 0.6)";
+    barBg = "rgba(0, 36, 16, 0.96)";
+    borderStyle = "2px solid #22c55e";
+    orbShadow = "0 0 24px rgba(34, 197, 94, 0.6)";
   } else if (isThinking) {
-    icon = "✨";
     title = "Thinking...";
-    subtitle = "Formulating recommendations...";
-    barBg = "rgba(28, 26, 10, 0.9)";
-    borderStyle = "1.5px solid rgba(234, 179, 8, 0.45)";
-    orbShadow = "0 0 16px rgba(234, 179, 8, 0.35)";
+    barBg = "rgba(28, 24, 8, 0.94)";
+    borderStyle = "1.5px solid rgba(234, 179, 8, 0.55)";
+    orbShadow = "0 0 18px rgba(234, 179, 8, 0.4)";
   }
 
   return (
     <div
       className="voice-hud-container"
       style={{
-        position: "absolute",
-        bottom: 24,
-        left: 20,
-        right: 20,
-        zIndex: 25,
+        width: "100%",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: "10px",
+        gap: "8px",
         pointerEvents: "auto",
         userSelect: "none",
+        zIndex: 25,
       }}
     >
       {/* Live Transcript Bubble (shows words as the user speaks) */}
@@ -85,51 +72,66 @@ export default function VoiceHUD({
         <div
           className="live-transcript-bubble"
           style={{
-            background: "rgba(8, 24, 14, 0.94)",
-            border: "1.5px solid rgba(34, 197, 94, 0.6)",
-            borderRadius: "20px",
-            padding: "8px 20px",
+            background: "rgba(6, 24, 14, 0.95)",
+            border: "1.5px solid rgba(74, 222, 128, 0.7)",
+            borderRadius: "18px",
+            padding: "8px 18px",
             color: "#ffffff",
-            fontSize: "14px",
+            fontSize: "13.5px",
             fontWeight: "600",
-            maxWidth: "92%",
+            maxWidth: "94%",
             textAlign: "center",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-            backdropFilter: "blur(14px)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4), 0 0 16px rgba(34, 197, 94, 0.3)",
+            backdropFilter: "blur(16px)",
             animation: "fadeIn 0.2s ease-out",
           }}
         >
-          <span style={{ color: "#4ade80", marginRight: "6px" }}>🗣️ You:</span>
-          "{liveTranscript}"
+          <span style={{ color: "#4ade80", marginRight: "6px", fontWeight: "700" }}>🗣️ You:</span>
+          <span style={{ color: "#fef08a" }}>"{liveTranscript}"</span>
         </div>
       )}
 
-      {/* Main Voice Control Bar */}
+      {/* Main Voice Control Bar - Single-line, Clean, Uncluttered */}
       <div
         className="voice-control-bar"
         onClick={onToggleMic}
         role="button"
         tabIndex={0}
         style={{
-          display: "flex",
+          display: "inline-flex",
           alignItems: "center",
-          gap: "14px",
+          gap: "10px",
           background: barBg,
           border: borderStyle,
           borderRadius: "999px",
-          padding: "10px 22px",
-          boxShadow: orbShadow + ", 0 8px 28px rgba(0,0,0,0.4)",
-          backdropFilter: "blur(16px)",
+          padding: "8px 18px 8px 10px",
+          boxShadow: orbShadow + ", 0 8px 24px rgba(0,0,0,0.4)",
+          backdropFilter: "blur(18px)",
           cursor: "pointer",
           transition: "all 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
+          maxWidth: "100%",
         }}
       >
-        {/* Animated Microphone Orb with Live Status Indicator */}
-        <div style={{ position: "relative" }}>
+        {/* Animated Microphone Orb with Clean Glowing Aura */}
+        <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {/* Outer Pulse Ring for Online & Listening */}
+          {(isListening || isOnline) && (
+            <span
+              style={{
+                position: "absolute",
+                inset: "-4px",
+                borderRadius: "50%",
+                background: isListening ? "rgba(34, 197, 94, 0.45)" : "rgba(34, 197, 94, 0.2)",
+                animation: isListening ? "pulseListenRing 1.2s ease-in-out infinite" : "pulseOnlineRing 3s ease-in-out infinite",
+                pointerEvents: "none",
+              }}
+            />
+          )}
+
           <div
             style={{
-              width: "38px",
-              height: "38px",
+              width: "34px",
+              height: "34px",
               borderRadius: "50%",
               background: isListening
                 ? "linear-gradient(135deg, #00A63E, #22c55e)"
@@ -143,79 +145,95 @@ export default function VoiceHUD({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: "19px",
-              boxShadow: orbShadow,
-              transform: isListening ? "scale(1.1)" : "scale(1)",
-              transition: "all 0.2s ease",
-            }}
-          >
-            {icon}
-          </div>
-
-          {/* Online green pulse dot */}
-          {isOnline && (
-            <span
-              style={{
-                position: "absolute",
-                top: "-2px",
-                right: "-2px",
-                width: "11px",
-                height: "11px",
-                borderRadius: "50%",
-                background: "#22c55e",
-                border: "2px solid #08160e",
-                boxShadow: "0 0 8px #22c55e",
-              }}
-            />
-          )}
-        </div>
-
-        {/* Status Text & Soundwave Animation */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-          <div
-            style={{
               color: "#ffffff",
-              fontSize: "14px",
-              fontWeight: "700",
-              letterSpacing: "0.2px",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
+              boxShadow: orbShadow,
+              transform: isListening ? "scale(1.06)" : "scale(1)",
+              transition: "transform 0.2s ease, background 0.3s ease",
             }}
           >
-            <span>{title}</span>
-
-            {/* Equalizer Wave while Listening or Speaking */}
-            {(isListening || isSpeaking) && (
-              <span
-                style={{
-                  display: "inline-flex",
-                  gap: "3px",
-                  alignItems: "center",
-                  height: "14px",
-                }}
-              >
-                <span className="equalizer-bar eq1" />
-                <span className="equalizer-bar eq2" />
-                <span className="equalizer-bar eq3" />
-                <span className="equalizer-bar eq4" />
-              </span>
+            {isError ? (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
+            ) : isSpeaking ? (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" fillOpacity="0.2" />
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+              </svg>
+            ) : isThinking ? (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v3m0 12v3M5 5l2.2 2.2m9.6 9.6L19 19M3 12h3m12 0h3M5 19l2.2-2.2m9.6-9.6L19 5" />
+              </svg>
+            ) : (
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" fill="currentColor" fillOpacity="0.2" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="22" />
+                <line x1="8" y1="22" x2="16" y2="22" />
+              </svg>
             )}
           </div>
+        </div>
 
-          <div
-            style={{
-              color: "rgba(255, 255, 255, 0.72)",
-              fontSize: "11.5px",
-              fontWeight: "500",
-            }}
-          >
-            {subtitle}
-          </div>
+        {/* Title & Live Soundwave Animation (Clean Single-Line) */}
+        <div
+          style={{
+            color: "#ffffff",
+            fontSize: "13.5px",
+            fontWeight: "700",
+            letterSpacing: "0.2px",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            lineHeight: 1,
+            whiteSpace: "nowrap",
+          }}
+        >
+          <span>{title}</span>
+
+          {/* Equalizer Wave while Listening or Speaking */}
+          {(isListening || isSpeaking) && (
+            <span
+              style={{
+                display: "inline-flex",
+                gap: "2.5px",
+                alignItems: "center",
+                height: "14px",
+              }}
+            >
+              <span className="equalizer-bar eq1" />
+              <span className="equalizer-bar eq2" />
+              <span className="equalizer-bar eq3" />
+              <span className="equalizer-bar eq4" />
+            </span>
+          )}
         </div>
       </div>
 
       <style jsx>{`
+        @keyframes pulseListenRing {
+          0%, 100% {
+            transform: scale(1);
+            opacity: 0.85;
+          }
+          50% {
+            transform: scale(1.35);
+            opacity: 0.15;
+          }
+        }
+        @keyframes pulseOnlineRing {
+          0%, 100% {
+            transform: scale(1);
+            opacity: 0.5;
+          }
+          50% {
+            transform: scale(1.22);
+            opacity: 0.1;
+          }
+        }
         .equalizer-bar {
           display: inline-block;
           width: 3px;
@@ -229,22 +247,22 @@ export default function VoiceHUD({
         }
         .eq2 {
           animation-delay: 0.2s;
-          height: 16px;
+          height: 15px;
         }
         .eq3 {
           animation-delay: 0.4s;
-          height: 10px;
+          height: 9px;
         }
         .eq4 {
           animation-delay: 0.6s;
-          height: 14px;
+          height: 13px;
         }
         @keyframes eqBounce {
           0% {
-            transform: scaleY(0.35);
+            transform: scaleY(0.3);
           }
           100% {
-            transform: scaleY(1.35);
+            transform: scaleY(1.3);
           }
         }
       `}</style>

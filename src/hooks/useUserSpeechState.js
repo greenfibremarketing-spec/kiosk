@@ -19,9 +19,9 @@
 import { useEffect, useRef, useState } from "react";
 import speechConfig from "@/lib/speechConfig";
 
-const TICK_MS = 60; // internal poll interval
+const TICK_MS = 25; // internal poll interval (40Hz)
 
-export function useUserSpeechState({ vadSpeech = false, audioLevel = 0, face = {} } = {}) {
+export function useUserSpeechState({ vadSpeech = false, audioLevel = 0, face = {}, isSpeaking = false } = {}) {
   const [userSpeaking, setUserSpeaking] = useState(false);
   const [evidence, setEvidence]         = useState("none");
   const [speakingForMs, setSpeakingForMs] = useState(0);
@@ -40,21 +40,27 @@ export function useUserSpeechState({ vadSpeech = false, audioLevel = 0, face = {
   const vadRef          = useRef(vadSpeech);
   const levelRef        = useRef(audioLevel);
   const faceRef         = useRef(face);
+  const lastAvatarTalkRef = useRef(0);
+  const isSpeakingRef   = useRef(isSpeaking);
   const userSpeakingRef = useRef(false);
   const evidenceRef     = useRef("none");
 
-  vadRef.current   = vadSpeech;
-  levelRef.current = audioLevel;
-  faceRef.current  = face;
+  vadRef.current        = vadSpeech;
+  levelRef.current      = audioLevel;
+  faceRef.current       = face;
+  isSpeakingRef.current = isSpeaking;
 
   useEffect(() => {
     clearInterval(tickRef.current);
 
     tickRef.current = setInterval(() => {
-      const now = Date.now();
-      const vad = vadRef.current;
-      const lvl = levelRef.current;
-      const f   = faceRef.current;
+      const now        = Date.now();
+      const vad        = vadRef.current;
+      const lvl        = levelRef.current;
+      const f          = faceRef.current;
+      const avatarTalk = isSpeakingRef.current;
+
+      if (avatarTalk) lastAvatarTalkRef.current = now;
 
       // ── 1. Jaw variance over rolling window ────────────────────────────
       const jawVal = f.jawOpen ?? 0;
@@ -80,11 +86,16 @@ export function useUserSpeechState({ vadSpeech = false, audioLevel = 0, face = {
         !!f.lookingAtScreen &&
         faceNearEnough;
 
-      // ── 3. Determine evidence source ──────────────────────────────────
+      // ── 3. Determine evidence source (Gated by Avatar Speaking to prevent self-hearing) ──
       let ev = "none";
-      if (vad && faceSpeaking) ev = "both";
-      else if (vad)           ev = "audio";
-      else if (faceSpeaking)  ev = "face";
+      if (vad && faceSpeaking) {
+        ev = "both";
+      } else if (faceSpeaking && !avatarTalk) {
+        ev = "face";
+      } else if (vad && !avatarTalk && now - lastAvatarTalkRef.current > 500) {
+        // Pure audio VAD only counts as user speech when avatar is SILENT and speaker tail has settled
+        ev = "audio";
+      }
 
       const hasEvidence = ev !== "none";
 

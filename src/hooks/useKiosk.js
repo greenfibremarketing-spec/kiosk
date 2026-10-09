@@ -18,7 +18,7 @@ import { PRODUCTS } from "@/data/products";
 import { GREETING, describeProduct, productsIn, replyAsync } from "@/lib/agent";
 import { usePresenceDetection } from "@/lib/presence/usePresenceDetection";
 import { useUserSignals } from "@/hooks/useUserSignals";
-import { useAudioCapture } from "@/hooks/useAudioCapture";
+import { useMic } from "@/hooks/useMic";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
 import { useSpeech } from "@/hooks/useSpeech";
 import speechConfig from "@/lib/speechConfig";
@@ -121,18 +121,73 @@ export function useKiosk() {
     faceSizeRatio:  (presence.debugStats?.facePx ?? 0) / 640,
   };
 
-  // ── Audio capture (always open while engaged) ─────────────────────────────
-  const { audioLevel, vadSpeech, micError, streamRef } = useAudioCapture({ isEngaged });
+  // ── Mic + single AudioWorklet PCM stream ──────────────────────────────────
+  const mic = useMic({ isEngaged });
+  const { vadSpeech, audioLevel, micError } = mic;
 
-  // ── Fused speech state ────────────────────────────────────────────────────
+  // ── Avatar speech / active status ─────────────────────────────────────────
+  const isAvatarActive = speaking || convState === S.SPEAKING || convState === S.THINKING;
+  const isAvatarActiveRef = useRef(isAvatarActive);
+  isAvatarActiveRef.current = isAvatarActive;
+
+  // ── Fused speech state (gated by isAvatarActive to prevent avatar self-hearing) ──
   const { userSpeaking, evidence, speakingForMs, silentForMs } =
-    useUserSpeechState({ vadSpeech, audioLevel, face });
+    useUserSpeechState({ vadSpeech, audioLevel, face, isSpeaking: isAvatarActive });
 
   const userSpeakingRef = useRef(userSpeaking);
   userSpeakingRef.current = userSpeaking;
 
+  // ── Audio Gating & Cooldown to prevent avatar hearing itself ──────────────
+  const COOLDOWN_MS = 800;
+  const ECHO_WINDOW_MS = 4000;
+  const BARGE_MIN_LEVEL = 0.06;
+
+  const bargeUntilRef = useRef(0); // Timestamp, expires by itself
+  const avatarEndedAtRef = useRef(0);
+  const avatarActiveNowRef = useRef(false);
+
+  useEffect(() => {
+    avatarActiveNowRef.current = isAvatarActive;
+    if (isAvatarActive) {
+      // A new avatar turn always starts with the gate closed
+      bargeUntilRef.current = 0;
+    } else {
+      avatarEndedAtRef.current = Date.now();
+    }
+  }, [isAvatarActive]);
+
+  // Read by useSpeech on every audio chunk (refs, so never stale)
+  const getGate = useCallback(() => {
+    const now = Date.now();
+    const inCooldown = now - avatarEndedAtRef.current < COOLDOWN_MS;
+    return {
+      blocked: avatarActiveNowRef.current || inCooldown,
+      bargeIn: now < bargeUntilRef.current,
+    };
+  }, []);
+
+  // Stronger echo filter as backup
+  const lastAvatarTextRef = useRef("");
+  useEffect(() => {
+    if (caption) lastAvatarTextRef.current = caption;
+  }, [caption]);
+
+  const isEchoOfAvatar = useCallback((text) => {
+    const sinceEnd = Date.now() - avatarEndedAtRef.current;
+    const recent = avatarActiveNowRef.current || sinceEnd < ECHO_WINDOW_MS;
+    const cap = lastAvatarTextRef.current;
+    if (!recent || !cap || !text) return false;
+
+    const norm = (s) =>
+      s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2);
+    const capWords = new Set(norm(cap));
+    const words = norm(text);
+    if (!words.length) return false;
+    return words.filter((w) => capWords.has(w)).length / words.length >= 0.5;
+  }, []);
+
   // ── Avatar control helpers (set from AvatarPanel via callbacks) ────────────
-  const stageRef = useRef(null); // will be set by AvatarPanel
+  const stageRef = useRef(null);
   const setStageRef = useCallback((ref) => { stageRef.current = ref; }, []);
 
   // ── Interrupt avatar speech ────────────────────────────────────────────────
@@ -143,11 +198,12 @@ export function useKiosk() {
     }
     stageRef.current?.stop();
     setSpeaking(false);
-  }, []);
+    setConv(S.LISTENING);
+  }, [setConv]);
 
   // ── Say something (queues new caption + increments speechId) ─────────────
   const say = useCallback((text) => {
-    if (userSpeakingRef.current) return; // never speak over the user
+    if (userSpeakingRef.current) return;
     setCaption(text);
     setSpeechId((p) => p + 1);
   }, []);
@@ -191,161 +247,83 @@ export function useKiosk() {
         say(data.message);
       }
     } catch (err) {
-      if (err?.name === "AbortError") return; // user interrupted
+      if (err?.name === "AbortError") return; // User interrupted
       console.error("[Kiosk] AI backend error:", err);
       setConv(S.ATTENTIVE);
     }
   }, [say, setConv]);
 
-  // ── End-of-turn logic ─────────────────────────────────────────────────────
-  const finaliseAndSend = useCallback(() => {
+  // ── End-of-turn logic (used directly or as safety fallback) ───────────────
+  const finaliseAndSend = useCallback((explicitText) => {
     clearTimeout(eotTimerRef.current);
-    const text = pendingTranscriptRef.current.trim();
+    const text = (typeof explicitText === "string" ? explicitText : pendingTranscriptRef.current).trim();
     if (text) {
       setLastUserSpeech(text);
     }
     pendingTranscriptRef.current = "";
     setLiveTranscript("");
 
-    // If no text was transcribed, return silently to ATTENTIVE without nagging
     if (!text) {
-      setConv(S.ATTENTIVE);
+      if (convStateRef.current === S.LISTENING) {
+        setConv(S.ATTENTIVE);
+      }
       return;
     }
 
     failureCountRef.current = 0;
     sendTranscript(text, signals);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendTranscript, setConv, signals]);
 
   const finaliseAndSendRef = useRef(finaliseAndSend);
   finaliseAndSendRef.current = finaliseAndSend;
 
-  // ── React to userSpeaking / vadSpeech changes (Instant Interruption) ──────
-  useEffect(() => {
-    if (!isEngaged) return;
+  // Transcript hypotheses must NEVER interrupt on their own anymore
+  const handleHypothesis = useCallback(() => {}, []);
 
-    if (userSpeaking || vadSpeech) {
-      // ① Interrupt avatar immediately if it is speaking
-      if (convStateRef.current === S.SPEAKING) {
-        interruptAvatar();
-      }
-
-      // ② Cancel any pending end-of-turn countdown
-      clearTimeout(eotTimerRef.current);
-
-      // ③ Enter LISTENING
-      setConv(S.LISTENING);
-      setListening(true);
-    } else {
-      setListening(false);
-
-      if (convStateRef.current === S.LISTENING) {
-        // Start end-of-turn countdown
-        clearTimeout(eotTimerRef.current);
-        eotTimerRef.current = setTimeout(finaliseAndSend, speechConfig.endOfTurnSilenceMs);
-      }
+  // Deepgram final transcript (Deepgram ends the turn)
+  const handleFinal = useCallback((text) => {
+    if (isEchoOfAvatar(text)) return; // Last line of defence
+    const g = getGate();
+    if (g.blocked && !g.bargeIn) return;
+    clearTimeout(eotTimerRef.current);
+    if (text && text.trim()) {
+      finaliseAndSend(text.trim());
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userSpeaking, vadSpeech, isEngaged]);
+  }, [getGate, isEchoOfAvatar, finaliseAndSend]);
 
-  // ── Deepgram Nova-3 Real-time STT (Primary High-Accuracy Engine) ───────────
-  const handleDeepgramTranscript = useCallback((text) => {
-    if (!text || !text.trim()) return;
-    const clean = text.trim();
-    console.log("[Deepgram STT Final Transcript]:", clean);
-    setLastUserSpeech(clean);
-    setLiveTranscript("");
-    pendingTranscriptRef.current = "";
-    failureCountRef.current = 0;
-    sendTranscript(clean, signals);
-  }, [sendTranscript, signals]);
-
-  const handleDeepgramHypo = useCallback((text) => {
-    if (!text || !text.trim()) return;
-    if (convStateRef.current === S.SPEAKING) {
-      interruptAvatar();
-      setConv(S.LISTENING);
-    }
-    setLiveTranscript(text);
-  }, [interruptAvatar, setConv]);
-
+  // ── Single continuous Deepgram Nova-3 STT ─────────────────────────────────
   const deepgram = useSpeech({
-    onTranscript: handleDeepgramTranscript,
-    onHypothesis: handleDeepgramHypo,
+    mic: { subscribePcm: mic.subscribePcm, getRecent: mic.getRecent },
     isEngaged,
-    speaking: speaking,
+    onTranscript: handleFinal,
+    onHypothesis: handleHypothesis,
+    shouldDrop: isEchoOfAvatar,
+    getGate,
   });
 
-  // ── Native Windows STT (via Electron IPC bridge as offline fallback) ─────
+  // ── UI state + face/jaw barge-in (only real user speech interrupts) ────────
   useEffect(() => {
-    if (!isEngaged || typeof window === "undefined" || !window.kiosk?.onSpeechHypothesis) {
-      return;
+    if (!isEngaged) return;
+    const gateBlocked = getGate().blocked;
+    const talking = userSpeaking || (vadSpeech && !gateBlocked);
+    setListening(talking && !isAvatarActive);
+
+    if (talking) {
+      clearTimeout(eotTimerRef.current);
+      if (isAvatarActive) {
+        const realUser = userSpeaking && evidence === "both" && audioLevel > BARGE_MIN_LEVEL;
+        if (realUser) {
+          bargeUntilRef.current = Date.now() + 2500; // Gate opens for 2.5s only
+          interruptAvatar();
+        }
+      } else if (convStateRef.current !== S.LISTENING) {
+        setConv(S.LISTENING);
+      }
+    } else if (convStateRef.current === S.LISTENING) {
+      clearTimeout(eotTimerRef.current);
+      eotTimerRef.current = setTimeout(finaliseAndSend, speechConfig.endOfTurnSilenceMs);
     }
-
-    console.log("[STT] Native Windows Speech Bridge active");
-
-    const unHypo = window.kiosk.onSpeechHypothesis((text) => {
-      if (text && text.trim()) {
-        const clean = text.trim();
-        // If avatar is speaking when user starts speaking, interrupt immediately
-        if (convStateRef.current === S.SPEAKING) {
-          interruptAvatar();
-          setConv(S.LISTENING);
-          pendingTranscriptRef.current = "";
-        }
-        
-        // Show the streaming hypothesis live on screen
-        const currentPending = pendingTranscriptRef.current.trim();
-        if (currentPending && !clean.toLowerCase().startsWith(currentPending.toLowerCase())) {
-          setLiveTranscript(`${currentPending} ${clean}`);
-        } else {
-          setLiveTranscript(clean);
-        }
-
-        // Keep turn open while hypothesis is actively streaming
-        clearTimeout(eotTimerRef.current);
-      }
-    });
-
-    const unFinal = window.kiosk.onSpeechFinal((text) => {
-      if (text && text.trim()) {
-        if (convStateRef.current === S.SPEAKING) {
-          interruptAvatar();
-          setConv(S.LISTENING);
-        }
-        console.log("[STT Native Final]:", text);
-        
-        const incoming = text.trim();
-        const current = pendingTranscriptRef.current.trim();
-        
-        if (!current) {
-          pendingTranscriptRef.current = incoming;
-        } else if (incoming.toLowerCase() === current.toLowerCase()) {
-          pendingTranscriptRef.current = current;
-        } else if (incoming.toLowerCase().startsWith(current.toLowerCase())) {
-          pendingTranscriptRef.current = incoming;
-        } else if (current.toLowerCase().endsWith(incoming.toLowerCase())) {
-          pendingTranscriptRef.current = current;
-        } else {
-          pendingTranscriptRef.current = `${current} ${incoming}`;
-        }
-        
-        setLiveTranscript(pendingTranscriptRef.current);
-
-        // Debounce end-of-turn: wait 900ms of silence so the user can finish their complete sentence
-        clearTimeout(eotTimerRef.current);
-        eotTimerRef.current = setTimeout(() => {
-          finaliseAndSendRef.current?.();
-        }, speechConfig.endOfTurnSilenceMs || 900);
-      }
-    });
-
-    return () => {
-      unHypo?.();
-      unFinal?.();
-    };
-  }, [isEngaged, interruptAvatar, setConv]);
+  }, [userSpeaking, vadSpeech, evidence, audioLevel, isEngaged, isAvatarActive, getGate, interruptAvatar, setConv, finaliseAndSend]);
 
   // ── Web Speech API — browser fallback (feeds pendingTranscriptRef) ────────
   useEffect(() => {
@@ -422,12 +400,9 @@ export function useKiosk() {
     };
   }, [isEngaged]);
 
-  // ── Avatar speaking → update conv state & mute STT ───────────────────────
+  // ── Avatar speaking → update conv state (keep STT active for instant interruption) ────
   const handleSpeakingChange = useCallback((isSpeaking) => {
     setSpeaking(isSpeaking);
-    try {
-      window.kiosk?.setSpeechMuted?.(isSpeaking);
-    } catch (_) {}
     if (!isSpeaking && convStateRef.current === S.SPEAKING) {
       setConv(S.ATTENTIVE);
     }

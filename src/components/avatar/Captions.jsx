@@ -69,12 +69,7 @@ export default function Captions({ text, speaking, status, charIndex = 0 }) {
 
   // Real-time synchronization with speech boundary charIndex
   useEffect(() => {
-    if (!speaking || chunks.length <= 1) {
-      if (!speaking) {
-        // Keep final chunk or reset
-      }
-      return;
-    }
+    if (!speaking || chunks.length <= 1) return;
 
     // Match the current speech boundary character position to the right subtitle card
     const activeIdx = chunks.findIndex(
@@ -104,26 +99,21 @@ export default function Captions({ text, speaking, status, charIndex = 0 }) {
   }, [speaking, chunkIndex, chunks, charIndex]);
 
   const activeChunk = chunks[Math.min(chunkIndex, chunks.length - 1)];
-  const displayText = activeChunk?.text || status || "Ready to chat";
+  const displayText = activeChunk?.text || (speaking ? status : text ? text.slice(0, 80) : "");
 
   if (!displayText) return null;
 
   return (
     <div
-      className={`subs-bar ${speaking ? "subs-bar--speaking" : ""}`}
+      className={`subs-bar ${speaking ? "subs-bar--speaking" : "subs-bar--idle"}`}
       aria-live="polite"
       role="region"
       aria-label="Speech Subtitles"
     >
-      <div className="subs-badge">
-        <span>CC</span>
-      </div>
-
       <div className="subs-text-wrap">
         <div className="subs-header">
-          <span className="subs-speaker">Greenie</span>
           {speaking && (
-            <span className="subs-wave-mini">
+            <span className="subs-wave-mini" aria-hidden="true">
               <span className="wave-dot" />
               <span className="wave-dot" />
               <span className="wave-dot" />

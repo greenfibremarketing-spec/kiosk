@@ -17,7 +17,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import speechConfig from "@/lib/speechConfig";
 
-const ANALYSE_INTERVAL_MS = 60; // how often we poll the AnalyserNode
+const ANALYSE_INTERVAL_MS = 25; // ultra-fast RMS / VAD sampling loop
 
 export function useAudioCapture({ isEngaged = false } = {}) {
   const [audioLevel, setAudioLevel] = useState(0);
@@ -99,7 +99,7 @@ export function useAudioCapture({ isEngaged = false } = {}) {
         // Analyser for RMS / VAD
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.6;
+        analyser.smoothingTimeConstant = 0.1;
         analyserRef.current = analyser;
         bufDataRef.current = new Uint8Array(analyser.frequencyBinCount);
 

@@ -1,199 +1,194 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const DEEPGRAM_DEFAULT_KEY = "8ede28576db8d02d8ab30f8ec9a0c5ac2be3986f";
+const WS_URL =
+  "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-IN" +
+  "&encoding=linear16&sample_rate=16000&channels=1" +
+  "&smart_format=true&interim_results=true" +
+  "&endpointing=300&utterance_end_ms=1000";
 
-const URL =
-  "wss://api.deepgram.com/v1/listen" +
-  "?model=nova-3&language=en-IN&smart_format=true" +
-  "&interim_results=true&endpointing=800&utterance_end_ms=1500";
-
-export function useSpeech({ onTranscript, onHypothesis, isEngaged = false, speaking = false } = {}) {
+export function useSpeech({
+  mic,                 // { subscribePcm, getRecent } from useMic
+  isEngaged = false,
+  onTranscript,        // final text of a turn
+  onHypothesis,        // live interim text
+  shouldDrop,          // (text) => true if it is the avatar's own echo
+  getGate,             // () => ({ blocked: boolean, bargeIn: boolean })
+} = {}) {
   const [listening, setListening] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
 
   const wsRef = useRef(null);
-  const recorderRef = useRef(null);
-  const streamRef = useRef(null);
   const wantRef = useRef(false);
   const bufferRef = useRef("");
+  const keepAliveRef = useRef(null);
+  const retryRef = useRef(null);
+  const retryCountRef = useRef(0);
+  const unsubRef = useRef(null);
   const clearTimerRef = useRef(null);
-  const restartTimerRef = useRef(null);
-  const onTranscriptRef = useRef(onTranscript);
-  const onHypothesisRef = useRef(onHypothesis);
+  const connectRef = useRef(null);
 
-  useEffect(() => {
-    onTranscriptRef.current = onTranscript;
-  }, [onTranscript]);
+  const wasOpenRef = useRef(true);
+  const getGateRef = useRef(getGate);
+  getGateRef.current = getGate;
 
-  useEffect(() => {
-    onHypothesisRef.current = onHypothesis;
-  }, [onHypothesis]);
-
-  const cleanup = useCallback(() => {
-    try {
-      if (recorderRef.current && recorderRef.current.state !== "inactive") {
-        recorderRef.current.stop();
-      }
-    } catch (_) {}
-    recorderRef.current = null;
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-
-    const ws = wsRef.current;
-    wsRef.current = null;
-    if (ws) {
-      ws.onclose = null;
-      try {
-        ws.close();
-      } catch (_) {}
-    }
-    bufferRef.current = "";
-    setListening(false);
-  }, []);
+  const cbRef = useRef({});
+  cbRef.current = { onTranscript, onHypothesis, shouldDrop };
+  const micRef = useRef(mic);
+  micRef.current = mic;
 
   const flush = useCallback(() => {
     const text = bufferRef.current.trim();
     bufferRef.current = "";
     if (!text) return;
-    setLiveTranscript(text);
     clearTimeout(clearTimerRef.current);
-    clearTimerRef.current = setTimeout(() => setLiveTranscript(""), 4000);
-    onTranscriptRef.current?.(text);
+    clearTimerRef.current = setTimeout(() => setLiveTranscript(""), 3000);
+    cbRef.current.onTranscript?.(text);
   }, []);
 
-  const stopContinuousListening = useCallback(() => {
-    wantRef.current = false;
-    clearTimeout(restartTimerRef.current);
-    cleanup();
-  }, [cleanup]);
+  const teardownSocket = useCallback(() => {
+    clearInterval(keepAliveRef.current);
+    unsubRef.current?.();
+    unsubRef.current = null;
+    wsRef.current = null;
+    setListening(false);
+  }, []);
 
-  const startContinuousListening = useCallback(async () => {
-    wantRef.current = true;
-    if (wsRef.current) return;
+  const connect = useCallback(async () => {
+    if (!wantRef.current || wsRef.current) return;
 
+    let key;
     try {
-      let key = DEEPGRAM_DEFAULT_KEY;
       if (typeof window !== "undefined") {
         if (window.electronAPI?.getDeepgramKey) {
-          try {
-            const k = await window.electronAPI.getDeepgramKey();
-            if (k) key = k;
-          } catch (_) {}
+          key = await window.electronAPI.getDeepgramKey();
         } else if (window.kiosk?.getDeepgramKey) {
-          try {
-            const k = await window.kiosk.getDeepgramKey();
-            if (k) key = k;
-          } catch (_) {}
+          key = await window.kiosk.getDeepgramKey();
         }
       }
+    } catch (_) {}
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+    if (!key) {
+      console.warn("[STT] No Deepgram key from Electron bridge");
+      return;
+    }
+    if (!wantRef.current || wsRef.current) return;
+
+    const ws = new WebSocket(WS_URL, ["token", key]);
+    ws.binaryType = "arraybuffer";
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      retryCountRef.current = 0;
+      setListening(true);
+
+      unsubRef.current = micRef.current?.subscribePcm?.((b) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const g = getGateRef.current?.() || { blocked: false, bargeIn: false };
+        const open = !g.blocked || g.bargeIn;
+
+        if (!open) { // avatar talking: send NOTHING
+          wasOpenRef.current = false;
+          bufferRef.current = "";
+          return;
+        }
+        if (!wasOpenRef.current && g.bargeIn) {
+          // user cut in: replay only the last ~300 ms (not the avatar's audio)
+          micRef.current?.getRecent?.().slice(-15).forEach((c) => ws.send(c));
+        }
+        wasOpenRef.current = true;
+        ws.send(b);
       });
 
-      if (!wantRef.current || wsRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
+      keepAliveRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "KeepAlive" }));
+        }
+      }, 5000);
+    };
+
+    ws.onmessage = (msg) => {
+      const g = getGateRef.current?.() || { blocked: false, bargeIn: false };
+      if (g.blocked && !g.bargeIn) {
+        bufferRef.current = "";
+        setLiveTranscript("");
         return;
       }
 
-      const ws = new WebSocket(URL, ["token", key]);
-      wsRef.current = ws;
-      streamRef.current = stream;
+      let d;
+      try { d = JSON.parse(msg.data); } catch (_) { return; }
 
-      ws.onopen = () => {
-        setListening(true);
-        console.log("[Deepgram STT] Connected to Nova-3 WebSocket");
+      if (d.type === "UtteranceEnd") { flush(); return; }
+      if (d.type !== "Results") return;
 
-        let mimeType = "audio/webm;codecs=opus";
-        if (typeof MediaRecorder !== "undefined" && !MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = "audio/webm";
-        }
+      const text = d.channel?.alternatives?.[0]?.transcript?.trim();
+      if (!text) return;
 
-        const rec = new MediaRecorder(stream, { mimeType });
-        recorderRef.current = rec;
-        rec.ondataavailable = (e) => {
-          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            ws.send(e.data);
-          }
-        };
-        rec.start(250);
-      };
+      const full = (bufferRef.current + " " + text).trim();
 
-      ws.onmessage = (msg) => {
-        let data;
-        try {
-          data = JSON.parse(msg.data);
-        } catch (_) {
-          return;
-        }
+      if (cbRef.current.shouldDrop?.(full)) { // Avatar hearing itself
+        bufferRef.current = "";
+        setLiveTranscript("");
+        return;
+      }
 
-        if (data.type === "UtteranceEnd") {
-          flush();
-          return;
-        }
-        if (data.type !== "Results") return;
+      setLiveTranscript(full);
+      cbRef.current.onHypothesis?.(full);
 
-        const text = data.channel?.alternatives?.[0]?.transcript?.trim() || "";
-        if (!text) return;
-
-        if (data.is_final) {
-          bufferRef.current += (bufferRef.current ? " " : "") + text;
-          setLiveTranscript(bufferRef.current);
-          onHypothesisRef.current?.(bufferRef.current);
-          if (data.speech_final) {
-            flush();
-          }
-        } else {
-          const live = (bufferRef.current + " " + text).trim();
-          setLiveTranscript(live);
-          onHypothesisRef.current?.(live);
-        }
-      };
-
-      ws.onerror = (e) => console.warn("[Deepgram STT] WebSocket error:", e);
-
-      ws.onclose = () => {
-        cleanup();
-        if (wantRef.current) {
-          restartTimerRef.current = setTimeout(startContinuousListening, 1000);
-        }
-      };
-    } catch (e) {
-      console.warn("[Deepgram STT] Init failed:", e);
-      cleanup();
-    }
-  }, [cleanup, flush]);
-
-  // Listen only while engaged AND the avatar is not talking
-  useEffect(() => {
-    if (isEngaged && !speaking) {
-      startContinuousListening();
-    } else {
-      stopContinuousListening();
-    }
-  }, [isEngaged, speaking, startContinuousListening, stopContinuousListening]);
-
-  useEffect(() => {
-    return () => {
-      clearTimeout(clearTimerRef.current);
-      stopContinuousListening();
+      if (d.is_final) {
+        bufferRef.current = full;
+        if (d.speech_final) flush();
+      }
     };
+
+    ws.onerror = (e) => console.warn("[STT] socket error", e);
+
+    ws.onclose = () => {
+      teardownSocket();
+      if (wantRef.current) {
+        const delay = Math.min(250 * 2 ** retryCountRef.current++, 3000);
+        retryRef.current = setTimeout(() => connectRef.current?.(), delay);
+      }
+    };
+  }, [flush, teardownSocket]);
+  connectRef.current = connect;
+
+  const stopContinuousListening = useCallback(() => {
+    wantRef.current = false;
+    clearTimeout(retryRef.current);
+    const ws = wsRef.current;
+    if (ws) {
+      ws.onclose = null;
+      try {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "CloseStream" }));
+        ws.close();
+      } catch (_) {}
+    }
+    teardownSocket();
+    bufferRef.current = "";
+  }, [teardownSocket]);
+
+  const startContinuousListening = useCallback(() => {
+    wantRef.current = true;
+    connect();
+  }, [connect]);
+
+  useEffect(() => {
+    if (isEngaged) startContinuousListening();
+    else stopContinuousListening();
+  }, [isEngaged, startContinuousListening, stopContinuousListening]);
+
+  useEffect(() => () => {
+    clearTimeout(clearTimerRef.current);
+    stopContinuousListening();
   }, [stopContinuousListening]);
 
   const toggleListening = useCallback(() => {
-    if (listening) {
-      stopContinuousListening();
-    } else {
-      startContinuousListening();
-    }
-  }, [listening, startContinuousListening, stopContinuousListening]);
+    if (wantRef.current) stopContinuousListening();
+    else startContinuousListening();
+  }, [startContinuousListening, stopContinuousListening]);
 
   return {
-    speaking,
     listening,
     liveTranscript,
     toggleListening,

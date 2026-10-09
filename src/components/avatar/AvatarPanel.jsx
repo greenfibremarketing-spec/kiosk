@@ -12,7 +12,6 @@ import GreenieStage from "./GreenieStage";
 import Captions from "@/components/avatar/Captions";
 import DebugOverlay from "@/components/debug/DebugOverlay";
 import LiveSpeechTester from "@/components/debug/LiveSpeechTester";
-import ListeningIndicator from "@/components/avatar/ListeningIndicator";
 import { preferredVoice } from "@/lib/avatar/voice";
 import VoiceHUD from "./VoiceHUD";
 
@@ -60,7 +59,6 @@ export default function AvatarPanel({
   const introTimerRef  = useRef(null);
   const arrivedRef     = useRef(false);
   const lastReactionRef = useRef(0);
-  const nodTimerRef    = useRef(null);
 
   // Forward stageRef to useKiosk so it can interrupt avatar
   const stageCallbackRef = useCallback((node) => {
@@ -154,35 +152,24 @@ export default function AvatarPanel({
       case "LISTENING":
         s.setListening(true);
         s.setExpression?.("listening");
-        // Slow nod every 2–3 s while user speaks
-        clearInterval(nodTimerRef.current);
-        nodTimerRef.current = setInterval(() => {
-          if (stageRef.current) stageRef.current.react?.("nod");
-        }, 2500);
         break;
 
       case "THINKING":
         s.setListening(false);
         s.setExpression?.("thinking");
-        clearInterval(nodTimerRef.current);
         break;
 
       case "SPEAKING":
         s.setListening(false);
         s.setExpression?.("speaking");
-        clearInterval(nodTimerRef.current);
         break;
 
       default: // IDLE, ATTENTIVE
         s.setListening(false);
         s.setExpression?.("attentive");
-        clearInterval(nodTimerRef.current);
         break;
     }
   }, [convState]);
-
-  // ── Cleanup nod interval ──────────────────────────────────────────────────
-  useEffect(() => () => clearInterval(nodTimerRef.current), []);
 
   // ── Listening pose via setListening (legacy bridge) ───────────────────────
   useEffect(() => {
@@ -261,16 +248,18 @@ export default function AvatarPanel({
           </div>
         )}
 
-        {/* Live Speech Testing Monitor (Word-by-word real-time transcription) */}
-        <LiveSpeechTester
-          liveTranscript={liveTranscript}
-          lastUserSpeech={lastUserSpeech}
-          userSpeaking={userSpeaking}
-          vadSpeech={vadSpeech}
-          audioLevel={audioLevel}
-          evidence={evidence}
-          convState={convState}
-        />
+        {/* Live Speech Testing Monitor (visible in debug mode) */}
+        {debugOpen && (
+          <LiveSpeechTester
+            liveTranscript={liveTranscript}
+            lastUserSpeech={lastUserSpeech}
+            userSpeaking={userSpeaking}
+            vadSpeech={vadSpeech}
+            audioLevel={audioLevel}
+            evidence={evidence}
+            convState={convState}
+          />
+        )}
 
         <GreenieStage
           ref={stageCallbackRef}
@@ -280,29 +269,28 @@ export default function AvatarPanel({
           onBoundary={setSpokenCharIndex}
         />
 
-        {/* Dynamic Subtitles / Captions */}
+        {/* Unified Bottom Overlay for Subtitles & Voice HUD */}
         <div className="greenie-bottom-overlay">
+          {/* Dynamic Subtitles / Captions (Positioned neatly above the VoiceHUD) */}
           <Captions
             text={caption}
             speaking={isAvatarSpeaking || speaking}
             status={isAvatarSpeaking ? "Explaining..." : convState === "LISTENING" ? "Listening..." : "Ready to chat"}
             charIndex={spokenCharIndex}
           />
+
+          {/* Integrated Voice HUD / Microphone Bar */}
+          <VoiceHUD
+            listening={listening}
+            speaking={isAvatarSpeaking || speaking}
+            liveTranscript={liveTranscript}
+            userSpeaking={userSpeaking}
+            convState={convState}
+            onToggleMic={onToggleMic}
+            micError={micError}
+            audioLevel={audioLevel}
+          />
         </div>
-
-        {/* Pulsing "Listening" indicator */}
-        {convState === "LISTENING" && <ListeningIndicator />}
-
-        <VoiceHUD
-          listening={listening}
-          speaking={isAvatarSpeaking || speaking}
-          liveTranscript={liveTranscript}
-          userSpeaking={userSpeaking}
-          convState={convState}
-          onToggleMic={onToggleMic}
-          micError={micError}
-          audioLevel={audioLevel}
-        />
       </div>
 
       {/* Debug Overlay (Ctrl+Shift+D) */}

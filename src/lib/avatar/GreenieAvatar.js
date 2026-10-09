@@ -61,6 +61,12 @@ export class GreenieAvatar {
     this._expression = "attentive";
     this._expressionStart = 0;
 
+    // Smooth continuous head rotations (Tilt strictly only when user speaks)
+    this._headRotX = 0;
+    this._headRotZ = 0;
+    this._targetHeadX = 0;
+    this._targetHeadZ = 0;
+
     // Smooth lerp targets for arm positions
     this._armRTarget = 0.24;
     this._armLTarget = -0.24;
@@ -363,8 +369,6 @@ export class GreenieAvatar {
     this._listening = active;
     if (active && !wasListening) {
       this._listenStart = performance.now();
-      // Polite, respectful acknowledgement nod / bow when user starts speaking
-      this.react("bow");
     }
   }
 
@@ -372,7 +376,7 @@ export class GreenieAvatar {
    * setExpression(name)
    * Drives avatar posture for each conversation state.
    * Expressions: "listening" | "thinking" | "speaking" | "attentive"
-   * Smooth transitions ~200 ms via the existing lerp in tick().
+   * Smooth transitions ~200 ms via the continuous lerp in tick().
    */
   setExpression(name) {
     if (this._expression === name) return;
@@ -380,7 +384,6 @@ export class GreenieAvatar {
     this._expressionStart = performance.now();
     if (name === "listening") {
       this._listenStart = performance.now();
-      this.react("bow");
     }
   }
 
@@ -663,10 +666,10 @@ export class GreenieAvatar {
     this.model.rotation.x = 0;
     this.model.rotation.y = 0;
     this.model.rotation.z = 0;
-    if (this.head) {
-      this.head.rotation.x = 0;
-      this.head.rotation.z = 0;
-    }
+
+    // Base target head orientation: upright, strictly no tilt unless user is speaking
+    this._targetHeadX = 0;
+    this._targetHeadZ = 0;
 
     this._armRTarget = 0.24;
     this._armLTarget = -0.24;
@@ -756,14 +759,12 @@ export class GreenieAvatar {
       this.wingLGroup.rotation.x = isAirborne ? 0.22 : 0.05;
     }
 
-    // Animated hand gestures & lively head tilt while explaining in mid-air
+    // Animated hand gestures & speaking cadence while explaining in mid-air (NO head tilt)
     if (isSpeaking && !this.flyingEntrance && !this.reaction && !this._waveActive) {
       this._armRTarget = 0.62 + Math.sin(now / 320) * 0.35;
       this._armLTarget = -0.62 - Math.cos(now / 360) * 0.28;
-      if (this.head && !this.reduced) {
-        this.head.rotation.z = Math.sin(now / 480) * 0.06;
-        this.head.rotation.x = -0.04 + Math.sin(now / 360) * 0.04;
-      }
+      this._targetHeadX = -0.03 + Math.sin(now / 360) * 0.03;
+      this._targetHeadZ = 0; // STRICTLY NO head tilt when avatar is speaking
     }
 
     // =========================================================
@@ -859,7 +860,7 @@ export class GreenieAvatar {
     }
 
     // =========================================================
-    // ACTIVE HUMAN-LIKE LISTENING GESTURES
+    // ACTIVE HUMAN-LIKE LISTENING GESTURES (Head tilts ONLY here)
     // =========================================================
     const isActivelyListening =
       (this._listening || this._expression === "listening") &&
@@ -875,20 +876,16 @@ export class GreenieAvatar {
       this._armRTarget = 0.35 + breathArm;
       this._armLTarget = -0.35 - breathArm;
 
-      if (this.head && !this.reduced) {
-        // Natural human active-listening micro-nod cycles ("hmmhuu" nods) every ~1.8s
-        const nodPhase = (listenTime % 1.8) / 1.8;
-        const microNod =
-          nodPhase < 0.4
-            ? Math.sin(nodPhase * Math.PI * 2) * 0.075
-            : 0;
+      // Natural human active-listening micro-nod cycles ("hmmhuu" nods) every ~2.0s
+      const nodPhase = (listenTime % 2.0) / 2.0;
+      const microNod =
+        nodPhase < 0.35
+          ? Math.sin(nodPhase * Math.PI * 2) * 0.05
+          : 0;
 
-        // Gentle head tilt to the side as humans do when listening attentively
-        const headTilt = Math.sin(listenTime * 1.2) * 0.045;
-
-        this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, 0.06 + microNod, 0.15);
-        this.head.rotation.z = THREE.MathUtils.lerp(this.head.rotation.z, headTilt, 0.12);
-      }
+      // ATTENTIVE HEAD TILT: Greenie tilts head ONLY when user speaks
+      this._targetHeadX = 0.04 + microNod;
+      this._targetHeadZ = 0.085 + Math.sin(listenTime * 1.5) * 0.015;
 
       if (this.model && !this.reduced) {
         // Slight respectful, attentive lean toward the customer
@@ -928,10 +925,8 @@ export class GreenieAvatar {
         this.setStatus(this._listening ? "Listening..." : "Ready to chat");
       } else if (this.reaction.kind === "bow") {
         // Polite, respectful acknowledgement nod / bow ("sir bowing" gesture)
-        if (this.head && !this.reduced) {
-          this.head.rotation.x = 0.22 * envelope;
-          this.head.rotation.z = 0.02 * envelope;
-        }
+        this._targetHeadX = 0.22 * envelope;
+        this._targetHeadZ = 0;
         if (this.model && !this.reduced) {
           this.model.rotation.x = 0.06 * envelope;
         }
@@ -940,18 +935,14 @@ export class GreenieAvatar {
       } else if (this.reaction.kind === "nod") {
         // Affirmative active listening double-nod ("hmmhuu / uh-huh" gesture)
         const doubleNod = Math.sin(age * 12.0) * envelope * 0.14;
-        if (this.head && !this.reduced) {
-          this.head.rotation.x = 0.06 + doubleNod;
-          this.head.rotation.z = Math.sin(age * 5.0) * 0.03 * envelope;
-        }
+        this._targetHeadX = 0.06 + doubleNod;
+        this._targetHeadZ = 0;
       } else if (this.reaction.kind === "wink") {
         if (this.eyes && this.eyes[1] && this.eyes[1].userData?.restScale) {
           this.eyes[1].scale.y =
             (age > 0.25 && age < 1.2 ? 0.08 : 1) * this.eyes[1].userData.restScale.y;
         }
-        if (this.head && !this.reduced) {
-          this.head.rotation.z = -0.14 * envelope;
-        }
+        this._targetHeadZ = 0;
       } else if (this.reaction.kind === "blush") {
         if (this.cheeks) {
           this.cheeks.forEach((c) => {
@@ -959,14 +950,13 @@ export class GreenieAvatar {
               c.material.color.lerp(new THREE.Color("#f14982"), envelope);
           });
         }
-        if (this.head && !this.reduced) {
-          this.head.rotation.z = 0.12 * envelope;
-          this.head.rotation.x = 0.08 * envelope;
-        }
+        this._targetHeadX = 0.06 * envelope;
+        this._targetHeadZ = 0;
       } else if (this.reaction.kind === "dance") {
         if (this.cheeks) {
           this.cheeks.forEach((c) => c?.material?.color.set("#ef7398"));
         }
+        this._targetHeadZ = 0;
         if (!this.reduced) {
           this.model.position.y = Math.abs(Math.sin(age * 7)) * 0.15 * envelope;
           this.model.rotation.z = Math.sin(age * 8) * 0.1 * envelope;
@@ -998,15 +988,7 @@ export class GreenieAvatar {
       const exBlend = Math.min(1, exAge / 0.2); // 200 ms fade-in
 
       if (this._expression === "listening") {
-        // Eyes forward, head slightly tilted, eyebrows raised
-        if (this.head) {
-          this.head.rotation.z = THREE.MathUtils.lerp(
-            this.head.rotation.z, 0.05 + Math.sin(now / 2400) * 0.015, exBlend * 0.12
-          );
-          this.head.rotation.x = THREE.MathUtils.lerp(
-            this.head.rotation.x, -0.04, exBlend * 0.10
-          );
-        }
+        // Eyes forward, eyebrows raised (head tilt handled by isActivelyListening)
         if (this.eyes) {
           this.eyes.forEach((e) => {
             if (e && e.userData?.restPos) {
@@ -1016,15 +998,9 @@ export class GreenieAvatar {
           });
         }
       } else if (this._expression === "thinking") {
-        // Eyes glance up-left, subtle head tilt
-        if (this.head) {
-          this.head.rotation.z = THREE.MathUtils.lerp(
-            this.head.rotation.z, -0.08 * exBlend, 0.08
-          );
-          this.head.rotation.x = THREE.MathUtils.lerp(
-            this.head.rotation.x, -0.06 * exBlend, 0.08
-          );
-        }
+        // Eyes glance up-left, head upright (NO head tilt)
+        this._targetHeadX = -0.05 * exBlend;
+        this._targetHeadZ = 0;
         if (this.eyes) {
           this.eyes.forEach((e) => {
             if (e && e.userData?.restPos) {
@@ -1035,26 +1011,9 @@ export class GreenieAvatar {
             }
           });
         }
-      } else if (this._expression === "speaking") {
-        // Eyes on camera, neutral-positive
-        if (this.head) {
-          this.head.rotation.z = THREE.MathUtils.lerp(this.head.rotation.z, 0, 0.06);
-          this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, 0, 0.06);
-        }
-        if (this.eyes) {
-          this.eyes.forEach((e) => {
-            if (e && e.userData?.restPos) {
-              e.position.x = THREE.MathUtils.lerp(e.position.x, e.userData.restPos.x, 0.08);
-              e.position.y = THREE.MathUtils.lerp(e.position.y, e.userData.restPos.y, 0.08);
-            }
-          });
-        }
       } else {
-        // attentive / idle: keep eyes at restPos
-        if (this.head) {
-          this.head.rotation.z = THREE.MathUtils.lerp(this.head.rotation.z, 0, 0.06);
-          this.head.rotation.x = THREE.MathUtils.lerp(this.head.rotation.x, 0, 0.06);
-        }
+        // speaking / attentive / idle: keep eyes at restPos and head upright
+        this._targetHeadZ = 0;
         if (this.eyes) {
           this.eyes.forEach((e) => {
             if (e && e.userData?.restPos) {
@@ -1064,6 +1023,16 @@ export class GreenieAvatar {
           });
         }
       }
+    }
+
+    // =========================================================
+    // SMOOTH CONTINUOUS HEAD ROTATION LERP
+    // =========================================================
+    if (this.head && !this.reduced) {
+      this._headRotX += (this._targetHeadX - this._headRotX) * 0.12;
+      this._headRotZ += (this._targetHeadZ - this._headRotZ) * 0.12;
+      this.head.rotation.x = this._headRotX;
+      this.head.rotation.z = this._headRotZ;
     }
 
     // =========================================================

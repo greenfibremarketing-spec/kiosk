@@ -170,37 +170,39 @@ if (!app.requestSingleInstanceLock()) {
       }
     });
 
-const speechService = require("./speechService");
+    // Load environment variables from .env / .env.local if present
+    try {
+      const envFiles = [path.join(__dirname, ".env.local"), path.join(__dirname, ".env")];
+      for (const envFile of envFiles) {
+        if (fs.existsSync(envFile)) {
+          const lines = fs.readFileSync(envFile, "utf8").split(/\r?\n/);
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith("#")) {
+              const eqIdx = trimmed.indexOf("=");
+              if (eqIdx !== -1) {
+                const k = trimmed.slice(0, eqIdx).trim();
+                const v = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+                if (k && !process.env[k]) {
+                  process.env[k] = v;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log.warn("[Main] Error reading .env file:", err);
+    }
 
     // Deepgram API Key IPC handler
-    const DEEPGRAM_KEY = process.env.DEEPGRAM_API_KEY || "8ede28576db8d02d8ab30f8ec9a0c5ac2be3986f";
-    ipcMain.handle("speech:key", () => DEEPGRAM_KEY);
+    ipcMain.handle("speech:key", () => process.env.DEEPGRAM_API_KEY || "");
 
     // Handle Config IPCs
     ipcMain.handle("get-config", () => loadConfig());
     ipcMain.handle("save-config", (e, cfg) => saveConfig(cfg));
     ipcMain.on("presence-state", (e, state) => {
       kioskCurrentState = state;
-      if (state === "ENGAGED") {
-        speechService.start({
-          onHypothesis: (text) => {
-            if (win && !win.isDestroyed()) {
-              win.webContents.send("stt-hypothesis", text);
-            }
-          },
-          onFinal: (text) => {
-            if (win && !win.isDestroyed()) {
-              win.webContents.send("stt-final", text);
-            }
-          }
-        });
-      } else {
-        speechService.stop();
-      }
-    });
-
-    ipcMain.on("stt-mute", (e, muted) => {
-      speechService.setMuted(muted);
     });
 
     // Allow camera and microphone for face presence & speech recognition
@@ -228,17 +230,14 @@ const speechService = require("./speechService");
     // Staff-only exit
     globalShortcut.register("CommandOrControl+Shift+Alt+Q", () => {
       log.info("Staff exit shortcut triggered.");
-      speechService.stop();
       app.quit();
     });
   });
 
   app.on("will-quit", () => {
-    speechService.stop();
     globalShortcut.unregisterAll();
   });
   app.on("window-all-closed", () => {
-    speechService.stop();
     app.quit();
   });
 }

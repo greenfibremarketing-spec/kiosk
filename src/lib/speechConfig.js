@@ -12,13 +12,13 @@ const speechConfig = {
   audioLevelThreshold: 0.012,
 
   /** Rolling window (ms) for computing jaw-open VARIANCE */
-  jawVarianceWindowMs: 500,
+  jawVarianceWindowMs: 300,
 
   /**
    * Minimum jaw-open VARIANCE to consider the mouth "actively moving".
    * Variance of a static jaw ≈ 0, variance of speech movement ≈ 0.003–0.02.
    */
-  jawVarianceThreshold: 0.0015,
+  jawVarianceThreshold: 0.0010,
 
   // ─── Face / Presence ────────────────────────────────────────────────────────
 
@@ -32,13 +32,13 @@ const speechConfig = {
   // ─── Debounce & Hangover ─────────────────────────────────────────────────────
 
   /** Onset debounce: evidence must persist for this long before userSpeaking → true (ms) */
-  onsetDebounceMs: 150,
+  onsetDebounceMs: 0,
 
   /**
    * Hangover: keep userSpeaking = true for this long after the LAST piece of
    * evidence, so short mic dropouts or jaw pauses don't flip the state (ms).
    */
-  hangoverMs: 1000,
+  hangoverMs: 450,
 
   // ─── End-of-Turn Detection ──────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ const speechConfig = {
    * After userSpeaking goes false, wait this long before finalising the turn
    * and sending the transcript to the AI backend (ms).
    */
-  endOfTurnSilenceMs: 900,
+  endOfTurnSilenceMs: 2000,
 
   // ─── Pre-roll buffer ─────────────────────────────────────────────────────────
 
