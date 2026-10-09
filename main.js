@@ -78,6 +78,7 @@ function createWindow() {
     backgroundColor: "#F7F3EA",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
+      autoplayPolicy: "no-user-gesture-required",
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -221,6 +222,24 @@ if (!app.requestSingleInstanceLock()) {
       return allowedPermissions.includes(permission);
     });
 
+    // Auto-start EdgeTTS voice server if server/index.js exists
+    let voiceServerProcess = null;
+    try {
+      const { fork } = require("child_process");
+      const serverScript = path.join(__dirname, "server", "index.js");
+      if (fs.existsSync(serverScript)) {
+        voiceServerProcess = fork(serverScript, [], {
+          silent: true,
+          env: { ...process.env, PORT: 4000 }
+        });
+        voiceServerProcess.stdout?.on("data", (data) => log.info(`[VoiceServer] ${data.toString().trim()}`));
+        voiceServerProcess.stderr?.on("data", (data) => log.warn(`[VoiceServer Error] ${data.toString().trim()}`));
+        log.info("[Main] Spawned EdgeTTS voice server on port 4000");
+      }
+    } catch (err) {
+      log.warn("[Main] Failed to start voice server:", err);
+    }
+
     createWindow();
 
     win.webContents.on("console-message", (event, level, message) => {
@@ -230,6 +249,7 @@ if (!app.requestSingleInstanceLock()) {
     // Staff-only exit
     globalShortcut.register("CommandOrControl+Shift+Alt+Q", () => {
       log.info("Staff exit shortcut triggered.");
+      if (voiceServerProcess) { try { voiceServerProcess.kill(); } catch (_) {} }
       app.quit();
     });
   });

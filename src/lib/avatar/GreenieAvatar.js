@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { preferredVoice } from "./voice";
+import { attachLipSync, getMouth, resetLipSync } from "../lipSync";
 
 /**
  * Helper to build a cute fairy wing geometry
@@ -44,6 +45,10 @@ export class GreenieAvatar {
     this.mode = "idle";
     this.started = 0;
     this.cues = [];
+    this.detachLipSync = null;
+    this.lastTickTime = 0;
+    this.blinkStart = 0;
+    this.nextBlink = 0;
     this.reduced =
       typeof window !== "undefined" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -175,13 +180,16 @@ export class GreenieAvatar {
         // Initialize cute kawaii smile & glowing cheeks
         if (this.smile) {
           this.smile.visible = true;
-          this.smile.scale.set(1.0, 1.0, 1.0);
+          this.smile.userData.restScale = this.smile.scale.clone();
+          this.smile.userData.restPos = this.smile.position.clone();
           if (this.smile.material) {
             this.smile.material.color.set("#2a1810"); // warm natural smile line
           }
         }
         if (this.mouth) {
           this.mouth.visible = false;
+          this.mouth.userData.restScale = this.mouth.scale.clone();
+          this.mouth.userData.restPos = this.mouth.position.clone();
         }
 
         // Attach cute glowing fairy wings to Greenie's back
@@ -387,6 +395,22 @@ export class GreenieAvatar {
     }
   }
 
+  /**
+   * setMorph(name, v)
+   * Helper to set morph target weights across any meshes in the avatar model
+   */
+  setMorph(name, v) {
+    if (!this.model) return;
+    this.model.traverse((o) => {
+      if (o.morphTargetDictionary && o.morphTargetInfluences) {
+        const idx = o.morphTargetDictionary[name];
+        if (idx !== undefined) {
+          o.morphTargetInfluences[idx] = THREE.MathUtils.clamp(v, 0, 1);
+        }
+      }
+    });
+  }
+
   setMouth(shape = "rest", weight = 1) {
     const isRest = shape === "rest" || weight < 0.05;
 
@@ -399,23 +423,28 @@ export class GreenieAvatar {
           this.mouth.morphTargetInfluences.fill(0);
         }
       }
+      this.setMorph("jawOpen", 0);
+      this.setMorph("mouthFunnel", 0);
+      this.setMorph("mouthPucker", 0);
+      this.setMorph("mouthStretch", 0);
+      this.setMorph("mouthSmile", 0);
+      this.setMorph("mouthClose", 0);
+      this.setMorph("browInnerUp", 0);
+      this.setMorph("AA", 0);
+      this.setMorph("EE", 0);
+      this.setMorph("OH", 0);
+      this.setMorph("FV", 0);
+      this.setMorph("MBP", 0);
     } else {
       // Speaking / Phonemes: show animated mouth, hide smile to prevent double mouth
       if (this.smile) this.smile.visible = false;
       if (this.mouth) {
         this.mouth.visible = true;
-        const dict = this.mouth.morphTargetDictionary;
-        if (dict && this.mouth.morphTargetInfluences) {
-          this.mouth.morphTargetInfluences.fill(0);
-        }
-        if (dict && dict[shape] !== undefined) {
-          this.mouth.morphTargetInfluences[dict[shape]] = THREE.MathUtils.clamp(
-            weight,
-            0,
-            1
-          );
-        }
+        const restY = this.mouth.userData?.restScale?.y || 1.0;
+        this.mouth.scale.y = (0.2 + weight * 0.8) * restY;
       }
+      this.setMorph("jawOpen", weight * 0.75);
+      this.setMorph(shape, weight);
     }
   }
 
@@ -476,6 +505,14 @@ export class GreenieAvatar {
   stop() {
     this.generation++;
     this.started = 0;
+    if (this.detachLipSync) {
+      try {
+        this.detachLipSync();
+      } catch (_) {}
+      this.detachLipSync = null;
+    }
+    resetLipSync();
+
     if (typeof window !== "undefined") {
       window.speechSynthesis?.cancel();
     }
@@ -496,16 +533,11 @@ export class GreenieAvatar {
 
   async speak(
     text,
-    { voice = null, lang = "hi-IN", rate = 0.95, pitch = 1.15 } = {}
+    { voice = null, lang = "en-US", rate = 0.95, pitch = 1.15 } = {}
   ) {
     await this.ready;
     text = String(text || "").trim();
     if (!text) return;
-
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      this.setStatus("Speech synthesis not supported.");
-      return;
-    }
 
     this.stop();
     this._arrived = true;
@@ -514,6 +546,61 @@ export class GreenieAvatar {
     }
     const token = this.generation;
     this.text = text;
+
+    // 1. Primary: EdgeTTS Ana Neural Voice from voice server (http://localhost:4000/api/tts)
+    try {
+      const res = await fetch(`http://localhost:4000/api/tts?text=${encodeURIComponent(text)}`);
+      if (token !== this.generation) return;
+      if (res.ok) {
+        const blob = await res.blob();
+        if (token !== this.generation) return;
+        const url = URL.createObjectURL(blob);
+        if (token !== this.generation) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+
+        const audio = new Audio(url);
+        this.audio = audio;
+        this.mode = "audio";
+        this.onSpeakingChange(true);
+        this.setStatus("Explaining...");
+
+        this.detachLipSync = attachLipSync(audio);
+
+        const cleanupAudio = () => {
+          if (this.detachLipSync) {
+            try {
+              this.detachLipSync();
+            } catch (_) {}
+            this.detachLipSync = null;
+          }
+          resetLipSync();
+          URL.revokeObjectURL(url);
+          if (token === this.generation) {
+            this.mode = "idle";
+            this.setMouth();
+            this.onSpeakingChange(false);
+            this.setStatus("Listening...");
+          }
+        };
+
+        audio.onended = cleanupAudio;
+        audio.onerror = cleanupAudio;
+
+        await audio.play();
+        return;
+      }
+    } catch (e) {
+      console.warn("[Avatar] EdgeTTS Ana unavailable, falling back to Web Speech:", e?.message);
+    }
+
+    // 2. Fallback: Browser Web Speech API
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      this.setStatus("Speech synthesis not supported.");
+      return;
+    }
+
     this.charIndex = 0;
     this.boundaryAt = 0;
     this.rate = rate;
@@ -645,8 +732,13 @@ export class GreenieAvatar {
       return;
     }
 
+    const currentTime = typeof now === "number" ? now : performance.now();
+    const dt = this.lastTickTime
+      ? Math.min(0.05, Math.max(0.001, (currentTime - this.lastTickTime) / 1000))
+      : 0.016;
+    this.lastTickTime = currentTime;
+
     const LERP = 0.08;
-    const dt = 0.016;
 
     // --- Reset base pose every frame ---
     if (!this._arrived && !this.flyingEntrance) {
@@ -676,7 +768,7 @@ export class GreenieAvatar {
 
     // Cute sweet strawberry-coral blush cheeks with gentle breathing pulse
     if (this.cheeks) {
-      const blushPulse = Math.sin(now / 900) * 0.04;
+      const blushPulse = Math.sin(currentTime / 900) * 0.04;
       this.cheeks.forEach((c) => {
         if (c?.material) {
           c.material.color.set("#ff5a84");
@@ -692,7 +784,7 @@ export class GreenieAvatar {
     }
 
     if (this.pigtails && !this.reduced) {
-      const t = now / 1000;
+      const t = currentTime / 1000;
       this.pigtails.forEach((p, i) => {
         if (p) p.rotation.z = Math.sin(t * 0.9 + i * Math.PI) * 0.012;
       });
@@ -700,7 +792,7 @@ export class GreenieAvatar {
 
     // Natural cute blink animation
     if (this.eyes) {
-      const t = now / 1000;
+      const t = currentTime / 1000;
       const b = t % 4.5;
       const blink = b > 4.3 ? Math.max(0.08, Math.abs(b - 4.4) / 0.1) : 1;
       this.eyes.forEach((x) => {
@@ -720,7 +812,7 @@ export class GreenieAvatar {
     }
 
     // =========================================================
-    // HOVER FLIGHT WHILE EXPLAINING
+    // HOVER FLIGHT & SPEAKING STATE EVALUATION
     // =========================================================
     const isSpeakingTTS =
       typeof window !== "undefined" &&
@@ -730,12 +822,16 @@ export class GreenieAvatar {
     const isSpeakingAudio = this.mode === "audio" && this.audio && !this.audio.paused;
     const isSpeaking = isSpeakingTTS || isSpeakingAudio;
 
+    // Real-time formant-based viseme analysis (reads delayed audio live)
+    const m = getMouth(isSpeaking, dt);
+    const STYLE = 0.75;
+
     // Lifts up 0.52m into the air when explaining, glides softly back down when done
     const targetHover = isSpeaking && !this.flyingEntrance ? 0.52 : 0;
     this._hoverY += (targetHover - this._hoverY) * 0.055;
     const hoverBob =
       this._hoverY > 0.03
-        ? Math.sin(now / 380) * 0.08 * (this._hoverY / 0.52)
+        ? Math.sin(currentTime / 380) * 0.08 * (this._hoverY / 0.52)
         : 0;
 
     if (!this.flyingEntrance) {
@@ -748,7 +844,7 @@ export class GreenieAvatar {
     const isAirborne = !!this.flyingEntrance || this._hoverY > 0.06;
     const wingSpeed = this.flyingEntrance ? 32 : isAirborne ? 42 : 160;
     const wingAmp = this.flyingEntrance ? 0.85 : isAirborne ? 0.72 : 0.22;
-    const wingFlutter = Math.sin(now / wingSpeed) * wingAmp;
+    const wingFlutter = Math.sin(currentTime / wingSpeed) * wingAmp;
 
     if (this.wingRGroup) {
       this.wingRGroup.rotation.y = 0.2 + wingFlutter;
@@ -761,9 +857,10 @@ export class GreenieAvatar {
 
     // Animated hand gestures & speaking cadence while explaining in mid-air (NO head tilt)
     if (isSpeaking && !this.flyingEntrance && !this.reaction && !this._waveActive) {
-      this._armRTarget = 0.62 + Math.sin(now / 320) * 0.35;
-      this._armLTarget = -0.62 - Math.cos(now / 360) * 0.28;
-      this._targetHeadX = -0.03 + Math.sin(now / 360) * 0.03;
+      this._armRTarget = 0.62 + Math.sin(currentTime / 320) * 0.35;
+      this._armLTarget = -0.62 - Math.cos(currentTime / 360) * 0.28;
+      // Stressed syllable emphasis head nod + subtle lifelike motion
+      this._targetHeadX = -m.emph * 0.06 + Math.sin((currentTime / 1000) * 1.3) * 0.01;
       this._targetHeadZ = 0; // STRICTLY NO head tilt when avatar is speaking
     }
 
@@ -1036,32 +1133,86 @@ export class GreenieAvatar {
     }
 
     // =========================================================
-    // MOUTH LIP SYNC
+    // MOUTH & FACIAL LIP SYNC (Formant-based Real-time Engine)
     // =========================================================
-    if (this.mode === "tts" && isSpeakingTTS && this.text) {
-      const index = Math.min(
-        this.text.length - 1,
-        this.charIndex + Math.floor(((now - this.boundaryAt) / 75) * this.rate)
-      );
-      const c = this.text[index]?.toLowerCase() || " ";
-      const shape = /[bmp\u092c\u092e\u092a]/.test(c)
-        ? "MBP"
-        : /[fv\u092b\u0935]/.test(c)
-        ? "FV"
-        : /[ou\u0913\u0941\u0942\u0909]/.test(c)
-        ? "OH"
-        : /[ei\u0908\u0907\u0947\u0948]/.test(c)
-        ? "EE"
-        : /[\s.,!?\u0964]/.test(c)
-        ? "rest"
-        : "AA";
-      this.setMouth(shape, 0.65 + 0.35 * Math.sin(now / 53) ** 2);
-    } else if (this.mode === "audio" && this.audio && !this.audio.paused) {
-      const t = this.audio.currentTime;
-      const cue = this.cues.find((c) => t >= c.start && t < c.end);
-      this.setMouth(cue?.value || "rest", cue?.weight ?? 1);
+    // 1. ARKit morph targets (jawOpen, mouthFunnel, mouthPucker, mouthStretch, mouthSmile, mouthClose, browInnerUp)
+    this.setMorph("jawOpen", m.open * STYLE);
+    this.setMorph("mouthFunnel", m.round * m.open);
+    this.setMorph("mouthPucker", m.round * 0.5 * m.open);
+    this.setMorph("mouthStretch", m.wide * 0.6 * m.open);
+    this.setMorph("mouthSmile", m.wide * 0.35 * m.open);
+    this.setMorph("mouthClose", (1 - m.open) * 0.3);
+    this.setMorph("browInnerUp", m.emph * 0.5);
+
+    // 2. Viseme morph targets (AA, EE, OH, FV, MBP)
+    if (m.hiss > 0.35) {
+      this.setMorph("FV", m.hiss * m.open);
+      this.setMorph("MBP", 0);
+      this.setMorph("OH", 0);
+      this.setMorph("EE", 0);
+      this.setMorph("AA", m.open * 0.4);
+    } else if (m.round > 0.25) {
+      this.setMorph("OH", m.round * m.open);
+      this.setMorph("AA", m.open * 0.6);
+      this.setMorph("EE", 0);
+      this.setMorph("FV", 0);
+      this.setMorph("MBP", 0);
+    } else if (m.wide > 0.25) {
+      this.setMorph("EE", m.wide * m.open);
+      this.setMorph("AA", m.open * 0.5);
+      this.setMorph("OH", 0);
+      this.setMorph("FV", 0);
+      this.setMorph("MBP", 0);
+    } else if (m.open > 0.1) {
+      this.setMorph("AA", m.open);
+      this.setMorph("EE", 0);
+      this.setMorph("OH", 0);
+      this.setMorph("FV", 0);
+      this.setMorph("MBP", 0);
+    } else if (isSpeaking && m.open <= 0.1) {
+      this.setMorph("MBP", (1 - m.open / 0.1) * 0.4);
+      this.setMorph("AA", 0);
+      this.setMorph("EE", 0);
+      this.setMorph("OH", 0);
+      this.setMorph("FV", 0);
     } else {
-      this.setMouth();
+      this.setMorph("AA", 0);
+      this.setMorph("EE", 0);
+      this.setMorph("OH", 0);
+      this.setMorph("FV", 0);
+      this.setMorph("MBP", 0);
+    }
+
+    // 3. Dynamic mesh scaling for models with dedicated Mouth and Smile meshes
+    if (this.mouth || this.smile) {
+      if (isSpeaking && m.open > 0.06) {
+        if (this.smile) this.smile.visible = false;
+        if (this.mouth) {
+          this.mouth.visible = true;
+          const restY = this.mouth.userData?.restScale?.y || 1.0;
+          const restX = this.mouth.userData?.restScale?.x || 1.0;
+          const restZ = this.mouth.userData?.restScale?.z || 1.0;
+
+          const scaleY = (0.12 + m.open * 0.95) * restY;
+          const scaleX = (1.0 + m.wide * 0.35 - m.round * 0.25) * restX;
+          this.mouth.scale.set(scaleX, scaleY, restZ);
+        }
+      } else {
+        // Pauses or silence: display sweet smile curve, hide open mouth
+        if (this.smile) {
+          this.smile.visible = true;
+          const restY = this.smile.userData?.restScale?.y || 1.0;
+          const restX = this.smile.userData?.restScale?.x || 1.0;
+          const restZ = this.smile.userData?.restScale?.z || 1.0;
+          this.smile.scale.set(restX, restY, restZ);
+        }
+        if (this.mouth) {
+          this.mouth.visible = false;
+          if (this.mouth.userData?.restScale) {
+            this.mouth.scale.copy(this.mouth.userData.restScale);
+          }
+        }
+      }
     }
 
     if (this.controls) this.controls.update();
