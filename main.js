@@ -172,6 +172,10 @@ if (!app.requestSingleInstanceLock()) {
 
 const speechService = require("./speechService");
 
+    // Deepgram API Key IPC handler
+    const DEEPGRAM_KEY = process.env.DEEPGRAM_API_KEY || "8ede28576db8d02d8ab30f8ec9a0c5ac2be3986f";
+    ipcMain.handle("speech:key", () => DEEPGRAM_KEY);
+
     // Handle Config IPCs
     ipcMain.handle("get-config", () => loadConfig());
     ipcMain.handle("save-config", (e, cfg) => saveConfig(cfg));

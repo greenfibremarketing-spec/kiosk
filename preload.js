@@ -1,8 +1,13 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+contextBridge.exposeInMainWorld("electronAPI", {
+  getDeepgramKey: () => ipcRenderer.invoke("speech:key"),
+});
+
 contextBridge.exposeInMainWorld("kiosk", {
   isKiosk: true,
   platform: process.platform,
+  getDeepgramKey: () => ipcRenderer.invoke("speech:key"),
   getConfig: () => ipcRenderer.invoke("get-config"),
   saveConfig: (cfg) => ipcRenderer.invoke("save-config", cfg),
   onSpeechHypothesis: (callback) => {

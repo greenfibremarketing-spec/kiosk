@@ -20,6 +20,7 @@ import { usePresenceDetection } from "@/lib/presence/usePresenceDetection";
 import { useUserSignals } from "@/hooks/useUserSignals";
 import { useAudioCapture } from "@/hooks/useAudioCapture";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
+import { useSpeech } from "@/hooks/useSpeech";
 import speechConfig from "@/lib/speechConfig";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -248,7 +249,35 @@ export function useKiosk() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userSpeaking, vadSpeech, isEngaged]);
 
-  // ── Native Windows STT (via Electron IPC bridge) ─────────────────────────
+  // ── Deepgram Nova-3 Real-time STT (Primary High-Accuracy Engine) ───────────
+  const handleDeepgramTranscript = useCallback((text) => {
+    if (!text || !text.trim()) return;
+    const clean = text.trim();
+    console.log("[Deepgram STT Final Transcript]:", clean);
+    setLastUserSpeech(clean);
+    setLiveTranscript("");
+    pendingTranscriptRef.current = "";
+    failureCountRef.current = 0;
+    sendTranscript(clean, signals);
+  }, [sendTranscript, signals]);
+
+  const handleDeepgramHypo = useCallback((text) => {
+    if (!text || !text.trim()) return;
+    if (convStateRef.current === S.SPEAKING) {
+      interruptAvatar();
+      setConv(S.LISTENING);
+    }
+    setLiveTranscript(text);
+  }, [interruptAvatar, setConv]);
+
+  const deepgram = useSpeech({
+    onTranscript: handleDeepgramTranscript,
+    onHypothesis: handleDeepgramHypo,
+    isEngaged,
+    speaking: speaking,
+  });
+
+  // ── Native Windows STT (via Electron IPC bridge as offline fallback) ─────
   useEffect(() => {
     if (!isEngaged || typeof window === "undefined" || !window.kiosk?.onSpeechHypothesis) {
       return;
@@ -467,8 +496,8 @@ export function useKiosk() {
     convState,         // "IDLE"|"ATTENTIVE"|"LISTENING"|"THINKING"|"SPEAKING"
     // speech
     speaking,
-    listening,
-    liveTranscript,
+    listening: deepgram.listening || listening,
+    liveTranscript: deepgram.liveTranscript || liveTranscript,
     lastUserSpeech,
     userSpeaking,      // fused
     evidence,          // "audio"|"face"|"both"|"none"

@@ -1,149 +1,188 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export function useSpeech({ onTranscript, isEngaged = false } = {}) {
-  const [speaking, setSpeaking] = useState(false);
+const DEEPGRAM_DEFAULT_KEY = "8ede28576db8d02d8ab30f8ec9a0c5ac2be3986f";
+
+const URL =
+  "wss://api.deepgram.com/v1/listen" +
+  "?model=nova-3&language=en-IN&smart_format=true" +
+  "&interim_results=true&endpointing=800&utterance_end_ms=1500";
+
+export function useSpeech({ onTranscript, onHypothesis, isEngaged = false, speaking = false } = {}) {
   const [listening, setListening] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
-  const recognitionRef = useRef(null);
-  const shouldListenRef = useRef(false);
-  const isSpeakingRef = useRef(false);
-  const isRunningRef = useRef(false);
+
+  const wsRef = useRef(null);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const wantRef = useRef(false);
+  const bufferRef = useRef("");
+  const clearTimerRef = useRef(null);
   const restartTimerRef = useRef(null);
-  const clearLiveTimerRef = useRef(null);
   const onTranscriptRef = useRef(onTranscript);
+  const onHypothesisRef = useRef(onHypothesis);
 
   useEffect(() => {
     onTranscriptRef.current = onTranscript;
   }, [onTranscript]);
 
   useEffect(() => {
-    isSpeakingRef.current = speaking;
-  }, [speaking]);
+    onHypothesisRef.current = onHypothesis;
+  }, [onHypothesis]);
+
+  const cleanup = useCallback(() => {
+    try {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        recorderRef.current.stop();
+      }
+    } catch (_) {}
+    recorderRef.current = null;
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+
+    const ws = wsRef.current;
+    wsRef.current = null;
+    if (ws) {
+      ws.onclose = null;
+      try {
+        ws.close();
+      } catch (_) {}
+    }
+    bufferRef.current = "";
+    setListening(false);
+  }, []);
+
+  const flush = useCallback(() => {
+    const text = bufferRef.current.trim();
+    bufferRef.current = "";
+    if (!text) return;
+    setLiveTranscript(text);
+    clearTimeout(clearTimerRef.current);
+    clearTimerRef.current = setTimeout(() => setLiveTranscript(""), 4000);
+    onTranscriptRef.current?.(text);
+  }, []);
 
   const stopContinuousListening = useCallback(() => {
-    setListening(false);
-    shouldListenRef.current = false;
+    wantRef.current = false;
     clearTimeout(restartTimerRef.current);
+    cleanup();
+  }, [cleanup]);
 
-    if (recognitionRef.current && isRunningRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (_) {}
-      isRunningRef.current = false;
-    }
-  }, []);
-
-  const startContinuousListening = useCallback(() => {
-    if (typeof window === "undefined") return;
-    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRec) {
-      setListening(false);
-      return;
-    }
-
-    shouldListenRef.current = true;
-    clearTimeout(restartTimerRef.current);
-
-    if (isRunningRef.current) {
-      return;
-    }
+  const startContinuousListening = useCallback(async () => {
+    wantRef.current = true;
+    if (wsRef.current) return;
 
     try {
-      if (!recognitionRef.current) {
-        const rec = new SpeechRec();
-        rec.continuous = true;
-        rec.interimResults = true;
-        rec.lang = "en-IN";
-        rec.maxAlternatives = 1;
-
-        rec.onstart = () => {
-          isRunningRef.current = true;
-          setListening(true);
-        };
-
-        rec.onresult = (event) => {
-          if (!shouldListenRef.current || isSpeakingRef.current) return;
-
-          let interim = "";
-          let final = "";
-
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            const transcript = event.results[i][0]?.transcript || "";
-            if (event.results[i].isFinal) {
-              final += transcript;
-            } else {
-              interim += transcript;
-            }
-          }
-
-          if (interim) {
-            setLiveTranscript(interim);
-          }
-
-          const cleanFinal = final.trim();
-          if (cleanFinal) {
-            setLiveTranscript(cleanFinal);
-            clearTimeout(clearLiveTimerRef.current);
-            clearLiveTimerRef.current = setTimeout(() => setLiveTranscript(""), 4000);
-
-            if (onTranscriptRef.current) {
-              onTranscriptRef.current(cleanFinal);
-            }
-          }
-        };
-
-        rec.onerror = (event) => {
-          if (event.error !== "aborted" && event.error !== "no-speech") {
-            console.warn("Speech recognition notice:", event.error);
-          }
-        };
-
-        rec.onend = () => {
-          isRunningRef.current = false;
-          setListening(false);
-
-          // Auto-restart listening if engaged and not speaking
-          if (shouldListenRef.current && !isSpeakingRef.current) {
-            clearTimeout(restartTimerRef.current);
-            restartTimerRef.current = setTimeout(() => {
-              if (shouldListenRef.current && !isSpeakingRef.current && !isRunningRef.current) {
-                try {
-                  rec.start();
-                } catch (_) {
-                  isRunningRef.current = false;
-                }
-              }
-            }, 600);
-          }
-        };
-
-        recognitionRef.current = rec;
+      let key = DEEPGRAM_DEFAULT_KEY;
+      if (typeof window !== "undefined") {
+        if (window.electronAPI?.getDeepgramKey) {
+          try {
+            const k = await window.electronAPI.getDeepgramKey();
+            if (k) key = k;
+          } catch (_) {}
+        } else if (window.kiosk?.getDeepgramKey) {
+          try {
+            const k = await window.kiosk.getDeepgramKey();
+            if (k) key = k;
+          } catch (_) {}
+        }
       }
 
-      recognitionRef.current.start();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+      });
+
+      if (!wantRef.current || wsRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      const ws = new WebSocket(URL, ["token", key]);
+      wsRef.current = ws;
+      streamRef.current = stream;
+
+      ws.onopen = () => {
+        setListening(true);
+        console.log("[Deepgram STT] Connected to Nova-3 WebSocket");
+
+        let mimeType = "audio/webm;codecs=opus";
+        if (typeof MediaRecorder !== "undefined" && !MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "audio/webm";
+        }
+
+        const rec = new MediaRecorder(stream, { mimeType });
+        recorderRef.current = rec;
+        rec.ondataavailable = (e) => {
+          if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+            ws.send(e.data);
+          }
+        };
+        rec.start(250);
+      };
+
+      ws.onmessage = (msg) => {
+        let data;
+        try {
+          data = JSON.parse(msg.data);
+        } catch (_) {
+          return;
+        }
+
+        if (data.type === "UtteranceEnd") {
+          flush();
+          return;
+        }
+        if (data.type !== "Results") return;
+
+        const text = data.channel?.alternatives?.[0]?.transcript?.trim() || "";
+        if (!text) return;
+
+        if (data.is_final) {
+          bufferRef.current += (bufferRef.current ? " " : "") + text;
+          setLiveTranscript(bufferRef.current);
+          onHypothesisRef.current?.(bufferRef.current);
+          if (data.speech_final) {
+            flush();
+          }
+        } else {
+          const live = (bufferRef.current + " " + text).trim();
+          setLiveTranscript(live);
+          onHypothesisRef.current?.(live);
+        }
+      };
+
+      ws.onerror = (e) => console.warn("[Deepgram STT] WebSocket error:", e);
+
+      ws.onclose = () => {
+        cleanup();
+        if (wantRef.current) {
+          restartTimerRef.current = setTimeout(startContinuousListening, 1000);
+        }
+      };
     } catch (e) {
-      if (e.name !== "InvalidStateError") {
-        console.warn("Speech recognition init notice:", e);
-      }
+      console.warn("[Deepgram STT] Init failed:", e);
+      cleanup();
     }
-  }, []);
+  }, [cleanup, flush]);
 
-  // Sync listening state with kiosk engagement and avatar speaking state
+  // Listen only while engaged AND the avatar is not talking
   useEffect(() => {
-    shouldListenRef.current = isEngaged && !speaking;
-
-    if (shouldListenRef.current) {
+    if (isEngaged && !speaking) {
       startContinuousListening();
     } else {
       stopContinuousListening();
     }
-
-    return () => {
-      clearTimeout(restartTimerRef.current);
-      clearTimeout(clearLiveTimerRef.current);
-    };
   }, [isEngaged, speaking, startContinuousListening, stopContinuousListening]);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(clearTimerRef.current);
+      stopContinuousListening();
+    };
+  }, [stopContinuousListening]);
 
   const toggleListening = useCallback(() => {
     if (listening) {
@@ -157,7 +196,6 @@ export function useSpeech({ onTranscript, isEngaged = false } = {}) {
     speaking,
     listening,
     liveTranscript,
-    setSpeaking,
     toggleListening,
     startContinuousListening,
     stopContinuousListening,
