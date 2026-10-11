@@ -628,6 +628,21 @@ export class GreenieAvatar {
       };
     }
 
+    let finished = false;
+    const safeEnd = () => {
+      if (finished) return;
+      finished = true;
+      if (this._watchdogTimer) {
+        clearTimeout(this._watchdogTimer);
+        this._watchdogTimer = null;
+      }
+      if (token !== this.generation) return;
+      this.mode = "idle";
+      this.setMouth();
+      this.onSpeakingChange(false);
+      this.setStatus("Listening...");
+    };
+
     u.onstart = () => {
       if (token !== this.generation) return;
       this.mode = "tts";
@@ -635,27 +650,27 @@ export class GreenieAvatar {
       this.boundaryAt = this.started;
       this.onSpeakingChange(true);
       this.setStatus("Explaining...");
+
+      // Safety watchdog: estimated duration based on text length + 1500ms buffer
+      const approxDurationMs = Math.max(1800, (text.length / 12) * 1000 + 1500);
+      clearTimeout(this._watchdogTimer);
+      this._watchdogTimer = setTimeout(() => {
+        if (!finished && token === this.generation) {
+          console.warn("[Avatar] SpeechSynthesis watchdog timer fired: unblocking speaking state");
+          safeEnd();
+        }
+      }, approxDurationMs);
     };
+
     u.onboundary = (e) => {
       if (token !== this.generation) return;
       this.charIndex = e.charIndex;
       this.boundaryAt = performance.now();
       this.onBoundary(e.charIndex);
     };
-    u.onend = () => {
-      if (token !== this.generation) return;
-      this.mode = "idle";
-      this.setMouth();
-      this.onSpeakingChange(false);
-      this.setStatus("Listening...");
-    };
-    u.onerror = (e) => {
-      if (token !== this.generation) return;
-      this.mode = "idle";
-      this.setMouth();
-      this.onSpeakingChange(false);
-      this.setStatus("Listening...");
-    };
+
+    u.onend = safeEnd;
+    u.onerror = safeEnd;
 
     this.mode = "tts";
     this.setStatus("Explaining...");

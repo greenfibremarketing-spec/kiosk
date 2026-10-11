@@ -38,6 +38,9 @@ export default function AvatarPanel({
   onToggleMic,
   signals = null,
   onQuickPick,
+  backendAction = null,
+  onSkipName = null,
+  onSubmitName = null,
   setStageRef,
   // debug extras
   vadSpeech,
@@ -289,6 +292,7 @@ export default function AvatarPanel({
             onToggleMic={onToggleMic}
             micError={micError}
             audioLevel={audioLevel}
+            onQuickPick={onQuickPick}
           />
         </div>
       </div>

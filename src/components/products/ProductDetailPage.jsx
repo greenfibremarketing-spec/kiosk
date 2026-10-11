@@ -6,30 +6,46 @@ import { PRODUCTS } from "@/data/products";
 
 export default function ProductDetailPage({
   product,
+  products = [],
   onBack,
   onProceedToCheckout,
   onSelectProduct,
 }) {
   const [quantity, setQuantity] = useState(1);
-  const [selectedColor, setSelectedColor] = useState("Natural Olive");
+  const [selectedColor, setSelectedColor] = useState(
+    product?.variants?.[0]?.name || "Natural Olive"
+  );
   const [activeTab, setActiveTab] = useState("specs"); // "specs" | "material" | "care"
 
   if (!product) return null;
 
-  // Recommended complementary products
-  const recommended = PRODUCTS.filter((p) => p.id !== product.id)
+  // Recommended complementary products from live catalog
+  const sourceProducts = products && products.length > 0 ? products : PRODUCTS;
+  const recommended = sourceProducts
+    .filter((p) => p.id !== product.id)
     .sort((a, b) => {
-      const aOverlap = a.categories.filter((c) => product.categories.includes(c)).length;
-      const bOverlap = b.categories.filter((c) => product.categories.includes(c)).length;
+      const aOverlap = (a.categories || []).filter((c) => (product.categories || []).includes(c)).length;
+      const bOverlap = (b.categories || []).filter((c) => (product.categories || []).includes(c)).length;
       return bOverlap - aOverlap;
     })
     .slice(0, 3);
 
-  const colors = [
-    { name: "Natural Olive", hex: "#4a6741", desc: "Matte herbal tones" },
-    { name: "Raw Husk Cream", hex: "#e2d7c0", desc: "Natural unbleached finish" },
-    { name: "Earthy Terracotta", hex: "#b4654a", desc: "Warm clay warmth" },
-  ];
+  const colors =
+    product?.variants && product.variants.length > 0
+      ? product.variants.map((v, i) => {
+          const defaultHexes = ["#4a6741", "#e2d7c0", "#b4654a", "#22c55e", "#f97316"];
+          return {
+            name: v.name || `Variant ${i + 1}`,
+            hex: defaultHexes[i % defaultHexes.length],
+            desc: v.stock ? `${v.stock} in stock` : "Eco Finish",
+            image: v.images?.[0] || product.image,
+          };
+        })
+      : [
+          { name: "Natural Olive", hex: "#4a6741", desc: "Matte herbal tones" },
+          { name: "Raw Husk Cream", hex: "#e2d7c0", desc: "Natural unbleached finish" },
+          { name: "Earthy Terracotta", hex: "#b4654a", desc: "Warm clay warmth" },
+        ];
 
   const unitPrice = product.salePrice || product.price;
   const totalPrice = unitPrice * quantity;
@@ -275,14 +291,18 @@ export default function ProductDetailPage({
         </div>
       </div>
 
-      {/* ── Recommended Complementary Products ("Complete Your Routine") ── */}
-      <section className="pdp-recommended-section">
+      {/* ── Avatar Recommendations Section (Requirement 6) ── */}
+      <section className="pdp-recommended-section" aria-label="Avatar Recommendations">
         <div className="section-head">
           <div className="section-head__title">
-            <span className="section-tag">✨ Recommended Bundles</span>
-            <h2>Complete Your Sustainable Routine</h2>
+            <span className="section-tag" style={{ background: "#e6f7ec", color: "#007a2d", fontWeight: "700", border: "1px solid rgba(0, 166, 62, 0.25)" }}>
+              🤖 Avatar Recommendations
+            </span>
+            <h2>Handpicked by Greenie</h2>
           </div>
-          <span className="section-subtitle">Items shoppers frequently pair with the {product.name}</span>
+          <span className="section-subtitle">
+            Looking for something else? Greenie suggests these verified sustainable alternatives and complementary pairings for your {product.name}:
+          </span>
         </div>
 
         <div className="recommended-grid">
@@ -296,13 +316,13 @@ export default function ProductDetailPage({
             >
               <div className="rec-card__media">
                 <ProductArt image={item.image} name={item.name} shape={item.shape} />
-                <span className="rec-badge">{item.badge || "Pairs Well"}</span>
+                <span className="rec-badge">{item.badge || "Avatar Pick"}</span>
               </div>
               <div className="rec-card__body">
                 <h3 className="rec-card__title">{item.name}</h3>
                 <div className="rec-card__price-row">
                   <PriceTag product={item} size="md" />
-                  <span className="rec-card__action">View Details →</span>
+                  <span className="rec-card__action">Explore with Greenie →</span>
                 </div>
               </div>
             </article>

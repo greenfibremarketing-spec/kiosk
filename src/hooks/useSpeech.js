@@ -5,7 +5,7 @@ const WS_URL =
   "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-IN" +
   "&encoding=linear16&sample_rate=16000&channels=1" +
   "&smart_format=true&interim_results=true" +
-  "&endpointing=300&utterance_end_ms=1000";
+  "&endpointing=250&utterance_end_ms=800";
 
 export function useSpeech({
   mic,                 // { subscribePcm, getRecent } from useMic
@@ -26,6 +26,7 @@ export function useSpeech({
   const retryCountRef = useRef(0);
   const unsubRef = useRef(null);
   const clearTimerRef = useRef(null);
+  const finalFlushTimerRef = useRef(null);
   const connectRef = useRef(null);
 
   const wasOpenRef = useRef(true);
@@ -38,6 +39,7 @@ export function useSpeech({
   micRef.current = mic;
 
   const flush = useCallback(() => {
+    clearTimeout(finalFlushTimerRef.current);
     const text = bufferRef.current.trim();
     bufferRef.current = "";
     if (!text) return;
@@ -48,6 +50,7 @@ export function useSpeech({
 
   const teardownSocket = useCallback(() => {
     clearInterval(keepAliveRef.current);
+    clearTimeout(finalFlushTimerRef.current);
     unsubRef.current?.();
     unsubRef.current = null;
     wsRef.current = null;
@@ -68,8 +71,13 @@ export function useSpeech({
       }
     } catch (_) {}
 
+    key =
+      key ||
+      process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY ||
+      "8ede28576db8d02d8ab30f8ec9a0c5ac2be3986f";
+
     if (!key) {
-      console.warn("[STT] No Deepgram key from Electron bridge");
+      console.warn("[STT] No Deepgram key found");
       return;
     }
     if (!wantRef.current || wsRef.current) return;
@@ -118,7 +126,11 @@ export function useSpeech({
       let d;
       try { d = JSON.parse(msg.data); } catch (_) { return; }
 
-      if (d.type === "UtteranceEnd") { flush(); return; }
+      if (d.type === "UtteranceEnd") {
+        clearTimeout(finalFlushTimerRef.current);
+        flush();
+        return;
+      }
       if (d.type !== "Results") return;
 
       const text = d.channel?.alternatives?.[0]?.transcript?.trim();
@@ -137,7 +149,15 @@ export function useSpeech({
 
       if (d.is_final) {
         bufferRef.current = full;
-        if (d.speech_final) flush();
+        clearTimeout(finalFlushTimerRef.current);
+        if (d.speech_final) {
+          flush();
+        } else {
+          // Fallback debounce: if UtteranceEnd / speech_final doesn't arrive in 450ms, flush
+          finalFlushTimerRef.current = setTimeout(() => {
+            flush();
+          }, 450);
+        }
       }
     };
 

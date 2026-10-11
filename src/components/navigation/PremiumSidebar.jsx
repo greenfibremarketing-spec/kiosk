@@ -7,6 +7,8 @@ export default function PremiumSidebar({
   onClose,
   activeCategory,
   onSelectCategory,
+  categories = CATEGORIES,
+  products = PRODUCTS,
 }) {
   // Close on Escape key press
   useEffect(() => {
@@ -22,25 +24,27 @@ export default function PremiumSidebar({
   if (!isOpen) return null;
 
   const getCategoryCount = (catId) => {
-    if (catId === "all") return PRODUCTS.length;
-    return PRODUCTS.filter((p) => p.categories.includes(catId)).length;
+    if (catId === "all") return products.length;
+    const clean = String(catId).toLowerCase().trim();
+    return products.filter((p) => {
+      const pCat = String(p.category || "").toLowerCase();
+      const pCats = Array.isArray(p.categories) ? p.categories.map((c) => String(c).toLowerCase()) : [];
+      return pCat.includes(clean) || clean.includes(pCat) || pCats.includes(clean);
+    }).length;
   };
 
   const getCategoryIcon = (catId) => {
-    switch (catId) {
-      case "all":
-        return "✨";
-      case "gifts":
-        return "🎁";
-      case "drinkware":
-        return "☕";
-      case "kitchen":
-        return "🥣";
-      case "office":
-        return "📂";
-      default:
-        return "🌿";
-    }
+    const clean = String(catId).toLowerCase();
+    if (clean === "all") return "✨";
+    if (clean.includes("bottle")) return "💧";
+    if (clean.includes("drink") || clean.includes("mug")) return "☕";
+    if (clean.includes("gift") || clean.includes("hamper")) return "🎁";
+    if (clean.includes("kitchen") || clean.includes("din") || clean.includes("bowl")) return "🥣";
+    if (clean.includes("storage") || clean.includes("canister")) return "📦";
+    if (clean.includes("planter")) return "🪴";
+    if (clean.includes("tableware")) return "🍽️";
+    if (clean.includes("office") || clean.includes("desk")) return "📂";
+    return "🌿";
   };
 
   return (
@@ -105,10 +109,10 @@ export default function PremiumSidebar({
           <section className="sidebar__section">
             <div className="sidebar__section-header">
               <span className="sidebar__section-label">Browse Collections</span>
-              <span className="sidebar__section-meta">{PRODUCTS.length} Total Items</span>
+              <span className="sidebar__section-meta">{products.length} Total Items</span>
             </div>
             <div className="sidebar__nav-list">
-              {CATEGORIES.map((c) => {
+              {categories.map((c) => {
                 const isSelected = c.id === activeCategory;
                 const count = getCategoryCount(c.id);
                 return (
@@ -122,7 +126,7 @@ export default function PremiumSidebar({
                     }}
                   >
                     <span className="nav-item-icon">{getCategoryIcon(c.id)}</span>
-                    <span className="nav-item-label">{c.label}</span>
+                    <span className="nav-item-label">{c.label || c.name || c.id}</span>
                     <span className="nav-item-count">{count}</span>
                   </button>
                 );

@@ -1,5 +1,5 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import CategoryTabs from "./CategoryTabs";
 import ProductCard from "./ProductCard";
 import ProductDetailPage from "./ProductDetailPage";
@@ -11,10 +11,13 @@ import { CATEGORIES } from "@/data/products";
 
 export default function ProductShowcase({
   category,
+  categories = CATEGORIES,
   product,
   products = [],
   onCategory,
   onSelect,
+  showDetail = false,
+  onCloseDetail,
 }) {
   const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success"
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -22,8 +25,26 @@ export default function ProductShowcase({
   const [orderResult, setOrderResult] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  const currentCategory = CATEGORIES.find((c) => c.id === category);
-  const label = currentCategory?.label || "All Products";
+  const activeCats = categories && categories.length > 0 ? categories : CATEGORIES;
+  const currentCategory = activeCats.find((c) => c.id === category || c.id === String(category).toLowerCase());
+  const label = currentCategory?.label || currentCategory?.name || "All Products";
+
+  // Automatically sync product & detail view when AI explores a product
+  useEffect(() => {
+    if (product) {
+      setSelectedProduct(product);
+      if (showDetail) {
+        setView("detail");
+      }
+    }
+  }, [product, showDetail]);
+
+  // If category changes or detail closed, return to catalog
+  useEffect(() => {
+    if (!showDetail && view === "detail") {
+      setView("catalog");
+    }
+  }, [category, showDetail, view]);
 
   // When user clicks a product in the catalog
   const handleSelectProduct = (p) => {
@@ -48,6 +69,7 @@ export default function ProductShowcase({
   const handleReturnToCatalog = () => {
     setView("catalog");
     setSelectedProduct(null);
+    onCloseDetail?.();
   };
 
   // Sidebar category pick
@@ -55,6 +77,7 @@ export default function ProductShowcase({
     onCategory?.(catId);
     setView("catalog");
     setSelectedProduct(null);
+    onCloseDetail?.();
   };
 
   return (
@@ -73,7 +96,8 @@ export default function ProductShowcase({
         onClose={() => setIsSidebarOpen(false)}
         activeCategory={category}
         onSelectCategory={handleSidebarCategory}
-        totalProducts={products?.length || 8}
+        categories={activeCats}
+        products={products}
       />
 
       {/* ── View 1: All Products Catalog Grid ── */}
@@ -93,8 +117,13 @@ export default function ProductShowcase({
             </div>
           </header>
 
-          {/* Category Filter Tabs: All, Corporate Gifts, Drinkware, Kitchen, Office */}
-          <CategoryTabs active={category} onSelect={onCategory} />
+          {/* Category Filter Tabs */}
+          <CategoryTabs
+            active={category}
+            onSelect={onCategory}
+            categories={activeCats}
+            products={products}
+          />
 
           {/* Main Product Listing Grid */}
           <div className="products-grid-wrapper">
@@ -116,6 +145,7 @@ export default function ProductShowcase({
       {view === "detail" && selectedProduct && (
         <ProductDetailPage
           product={selectedProduct}
+          products={products}
           onBack={handleReturnToCatalog}
           onProceedToCheckout={handleProceedToCheckout}
           onSelectProduct={handleSelectProduct}

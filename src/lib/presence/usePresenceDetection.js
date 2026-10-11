@@ -2,14 +2,14 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
 const DEFAULT_CONFIG = {
-  enterCm: 170,
-  exitCm: 220,
-  enterDwellMs: 250,
-  exitGraceMs: 2000,
+  enterCm: 220,
+  exitCm: 260,
+  enterDwellMs: 150,
+  exitGraceMs: 8000,
   focalPx: 580,
   fps: 8,
   cameraLabel: "",
-  touchKeepEngagedMs: 10000
+  touchKeepEngagedMs: 60000
 };
 
 export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
@@ -339,7 +339,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
 
           if (isFarOrGone) {
             const isTouchActive = now < touchExpiryRef.current;
-            const graceRequired = isTouchActive ? 5000 : (config.exitGraceMs || 2000);
+            const graceRequired = isTouchActive ? 30000 : (config.exitGraceMs || 15000);
 
             if (!graceStartRef.current) {
               graceStartRef.current = now;

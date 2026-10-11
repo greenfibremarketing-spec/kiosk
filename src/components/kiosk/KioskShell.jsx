@@ -1,10 +1,13 @@
 "use client";
+import { useState, useEffect } from "react";
 import AvatarPanel from "@/components/avatar/AvatarPanel";
 import ProductShowcase from "@/components/products/ProductShowcase";
+import RightOnboardingFlow from "@/components/kiosk/RightOnboardingFlow";
 import { useKiosk } from "@/hooks/useKiosk";
 
 export default function KioskShell() {
   const k = useKiosk();
+  const isEngaged = k.presence.state === "ENGAGED";
 
   return (
     <main
@@ -33,6 +36,9 @@ export default function KioskShell() {
         lastUserSpeech={k.lastUserSpeech}
         onToggleMic={() => {}}
         signals={k.signals}
+        backendAction={k.backendAction}
+        onSkipName={k.skipName}
+        onSubmitName={k.submitName}
         setStageRef={k.setStageRef}
         vadSpeech={k.vadSpeech}
         audioLevel={k.audioLevel}
@@ -42,15 +48,47 @@ export default function KioskShell() {
         silentForMs={k.silentForMs}
       />
 
-      <ProductShowcase
-        category={k.category}
-        product={k.product}
-        products={k.products}
-        onCategory={k.selectCategory}
-        onSelect={k.selectProduct}
-        onEnquire={k.enquire}
-        onQuickPick={k.send}
-      />
+      {/* ── Right Column: Catalog + Right-Side Separate Onboarding Flow ── */}
+      <div className="kiosk-right-pane" style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }}>
+        <ProductShowcase
+          category={k.category}
+          categories={k.categories}
+          product={k.product}
+          products={k.products}
+          onCategory={k.selectCategory}
+          onSelect={k.selectProduct}
+          onEnquire={k.enquire}
+          onQuickPick={k.send}
+          showDetail={k.showDetail}
+          onCloseDetail={() => k.setShowDetail(false)}
+        />
+
+        {/* ── Right-Side Onboarding Flow (Step 1: Ask Name) ── */}
+        <RightOnboardingFlow
+          isOpen={k.onboardingOpen}
+          step={k.onboardingStep}
+          backendAction={k.backendAction}
+          categories={k.categories}
+          products={k.products}
+          onClose={() => k.setOnboardingOpen(false)}
+          name={k.name}
+          onSubmitName={(name) => {
+            k.submitName(name);
+          }}
+          onSkipName={() => {
+            k.skipName();
+          }}
+          onSelectCategory={(catId) => {
+            k.selectCategory(catId);
+          }}
+          onSelectProduct={(p) => {
+            k.selectProduct(p);
+          }}
+          onGoToAllProducts={() => {
+            k.showAll();
+          }}
+        />
+      </div>
     </main>
   );
 }
