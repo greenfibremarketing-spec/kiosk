@@ -18,6 +18,8 @@ export default function ProductShowcase({
   onSelect,
   showDetail = false,
   onCloseDetail,
+  actionButtons = [],
+  onButtonClick,
 }) {
   const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success"
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -149,6 +151,8 @@ export default function ProductShowcase({
           onBack={handleReturnToCatalog}
           onProceedToCheckout={handleProceedToCheckout}
           onSelectProduct={handleSelectProduct}
+          buttons={actionButtons}
+          onButtonClick={onButtonClick}
         />
       )}
 

@@ -10,12 +10,19 @@ export default function ProductDetailPage({
   onBack,
   onProceedToCheckout,
   onSelectProduct,
+  buttons = [],
+  onButtonClick,
 }) {
   const [quantity, setQuantity] = useState(1);
   const [selectedColor, setSelectedColor] = useState(
     product?.variants?.[0]?.name || "Natural Olive"
   );
   const [activeTab, setActiveTab] = useState("specs"); // "specs" | "material" | "care"
+
+  const displayButtons =
+    buttons && buttons.length > 0
+      ? buttons
+      : ["Next", "Cheaper", "Compare", "I'll take it"];
 
   if (!product) return null;
 
@@ -281,6 +288,32 @@ export default function ProductDetailPage({
                 <span className="cta-arrow">→</span>
               </div>
             </button>
+          </div>
+
+          {/* Action Buttons below product card (SHOW_PRODUCT_CARD) */}
+          <div className="pdp-action-buttons-strip">
+            <span className="pdp-action-buttons-label">⚡ Avatar Suggestions:</span>
+            <div className="pdp-action-buttons-grid">
+              {displayButtons.map((btn, idx) => {
+                const label = typeof btn === "string" ? btn : btn.label || btn.name || btn.id;
+                const isTakeIt = /take it|i'll take it|buy/i.test(label);
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    className={`pdp-action-btn ${isTakeIt ? "pdp-action-btn--take" : ""}`}
+                    onClick={() => {
+                      if (isTakeIt) {
+                        onProceedToCheckout?.({ product, quantity, selectedColor, totalPrice, savings });
+                      }
+                      onButtonClick?.(btn);
+                    }}
+                  >
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Bulk Orders Note */}

@@ -49,14 +49,18 @@ export const KIOSK_ID =
   process.env.NEXT_PUBLIC_KIOSK_ID || "kiosk-01";
 
 // 3. Helper to build WebSocket connection URL
-export function getWsUrl(sessionId = "kiosk-session", kioskId = KIOSK_ID) {
+export function getWsUrl(sessionId = "kiosk-session", kioskId = KIOSK_ID, autoGreet = true) {
   if (process.env.NEXT_PUBLIC_WS_URL) {
     return process.env.NEXT_PUBLIC_WS_URL;
   }
   const cleanBase = WS_BASE_URL.replace(/\/+$/, "");
   const cleanSess = encodeURIComponent(String(sessionId || "kiosk-session"));
   const cleanKiosk = encodeURIComponent(String(kioskId || KIOSK_ID));
-  return `${cleanBase}/ws/${cleanSess}?v=2&kiosk_id=${cleanKiosk}`;
+  let url = `${cleanBase}/ws/${cleanSess}?v=2&kiosk_id=${cleanKiosk}`;
+  if (autoGreet) {
+    url += "&auto_greet=true";
+  }
+  return url;
 }
 
 // 4. REST Endpoints

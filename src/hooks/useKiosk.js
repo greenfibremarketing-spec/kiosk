@@ -65,6 +65,15 @@ export function useKiosk() {
   const [showDetail, setShowDetail]       = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
+  const [actionButtons, setActionButtons] = useState([]);
+  const [cartModalOpen, setCartModalOpen] = useState(false);
+  const [cartModalData, setCartModalData] = useState(null);
+  const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [qrModalData, setQrModalData] = useState(null);
+  const [goodbyeOpen, setGoodbyeOpen] = useState(false);
+  const [goodbyeData, setGoodbyeData] = useState(null);
+  const [staffBanner, setStaffBanner] = useState(null);
+  const [hintBubble, setHintBubble] = useState(null);
   const sendTranscriptRef = useRef(null);
 
   // Preload verified database catalog from backend API
@@ -121,6 +130,15 @@ export function useKiosk() {
     }
     kioskWS.pendingSpeechId = null;
     setBackendAction(null);
+    setActionButtons([]);
+    setCartModalOpen(false);
+    setCartModalData(null);
+    setQrModalOpen(false);
+    setQrModalData(null);
+    setGoodbyeOpen(false);
+    setGoodbyeData(null);
+    setStaffBanner(null);
+    setHintBubble(null);
     setShowDetail(false);
     setOnboardingOpen(false);
     setOnboardingStep(1);
@@ -133,9 +151,9 @@ export function useKiosk() {
     setShowPTT(false);
   }, [setConv]);
 
-  // Connect WebSocket client on mount for current session
+  // Connect WebSocket client on mount for current session with auto_greet
   useEffect(() => {
-    kioskWS.connect(sessionIdRef.current);
+    kioskWS.connect(sessionIdRef.current, true);
   }, []);
 
   const presence = usePresenceDetection({
@@ -333,12 +351,33 @@ export function useKiosk() {
     }
 
     switch (actionType) {
+      case "SHOW_GREETING": {
+        // Welcome Screen: Avatar speaks greeting, await SPEECH_DONE
+        presence.triggerTouchEngaged();
+        setOnboardingOpen(false);
+        setShowDetail(false);
+        setCartModalOpen(false);
+        setQrModalOpen(false);
+        setGoodbyeOpen(false);
+        if (action?.speech_id) {
+          kioskWS.currentSpeechId = action.speech_id;
+        }
+        const greetingText = action?.message || action?.prompt || action?.text || GREETING;
+        say(greetingText);
+        break;
+      }
+
       case "ASK_NAME": {
-        // 1. Open Name Popup Modal on the right (Step 1)
+        // Name Input Modal / Tab
         presence.triggerTouchEngaged();
         setOnboardingStep(1);
         setOnboardingOpen(true);
         setShowDetail(false);
+        setCartModalOpen(false);
+        setQrModalOpen(false);
+        if (action?.buttons && Array.isArray(action.buttons)) {
+          setActionButtons(action.buttons);
+        }
         const promptText = action?.prompt || action?.message || action?.text;
         if (promptText && typeof promptText === "string" && promptText.trim().length > 0) {
           say(promptText.trim());
@@ -347,44 +386,167 @@ export function useKiosk() {
       }
 
       case "SHOW_CATEGORIES": {
-        // Go directly to All Products page; do not open category drawer
-        setCategory("all");
-        setOnboardingOpen(false);
+        // Categories Grid Tab
+        presence.triggerTouchEngaged();
+        setOnboardingStep(2);
+        setOnboardingOpen(true);
         setShowDetail(false);
+        setCartModalOpen(false);
+        setQrModalOpen(false);
+        if (action?.buttons && Array.isArray(action.buttons)) {
+          setActionButtons(action.buttons);
+        }
+        const msg = action?.message || action?.text;
+        if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          say(msg.trim());
+        }
         break;
       }
 
+      case "SHOW_PRODUCT_CARD":
+      case "SHOW_PRODUCT":
       case "SHOW_PRODUCTS": {
-        // 3. Navigate to Products Grid (Category or "Show Everything")
+        // Product Showcase Tab / Product Details Tab
+        presence.triggerTouchEngaged();
         setOnboardingOpen(false);
-        setShowDetail(false);
+        setCartModalOpen(false);
+        setQrModalOpen(false);
 
-        let resolvedCat = null;
-        if (action?.category_id || action?.category) {
-          resolvedCat = normalizeCategory(action.category_id || action.category);
-        } else if (action?.products?.[0]?.category) {
-          resolvedCat = normalizeCategory(action.products[0].category);
-        }
+        const prodData = action?.product || (action?.products && action.products[0]);
+        if (prodData || actionType === "SHOW_PRODUCT_CARD" || actionType === "SHOW_PRODUCT") {
+          setShowDetail(true);
+          const currentCatalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+          const target =
+            (prodData && findMatchingLocalProduct(prodData, currentCatalog)) ||
+            (action?.sku && findMatchingLocalProduct(action.sku, currentCatalog)) ||
+            (prodData && normalizeBackendProduct(prodData)) ||
+            currentCatalog[0];
 
-        // Store turn-specific products emitted directly by backend
-        if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
-          const normTurnProducts = action.products.map(normalizeBackendProduct).filter(Boolean);
-          setLiveTurnProducts(normTurnProducts);
-          if (normTurnProducts[0]?.id) {
-            setProductId(normTurnProducts[0].id);
+          if (target) {
+            setProductId(target.id || target.sku);
+            setBackendCatalog((prev) => {
+              if (prev.some((p) => p.id === target.id || p.sku === target.sku)) return prev;
+              return [target, ...prev];
+            });
+            if (target.categories) {
+              const bestCat = target.categories.find((c) => c !== "all") || "all";
+              setCategory(bestCat);
+            }
+          }
+
+          if (action?.buttons && Array.isArray(action.buttons)) {
+            setActionButtons(action.buttons);
+          } else {
+            setActionButtons(["Next", "Cheaper", "Compare", "I'll take it"]);
+          }
+
+          const msg = action?.message || action?.blurb;
+          if (msg && typeof msg === "string" && msg.trim().length > 0) {
+            say(msg.trim());
           }
         } else {
-          setLiveTurnProducts([]);
-        }
+          // Multiple products grid
+          setShowDetail(false);
+          let resolvedCat = null;
+          if (action?.category_id || action?.category) {
+            resolvedCat = normalizeCategory(action.category_id || action.category);
+          } else if (action?.products?.[0]?.category) {
+            resolvedCat = normalizeCategory(action.products[0].category);
+          }
 
-        if (resolvedCat) {
-          setCategory(resolvedCat);
-          const activeList = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
-          const items = productsIn(resolvedCat, activeList);
-          if (items.length > 0) setProductId(items[0].id);
-        } else {
-          setCategory("all");
+          if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
+            const normTurnProducts = action.products.map(normalizeBackendProduct).filter(Boolean);
+            setLiveTurnProducts(normTurnProducts);
+            if (normTurnProducts[0]?.id) {
+              setProductId(normTurnProducts[0].id);
+            }
+          } else {
+            setLiveTurnProducts([]);
+          }
+
+          if (resolvedCat) {
+            setCategory(resolvedCat);
+            const activeList = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+            const items = productsIn(resolvedCat, activeList);
+            if (items.length > 0) setProductId(items[0].id);
+          } else {
+            setCategory("all");
+          }
         }
+        break;
+      }
+
+      case "CONFIRM_BUY": {
+        // Cart Confirmation Modal
+        presence.triggerTouchEngaged();
+        setCartModalOpen(true);
+        const currentCatalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+        const target =
+          findMatchingLocalProduct(action?.sku, currentCatalog) ||
+          findMatchingLocalProduct(action?.product, currentCatalog) ||
+          (product || currentCatalog[0]);
+
+        setCartModalData({
+          sku: action?.sku || target?.sku,
+          product: target,
+          buttons: action?.buttons || ["Checkout", "Keep shopping"],
+        });
+        const msg = action?.message;
+        if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          say(msg.trim());
+        }
+        break;
+      }
+
+      case "CHECKOUT_HANDOFF": {
+        // Checkout & QR Screen
+        presence.triggerTouchEngaged();
+        setCartModalOpen(false);
+        setQrModalOpen(true);
+        const currentCatalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+        const target =
+          findMatchingLocalProduct(action?.sku, currentCatalog) ||
+          findMatchingLocalProduct(action?.product, currentCatalog) ||
+          (product || currentCatalog[0]);
+
+        setQrModalData({
+          sku: action?.sku || target?.sku,
+          product_url: action?.product_url,
+          product: target,
+        });
+        const msg = action?.message;
+        if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          say(msg.trim());
+        }
+        break;
+      }
+
+      case "GOODBYE": {
+        // Farewell / Thank You Screen
+        presence.triggerTouchEngaged();
+        setCartModalOpen(false);
+        setQrModalOpen(false);
+        setGoodbyeOpen(true);
+        setGoodbyeData({
+          message: action?.message || "Thank you, have a great day!",
+          autoResetAfterMs: action?.auto_reset_after_ms || 4000,
+        });
+        const msg = action?.message || "Thank you, have a great day!";
+        say(msg);
+        break;
+      }
+
+      case "REQUEST_HUMAN": {
+        // Staff Assistance Banner
+        setStaffBanner(action?.message || "A store associate is on the way.");
+        const msg = action?.message || "A store associate is on the way.";
+        say(msg);
+        break;
+      }
+
+      case "SHOW_HINT": {
+        // Help Tooltip / Bubble
+        setHintBubble(action?.hint || action?.message);
         break;
       }
 
@@ -393,34 +555,6 @@ export function useKiosk() {
         setShowDetail(false);
         setCategory("all");
         setLiveTurnProducts([]);
-        break;
-      }
-
-      case "SHOW_PRODUCT": {
-        // 4. Navigate to Specific Product Detail Page
-        setOnboardingOpen(false);
-        setShowDetail(true);
-
-        const currentCatalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
-        const target =
-          findMatchingLocalProduct(action?.product, currentCatalog) ||
-          findMatchingLocalProduct(action?.sku, currentCatalog) ||
-          findMatchingLocalProduct(action?.productId, currentCatalog) ||
-          findMatchingLocalProduct(action?.product_id, currentCatalog) ||
-          (action?.products?.length > 0 ? findMatchingLocalProduct(action.products[0], currentCatalog) : null);
-
-        if (target) {
-          setProductId(target.id);
-          // Ensure target is present in backendCatalog
-          setBackendCatalog((prev) => {
-            if (prev.some((p) => p.id === target.id || p.sku === target.sku)) return prev;
-            return [target, ...prev];
-          });
-          if (target.categories) {
-            const bestCat = target.categories.find((c) => c !== "all") || "all";
-            setCategory(bestCat);
-          }
-        }
         break;
       }
 
@@ -443,11 +577,16 @@ export function useKiosk() {
 
   handleServerActionRef.current = handleServerAction;
 
-  // Connect WebSocket real-time action listener
+  // Connect WebSocket real-time action, token, and hint listeners
   useEffect(() => {
     const unsubAction = kioskWS.on("action", (actionData) => {
       console.log("[KioskWS] Real-time action received:", actionData);
       handleServerAction(actionData);
+    });
+
+    const unsubHint = kioskWS.on("hint", (hintData) => {
+      console.log("[KioskWS] Hint received:", hintData);
+      setHintBubble(hintData);
     });
 
     const unsubDone = kioskWS.on("done", (doneData) => {
@@ -458,6 +597,7 @@ export function useKiosk() {
 
     return () => {
       unsubAction();
+      unsubHint();
       unsubDone();
     };
   }, [handleServerAction]);
@@ -851,6 +991,40 @@ export function useKiosk() {
     );
   }, [name, presence, say]);
 
+  const handleButtonClick = useCallback((btn) => {
+    presence.triggerTouchEngaged();
+    if (!btn) return;
+    console.log("[Kiosk] User clicked flow button:", btn);
+
+    const btnId = typeof btn === "string" ? btn.toLowerCase().trim() : (btn.id || btn.label || "").toLowerCase().trim();
+
+    if (btnId === "skip_name" || btnId === "skip") {
+      skipName();
+      return;
+    }
+
+    if (btnId === "checkout") {
+      kioskWS.sendWsMessage("checkout");
+      setCartModalOpen(false);
+      setQrModalOpen(true);
+      return;
+    }
+
+    if (btnId === "keep_shopping" || btnId === "keep shopping") {
+      kioskWS.sendWsMessage("keep shopping");
+      setCartModalOpen(false);
+      return;
+    }
+
+    if (btnId === "restart") {
+      restartSession();
+      return;
+    }
+
+    // Standard buttons ("next", "cheaper", "compare", "i'll take it", etc.)
+    kioskWS.sendButtonClick(btn);
+  }, [presence, restartSession, skipName]);
+
   const categories = useMemo(() => {
     if (backendAction?.categories && Array.isArray(backendAction.categories) && backendAction.categories.length > 0) {
       return [
@@ -940,9 +1114,26 @@ export function useKiosk() {
     navigateBack,
     restartSession,
     backendAction,
+    actionButtons,
     showDetail,
     setShowDetail,
     enquire,
+    reset,
+    handleButtonClick,
+    // Protocol v2 Modals & Screen Director
+    cartModalOpen,
+    setCartModalOpen,
+    cartModalData,
+    qrModalOpen,
+    setQrModalOpen,
+    qrModalData,
+    goodbyeOpen,
+    setGoodbyeOpen,
+    goodbyeData,
+    staffBanner,
+    setStaffBanner,
+    hintBubble,
+    setHintBubble,
     // automation & server action screen director
     onboardingOpen,
     setOnboardingOpen,

@@ -26,13 +26,15 @@ class KioskWebSocketClient {
     // Store last action received from backend (e.g. for speech_id acknowledgement)
     this.lastAction = null;
     this.currentResponse = "";
+    this.currentSpeechId = null;
     this.pendingSpeechId = null;
     this.speechDoneTimer = null;
   }
 
   generateTurnId() {
     this.turnCounter += 1;
-    return `turn-${Date.now()}-${this.turnCounter}`;
+    const num = this.turnCounter < 10 ? `0${this.turnCounter}` : `${this.turnCounter}`;
+    return `turn-${num}`;
   }
 
   // ── Event Subscription API ──
@@ -62,7 +64,7 @@ class KioskWebSocketClient {
   }
 
   // ── Connection Management ──
-  connect(sessionId = "kiosk-session") {
+  connect(sessionId = "kiosk-session", autoGreet = true) {
     if (typeof window === "undefined") return;
 
     // If already connected to the requested session, skip reconnecting
@@ -84,7 +86,7 @@ class KioskWebSocketClient {
     }
 
     this.sessionId = sessionId;
-    const wsUrl = getWsUrl(this.sessionId, KIOSK_ID);
+    const wsUrl = getWsUrl(this.sessionId, KIOSK_ID, autoGreet);
 
     try {
       console.log(`[KioskWS] Connecting (${CURRENT_ENV}) to:`, wsUrl);
@@ -220,12 +222,20 @@ class KioskWebSocketClient {
 
         case "action": {
           const act = actionData || data || payload?.data || payload;
+          if (act?.speech_id) {
+            this.currentSpeechId = act.speech_id;
+          }
           this.lastAction = act;
           this.emit("action", act);
 
           for (const pending of this.activeTurns.values()) {
             pending.onAction?.(act);
           }
+          break;
+        }
+
+        case "hint": {
+          this.emit("hint", data);
           break;
         }
 
@@ -496,6 +506,75 @@ class KioskWebSocketClient {
   sendSpeechDone(speechId) {
     this.flushSpeechDone(speechId);
     return Promise.resolve({ success: true });
+  }
+
+  // ── Standard Protocol v2 Sending API ──
+  sendWsMessage(text) {
+    const turnId = this.generateTurnId();
+    const frame = {
+      v: 2,
+      message: String(text || ""),
+      turn_id: turnId,
+    };
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.log("[KioskWS] Sending message frame:", frame);
+      this.ws.send(JSON.stringify(frame));
+    } else {
+      console.warn("[KioskWS] WebSocket not open when sending message:", text);
+    }
+    return turnId;
+  }
+
+  sendWsAction(actionPayload = {}) {
+    const turnId = actionPayload?.turn_id || this.generateTurnId();
+    const frame = {
+      v: 2,
+      ...actionPayload,
+      turn_id: turnId,
+    };
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      console.log("[KioskWS] Sending action frame:", frame);
+      this.ws.send(JSON.stringify(frame));
+    } else {
+      console.warn("[KioskWS] WebSocket not open when sending action:", actionPayload);
+    }
+    return turnId;
+  }
+
+  // Section 4 convenience methods
+  sendSetName(name) {
+    return this.sendWsAction({
+      action: "SET_NAME",
+      name: String(name || "").trim(),
+    });
+  }
+
+  sendSkipName() {
+    return this.sendWsAction({
+      action: "SKIP_NAME",
+    });
+  }
+
+  sendSelectCategory(categoryId) {
+    return this.sendWsAction({
+      action: "SELECT_CATEGORY",
+      category_id: String(categoryId || "").trim().toLowerCase(),
+    });
+  }
+
+  sendButtonClick(button) {
+    if (!button) return;
+    if (typeof button === "string") {
+      return this.sendWsMessage(button);
+    }
+    if (button.action) {
+      return this.sendWsAction({ action: button.action, ...button });
+    }
+    if (button.id === "skip_name") {
+      return this.sendSkipName();
+    }
+    const val = button.id || button.label || button.name || "";
+    return this.sendWsMessage(val);
   }
 
   // ── Cancel Ongoing Inference Frame ──
