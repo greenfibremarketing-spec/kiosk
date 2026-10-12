@@ -97,6 +97,7 @@ export default function KioskShell() {
           products={k.products}
           onClose={() => k.setOnboardingOpen(false)}
           name={k.name}
+          liveTranscript={k.liveTranscript}
           onSubmitName={(name) => {
             k.submitName(name);
           }}

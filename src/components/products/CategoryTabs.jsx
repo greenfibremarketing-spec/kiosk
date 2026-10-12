@@ -1,12 +1,13 @@
-import { CATEGORIES as DEFAULT_CATEGORIES, PRODUCTS as DEFAULT_PRODUCTS } from "@/data/products";
-
 export default function CategoryTabs({
   active,
   onSelect,
-  categories = DEFAULT_CATEGORIES,
-  products = DEFAULT_PRODUCTS,
+  categories = [],
+  products = [],
 }) {
+  if (!categories || categories.length === 0) return null;
+
   const getCount = (catId) => {
+    if (!products || products.length === 0) return 0;
     if (catId === "all") return products.length;
     const clean = String(catId).toLowerCase().trim();
     return products.filter((p) => {
@@ -29,7 +30,7 @@ export default function CategoryTabs({
               id={`tab-${c.id}`}
               aria-selected={isSelected}
               className={`chip chip--dark ${isSelected ? "chip--active" : ""}`}
-              onClick={() => onSelect(c.id)}
+              onClick={() => onSelect(c)}
             >
               <span className="tab-label">{c.label || c.name}</span>
               <span className="tab-count">{count}</span>

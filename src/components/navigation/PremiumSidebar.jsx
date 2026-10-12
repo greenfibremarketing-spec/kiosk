@@ -1,14 +1,12 @@
 "use client";
 import React, { useEffect } from "react";
-import { CATEGORIES, PRODUCTS } from "@/data/products";
-
 export default function PremiumSidebar({
   isOpen,
   onClose,
   activeCategory,
   onSelectCategory,
-  categories = CATEGORIES,
-  products = PRODUCTS,
+  categories = [],
+  products = [],
 }) {
   // Close on Escape key press
   useEffect(() => {
@@ -121,7 +119,7 @@ export default function PremiumSidebar({
                     type="button"
                     className={`sidebar__nav-item ${isSelected ? "sidebar__nav-item--active" : ""}`}
                     onClick={() => {
-                      onSelectCategory(c.id);
+                      onSelectCategory(c);
                       onClose();
                     }}
                   >
@@ -183,7 +181,7 @@ export default function PremiumSidebar({
               </div>
               <div className="voice-prompt-bubble">
                 <span className="prompt-icon">🎙️</span>
-                <span>&ldquo;Tell me about the Viora Bottle&rdquo;</span>
+                <span>&ldquo;Show me your eco gift hampers&rdquo;</span>
               </div>
             </div>
           </section>

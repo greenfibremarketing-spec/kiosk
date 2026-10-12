@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PRODUCTS } from "@/data/products";
+
 import {
   GREETING,
   describeProduct,
@@ -30,6 +30,7 @@ import {
   normalizeBackendProduct,
 } from "@/lib/agent";
 import { kioskWS } from "@/lib/kioskWebSocket";
+import KioskStepCache, { KIOSK_STEPS } from "@/lib/kioskStepCache";
 import { usePresenceDetection } from "@/lib/presence/usePresenceDetection";
 import { useUserSignals } from "@/hooks/useUserSignals";
 import { useMic } from "@/hooks/useMic";
@@ -51,12 +52,12 @@ const S = {
 
 export function useKiosk() {
   // ── Core product/UI state ──────────────────────────────────────────────────
-  const [name, setName]           = useState("");
+  const [name, setName]           = useState(() => KioskStepCache.getCustomerName());
   const [category, setCategory]   = useState("all");
-  const [productId, setProductId] = useState(PRODUCTS[0].id);
+  const [productId, setProductId] = useState(null);
   const [caption, setCaption]     = useState(GREETING);
   const [speechId, setSpeechId]   = useState(1);
-  const sessionIdRef = useRef("kiosk-" + Math.random().toString(36).substring(2, 9));
+  const sessionIdRef = useRef(KioskStepCache.getOrCreateSessionId());
   const pendingSpeechAckRef = useRef(null);
   const speechAckTimerRef = useRef(null);
   const [backendAction, setBackendAction] = useState(null);
@@ -75,6 +76,10 @@ export function useKiosk() {
   const [staffBanner, setStaffBanner] = useState(null);
   const [hintBubble, setHintBubble] = useState(null);
   const sendTranscriptRef = useRef(null);
+  const submitNameRef = useRef(null);
+  const skipNameRef = useRef(null);
+  const selectCategoryRef = useRef(null);
+  const restartSessionRef = useRef(null);
 
   // Preload verified database catalog from backend API
   useEffect(() => {
@@ -85,8 +90,12 @@ export function useKiosk() {
         if (mapped[0]?.id) {
           setProductId(mapped[0].id);
         }
+      } else {
+        setBackendCatalog([]);
       }
-    }).catch(() => {});
+    }).catch(() => {
+      setBackendCatalog([]);
+    });
   }, []);
 
   // ── Conversation state machine ────────────────────────────────────────────
@@ -114,13 +123,16 @@ export function useKiosk() {
 
   // ── Presence detection & session lifecycle ──────────────────────────────
   const reset = useCallback(() => {
+    KioskStepCache.clearCache();
     setName("");
     setCategory("all");
-    setProductId(PRODUCTS[0].id);
+    setProductId(backendCatalog[0]?.id || null);
     setCaption(GREETING);
     const oldSession = sessionIdRef.current;
-    sessionIdRef.current = "kiosk-" + Math.random().toString(36).substring(2, 9);
-    kioskWS.connect(sessionIdRef.current);
+    const newSession = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    KioskStepCache.setSessionId(newSession);
+    sessionIdRef.current = newSession;
+    kioskWS.connect(newSession, true);
     resetBackendSession(oldSession);
     pendingSpeechAckRef.current = null;
     clearTimeout(speechAckTimerRef.current);
@@ -331,28 +343,27 @@ export function useKiosk() {
     if (action?.speech_id && action?.awaiting_speech_done) {
       pendingSpeechAckRef.current = action.speech_id;
       clearTimeout(speechAckTimerRef.current);
-      // Auto-acknowledge speech completion after 1500ms safety delay (Option A)
-      speechAckTimerRef.current = setTimeout(async () => {
+      // Auto-acknowledge speech completion safety watchdog (8s safety delay in case TTS audio blocked)
+      speechAckTimerRef.current = setTimeout(() => {
         if (pendingSpeechAckRef.current === action.speech_id) {
-          console.log("[Kiosk] Auto-acknowledging speech_id safety timer:", action.speech_id);
+          console.log("[Kiosk] Auto-acknowledging speech_id safety watchdog:", action.speech_id);
           const sid = action.speech_id;
           pendingSpeechAckRef.current = null;
-          try {
-            const ackRes = await sendSpeechDone(sid, sessionIdRef.current);
-            if (ackRes?.reply && typeof ackRes.reply === "string" && ackRes.reply.trim().length > 0) {
-              say(ackRes.reply.trim());
-            }
-            if (ackRes?.action) {
-              handleServerAction(ackRes.action, ackRes.sales_stage);
-            }
-          } catch (_) {}
+          kioskWS.sendSpeechDone(sid);
         }
-      }, 1500);
+      }, 8000);
     }
 
     switch (actionType) {
       case "SHOW_GREETING": {
         // Welcome Screen: Avatar speaks greeting, await SPEECH_DONE
+        if (KioskStepCache.hasPassedStep(KIOSK_STEPS.GREETED)) {
+          console.log("[Kiosk] SHOW_GREETING received but greeting already completed in this session. Skipping replay.");
+          if (action?.speech_id) {
+            kioskWS.flushSpeechDone(action.speech_id);
+          }
+          break;
+        }
         presence.triggerTouchEngaged();
         setOnboardingOpen(false);
         setShowDetail(false);
@@ -369,6 +380,17 @@ export function useKiosk() {
 
       case "ASK_NAME": {
         // Name Input Modal / Tab
+        if (KioskStepCache.hasPassedStep(KIOSK_STEPS.NAME_SET)) {
+          console.log("[Kiosk] ASK_NAME received but name step already completed. Bypassing prompt.");
+          const cachedName = KioskStepCache.getCustomerName() || name;
+          if (cachedName) {
+            kioskWS.sendSetName(cachedName);
+          } else {
+            kioskWS.sendSkipName();
+          }
+          setOnboardingStep(2);
+          break;
+        }
         presence.triggerTouchEngaged();
         setOnboardingStep(1);
         setOnboardingOpen(true);
@@ -386,7 +408,8 @@ export function useKiosk() {
       }
 
       case "SHOW_CATEGORIES": {
-        // Categories Grid Tab
+        // Navigate to Pre-built Products Catalog View / Step 2
+        KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
         presence.triggerTouchEngaged();
         setOnboardingStep(2);
         setOnboardingOpen(true);
@@ -403,75 +426,95 @@ export function useKiosk() {
         break;
       }
 
-      case "SHOW_PRODUCT_CARD":
-      case "SHOW_PRODUCT":
+      case "SHOW_CATEGORY": {
+        if (action?.category) {
+          selectCategory(action.category);
+        }
+        break;
+      }
+
       case "SHOW_PRODUCTS": {
-        // Product Showcase Tab / Product Details Tab
+        // Category Selection: Stay on category view, show all product cards!
+        KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
         presence.triggerTouchEngaged();
         setOnboardingOpen(false);
+        setShowDetail(false); // ALWAYS stay on category view
+        setCartModalOpen(false);
+        setQrModalOpen(false);
+
+        let resolvedCat = null;
+        if (action?.category_id || action?.category) {
+          resolvedCat = normalizeCategory(action.category_id || action.category);
+        } else if (action?.products?.[0]?.category) {
+          resolvedCat = normalizeCategory(action.products[0].category);
+        }
+
+        if (resolvedCat) {
+          setCategory(resolvedCat);
+        }
+
+        if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
+          const normTurnProducts = action.products.map(normalizeBackendProduct).filter(Boolean);
+          setLiveTurnProducts(normTurnProducts);
+        } else {
+          setLiveTurnProducts([]);
+        }
+
+        if (action?.buttons && Array.isArray(action.buttons)) {
+          setActionButtons(action.buttons);
+        }
+
+        // Greeny dynamically announces products in the category:
+        // "{name}, in {category} we have {N} products: {P1} and {P2}. Which one would you like to see?"
+        const msg = action?.message || action?.text;
+        if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          say(msg.trim());
+        }
+        break;
+      }
+
+      case "SHOW_PRODUCT_CARD":
+      case "SHOW_PRODUCT": {
+        // Specific Product Selected: Open PDP and stream pitch!
+        KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
+        presence.triggerTouchEngaged();
+        setOnboardingOpen(false);
+        setShowDetail(true); // Open product detail page
         setCartModalOpen(false);
         setQrModalOpen(false);
 
         const prodData = action?.product || (action?.products && action.products[0]);
-        if (prodData || actionType === "SHOW_PRODUCT_CARD" || actionType === "SHOW_PRODUCT") {
-          setShowDetail(true);
-          const currentCatalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
-          const target =
-            (prodData && findMatchingLocalProduct(prodData, currentCatalog)) ||
-            (action?.sku && findMatchingLocalProduct(action.sku, currentCatalog)) ||
-            (prodData && normalizeBackendProduct(prodData)) ||
-            currentCatalog[0];
+        const currentCatalog = backendCatalog;
+        const target =
+          (prodData && findMatchingLocalProduct(prodData, currentCatalog)) ||
+          (action?.sku && findMatchingLocalProduct(action.sku, currentCatalog)) ||
+          (prodData && normalizeBackendProduct(prodData)) ||
+          currentCatalog[0] ||
+          null;
 
-          if (target) {
-            setProductId(target.id || target.sku);
-            setBackendCatalog((prev) => {
-              if (prev.some((p) => p.id === target.id || p.sku === target.sku)) return prev;
-              return [target, ...prev];
-            });
-            if (target.categories) {
-              const bestCat = target.categories.find((c) => c !== "all") || "all";
-              setCategory(bestCat);
-            }
+        if (target) {
+          setProductId(target.id || target.sku);
+          KioskStepCache.setSelectedProduct(target);
+          setBackendCatalog((prev) => {
+            if (prev.some((p) => p.id === target.id || p.sku === target.sku)) return prev;
+            return [target, ...prev];
+          });
+          if (target.categories) {
+            const bestCat = target.categories.find((c) => c !== "all") || "all";
+            setCategory(bestCat);
           }
+        }
 
-          if (action?.buttons && Array.isArray(action.buttons)) {
-            setActionButtons(action.buttons);
-          } else {
-            setActionButtons(["Next", "Cheaper", "Compare", "I'll take it"]);
-          }
-
-          const msg = action?.message || action?.blurb;
-          if (msg && typeof msg === "string" && msg.trim().length > 0) {
-            say(msg.trim());
-          }
+        if (action?.buttons && Array.isArray(action.buttons)) {
+          setActionButtons(action.buttons);
         } else {
-          // Multiple products grid
-          setShowDetail(false);
-          let resolvedCat = null;
-          if (action?.category_id || action?.category) {
-            resolvedCat = normalizeCategory(action.category_id || action.category);
-          } else if (action?.products?.[0]?.category) {
-            resolvedCat = normalizeCategory(action.products[0].category);
-          }
+          setActionButtons(["Next", "Cheaper", "Compare", "I'll take it"]);
+        }
 
-          if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
-            const normTurnProducts = action.products.map(normalizeBackendProduct).filter(Boolean);
-            setLiveTurnProducts(normTurnProducts);
-            if (normTurnProducts[0]?.id) {
-              setProductId(normTurnProducts[0].id);
-            }
-          } else {
-            setLiveTurnProducts([]);
-          }
-
-          if (resolvedCat) {
-            setCategory(resolvedCat);
-            const activeList = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
-            const items = productsIn(resolvedCat, activeList);
-            if (items.length > 0) setProductId(items[0].id);
-          } else {
-            setCategory("all");
-          }
+        // Greeny greets with: "Great choice, {userName}! Here is our {product_name} for ₹{price}..."
+        const msg = action?.message || action?.blurb || action?.text;
+        if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          say(msg.trim());
         }
         break;
       }
@@ -480,11 +523,13 @@ export function useKiosk() {
         // Cart Confirmation Modal
         presence.triggerTouchEngaged();
         setCartModalOpen(true);
-        const currentCatalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+        const currentCatalog = backendCatalog;
         const target =
           findMatchingLocalProduct(action?.sku, currentCatalog) ||
           findMatchingLocalProduct(action?.product, currentCatalog) ||
-          (product || currentCatalog[0]);
+          product ||
+          currentCatalog[0] ||
+          null;
 
         setCartModalData({
           sku: action?.sku || target?.sku,
@@ -503,11 +548,13 @@ export function useKiosk() {
         presence.triggerTouchEngaged();
         setCartModalOpen(false);
         setQrModalOpen(true);
-        const currentCatalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+        const currentCatalog = backendCatalog;
         const target =
           findMatchingLocalProduct(action?.sku, currentCatalog) ||
           findMatchingLocalProduct(action?.product, currentCatalog) ||
-          (product || currentCatalog[0]);
+          product ||
+          currentCatalog[0] ||
+          null;
 
         setQrModalData({
           sku: action?.sku || target?.sku,
@@ -578,6 +625,8 @@ export function useKiosk() {
   handleServerActionRef.current = handleServerAction;
 
   // Connect WebSocket real-time action, token, and hint listeners
+  const lastSpokenTurnIdRef = useRef(null);
+
   useEffect(() => {
     const unsubAction = kioskWS.on("action", (actionData) => {
       console.log("[KioskWS] Real-time action received:", actionData);
@@ -593,14 +642,38 @@ export function useKiosk() {
       if (doneData?.action || doneData?.salesStage) {
         handleServerAction(doneData.action, doneData.salesStage);
       }
+      if (doneData?.reply && typeof doneData.reply === "string" && doneData.reply.trim().length > 0) {
+        const turnId = doneData?.turnId || doneData?.meta?.turn_id;
+        if (turnId && turnId !== lastSpokenTurnIdRef.current) {
+          lastSpokenTurnIdRef.current = turnId;
+          setCaption(doneData.reply.trim());
+          say(doneData.reply.trim());
+        }
+      }
+    });
+
+    // Backend inactivity nudge: show a hint bubble after 8s silence
+    const unsubPingSilence = kioskWS.on("ping_silence", (msg) => {
+      console.log("[KioskWS] Silence ping from backend:", msg);
+      setHintBubble(typeof msg === "string" ? msg : "Still there? Tap or speak to continue.");
+    });
+
+    // Backend auto-reset: clear session only if user is NOT actively engaged in front of kiosk
+    const unsubAutoReset = kioskWS.on("auto_reset", (msg) => {
+      console.log("[KioskWS] Auto-reset received from backend:", msg);
+      if (!isEngaged && !onboardingOpen && !nameRef.current && !KioskStepCache.getCustomerName()) {
+        reset();
+      }
     });
 
     return () => {
       unsubAction();
       unsubHint();
       unsubDone();
+      unsubPingSilence();
+      unsubAutoReset();
     };
-  }, [handleServerAction]);
+  }, [handleServerAction, say, reset]);
 
   // ── Core: send transcript to AI (Guarded with isSendingRef to prevent double-firing 409s) ──
   const isSendingRef = useRef(false);
@@ -612,6 +685,63 @@ export function useKiosk() {
       console.log("[Kiosk] Dropping duplicate in-flight chat request to avoid 409 conflict:", text);
       return;
     }
+
+    const trimmed = String(text ?? "").trim();
+    if (!trimmed) return;
+
+    // ── Spoken Name & Skip handling during ASK_NAME step ──
+    const currentStep = KioskStepCache.getCurrentStep();
+    const hasNameAlready = Boolean(KioskStepCache.getCustomerName() || nameRef.current);
+    const isAwaitingName =
+      (onboardingOpen && onboardingStep === 1) ||
+      (backendAction?.action === "ASK_NAME" && !hasNameAlready && currentStep < KIOSK_STEPS.NAME_SET);
+
+    const hasExplicitIntro = /^(?:my name is|i am|i'm|this is|call me|myself)\s+/i.test(trimmed);
+    if (isAwaitingName || (!hasNameAlready && hasExplicitIntro)) {
+      if (/^(?:skip|skip name|skip for now|no thanks|later|pass|never mind)$/i.test(trimmed)) {
+        console.log("[Kiosk] Spoken skip name detected:", trimmed);
+        skipNameRef.current?.();
+        return;
+      }
+      let candidate = trimmed
+        .replace(/^(?:my name is|i am|i'm|this is|call me|myself|it's|it is)\s+/i, "")
+        .replace(/[.,!?]/g, "")
+        .trim();
+      if (candidate && candidate.split(/\s+/).length <= 3 && !/^(?:what|where|how|why|who|help|hello|hi|good|can)\b/i.test(candidate)) {
+        const formatted = candidate
+          .split(/\s+/)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(" ");
+        console.log("[Kiosk] Spoken name detected:", formatted);
+        submitNameRef.current?.(formatted);
+        return;
+      }
+    }
+
+    // ── Spoken Category Selection (during Step 2 or catalog browsing) ──
+    const catMatch = detectCategory(trimmed);
+    if (catMatch && (onboardingStep === 2 || !showDetail)) {
+      console.log("[Kiosk] Spoken category detected:", catMatch);
+      if (catMatch === "all") {
+        showAll();
+      } else {
+        selectCategoryRef.current?.(catMatch);
+      }
+      return;
+    }
+
+    // ── Spoken session restart ──
+    if (/^(?:restart|start over|reset|new session)$/i.test(trimmed)) {
+      restartSessionRef.current?.();
+      return;
+    }
+
+    // ── Spoken purchase / checkout intent ──
+    if (/^(?:buy|buy now|checkout|i'll take it|i want this|take it)$/i.test(trimmed)) {
+      kioskWS.sendWsMessage("buy");
+      return;
+    }
+
     isSendingRef.current = true;
     setConv(S.THINKING);
     abortRef.current?.abort();
@@ -640,6 +770,10 @@ export function useKiosk() {
       if (!data || !data.message) {
         setConv(S.ATTENTIVE);
         return;
+      }
+
+      if (data.turnId) {
+        lastSpokenTurnIdRef.current = data.turnId;
       }
 
       if (data.name) setName(data.name);
@@ -758,7 +892,6 @@ export function useKiosk() {
     if (!SpeechRec) {
       return;
     }
-    if (!isEngaged) return;
 
     let stopped = false;
     let restartTimer = null;
@@ -821,15 +954,14 @@ export function useKiosk() {
       if (pendingTranscriptRef.current.trim() && convStateRef.current !== S.THINKING) {
         finaliseAndSendRef.current?.(pendingTranscriptRef.current.trim());
       }
-      if (!stopped && isEngaged) {
+      if (!stopped) {
         restartTimer = setTimeout(() => {
           if (!stopped) {
             try {
               rec.start();
-              backoffMs = Math.min(backoffMs * 1.5, 5000);
             } catch (_) {}
           }
-        }, backoffMs);
+        }, 120);
       }
     };
 
@@ -846,29 +978,21 @@ export function useKiosk() {
   }, [isEngaged, setConv]);
 
   // ── Avatar speaking → update conv state + acknowledge speech done ────────
-  const handleSpeakingChange = useCallback(async (isSpeaking) => {
+  const handleSpeakingChange = useCallback((isSpeaking) => {
     setSpeaking(isSpeaking);
     if (!isSpeaking) {
       if (convStateRef.current === S.SPEAKING) {
         setConv(S.ATTENTIVE);
       }
-      // Unblock backend state machine if it was awaiting SPEECH_DONE (Option A: On TTS end)
+      // Unblock backend state machine if it was awaiting SPEECH_DONE (On TTS end)
       const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
       if (sid) {
         pendingSpeechAckRef.current = null;
         clearTimeout(speechAckTimerRef.current);
-        try {
-          const ackRes = await sendSpeechDone(sid, sessionIdRef.current);
-          if (ackRes?.reply && typeof ackRes.reply === "string" && ackRes.reply.trim().length > 0) {
-            say(ackRes.reply.trim());
-          }
-          if (ackRes?.action) {
-            handleServerAction(ackRes.action, ackRes.sales_stage);
-          }
-        } catch (_) {}
+        kioskWS.sendSpeechDone(sid);
       }
     }
-  }, [handleServerAction, say, setConv]);
+  }, [setConv]);
 
   // ── Attentive state: face present but not speaking ────────────────────────
   useEffect(() => {
@@ -890,98 +1014,118 @@ export function useKiosk() {
     return () => clearTimeout(idleTimerRef.current);
   }, [caption, productId, reset]);
 
-  // ── Touch / quick-reply & guided flow helpers ───────────────────────────
-  const selectCategory = useCallback((id) => {
+  // ── Categories & Products Memos ──────────────────────────────────────────
+  const categories = useMemo(() => {
+    if (backendAction?.categories && Array.isArray(backendAction.categories) && backendAction.categories.length > 0) {
+      return [
+        { id: "all", label: "All Products", name: "All Products" },
+        ...backendAction.categories.map((c) => ({
+          id: c.id,
+          label: c.name || c.label || c.id,
+          name: c.name || c.label || c.id,
+        })),
+      ];
+    }
+    const catMap = new Map();
+    catMap.set("all", { id: "all", label: "All Products", name: "All Products" });
+    const list = backendCatalog;
+    list.forEach((p) => {
+      const catName = p.category;
+      if (catName) {
+        const clean = normalizeCategory(catName);
+        if (!catMap.has(clean)) {
+          catMap.set(clean, {
+            id: clean,
+            label: catName,
+            name: catName,
+          });
+        }
+      }
+    });
+    return Array.from(catMap.values());
+  }, [backendAction, backendCatalog]);
+
+  // ── Touch / quick-reply & guided flow helpers (Sub-15ms WebSocket Direct) ─
+  const selectCategory = useCallback((cat) => {
     presence.triggerTouchEngaged();
-    const cleanId = normalizeCategory(id);
+    const rawId = typeof cat === "string" ? cat : (cat?.id || "all");
+    const cleanId = normalizeCategory(rawId);
+    const catObj = categories.find((c) => c.id === cleanId || c.id === rawId);
+    const catName =
+      typeof cat === "object" && (cat?.label || cat?.name)
+        ? (cat?.label || cat?.name)
+        : (catObj?.label || catObj?.name || cleanId.replace("-", " ").replace(/\b\w/g, (l) => l.toUpperCase()));
+
     setCategory(cleanId);
-    setShowDetail(false);
+    setShowDetail(false); // ALWAYS stay on category view, showing product cards!
     setOnboardingOpen(false);
-    const items = productsIn(cleanId);
-    if (items.length > 0) setProductId(items[0].id);
-    sendFlowAction("SELECT_CATEGORY", { category_id: cleanId }, sessionIdRef.current).then((res) => {
-      if (res?.reply) say(res.reply);
-      if (res?.action) handleServerAction(res.action, res.sales_stage);
-    }).catch(() => {});
-  }, [handleServerAction, presence, say]);
+    setLiveTurnProducts([]); // Reset previous turn filter so new category displays
+
+    const activeList = backendCatalog;
+    const items = cleanId === "all" ? activeList : productsIn(cleanId, activeList);
+    const productNames = items.map((p) => p.name).filter(Boolean);
+
+    kioskWS.sendSelectCategory({
+      category_id: cleanId,
+      category_name: catName,
+    });
+  }, [backendCatalog, categories, presence]);
 
   const selectProduct = useCallback((p) => {
     presence.triggerTouchEngaged();
     setProductId(p.id);
     setShowDetail(true);
     setOnboardingOpen(false);
-    const dynamicDesc = describeProduct(p, name);
-    say(dynamicDesc);
-    sendFlowAction("SELECT_PRODUCT", { sku: p.sku || p.id, name: p.name }, sessionIdRef.current).then((res) => {
-      if (res?.reply && typeof res.reply === "string" && res.reply.trim().length > 0) {
-        say(res.reply.trim());
-      }
-      if (res?.action) {
-        handleServerAction(res.action, res.sales_stage);
-      }
-    }).catch(() => {});
-  }, [handleServerAction, name, presence, say]);
+    KioskStepCache.setSelectedProduct(p);
+    // Real-time salesperson pitch is streamed from backend: "Great choice, {userName}! Here is our..."
+    kioskWS.sendSelectProduct(p);
+  }, [presence]);
 
   const submitName = useCallback((n) => {
-    setName(n);
-    setCategory("all");
-    setOnboardingOpen(false);
-    setShowDetail(false);
-    sendFlowAction("SET_NAME", { name: n }, sessionIdRef.current).then((res) => {
-      if (res?.reply) {
-        say(res.reply);
-      }
-      setCategory("all");
-      setOnboardingOpen(false);
-      setShowDetail(false);
-      if (res?.action && res.action.action !== "SHOW_CATEGORIES") {
-        handleServerAction(res.action, res.sales_stage);
-      }
-    }).catch((e) => console.warn("[Kiosk] submitName notice:", e));
-  }, [handleServerAction, say]);
+    const trimmed = String(n || "").trim();
+    if (!trimmed) return;
+    KioskStepCache.setCustomerName(trimmed);
+    setName(trimmed);
+    setOnboardingStep(2);
+    setOnboardingOpen(true);
+    kioskWS.sendSetName(trimmed);
+  }, []);
 
   const skipName = useCallback(() => {
-    setCategory("all");
-    setOnboardingOpen(false);
-    setShowDetail(false);
-    sendFlowAction("SKIP_NAME", {}, sessionIdRef.current).then((res) => {
-      if (res?.reply) {
-        say(res.reply);
-      }
-      setCategory("all");
-      setOnboardingOpen(false);
-      setShowDetail(false);
-      if (res?.action && res.action.action !== "SHOW_CATEGORIES") {
-        handleServerAction(res.action, res.sales_stage);
-      }
-    }).catch((e) => console.warn("[Kiosk] skipName notice:", e));
-  }, [handleServerAction, say]);
+    KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
+    setOnboardingStep(2);
+    setOnboardingOpen(true);
+    kioskWS.sendSkipName();
+  }, []);
 
   const showAll = useCallback(() => {
     setCategory("all");
     setShowDetail(false);
     setOnboardingOpen(false);
-    sendFlowAction("SHOW_ALL", {}, sessionIdRef.current).then((res) => {
-      if (res?.reply) say(res.reply);
-      if (res?.action) handleServerAction(res.action, res.sales_stage);
-    }).catch(() => {});
-  }, [handleServerAction, say]);
+    kioskWS.sendWsAction({ action: "SHOW_ALL" });
+  }, []);
 
   const navigateBack = useCallback(() => {
     setShowDetail(false);
-    sendFlowAction("NAVIGATE_BACK", {}, sessionIdRef.current);
+    kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
   }, []);
 
   const restartSession = useCallback(() => {
-    sendFlowAction("RESTART", {}, sessionIdRef.current);
+    kioskWS.sendWsAction({ action: "RESTART" });
     reset();
   }, [reset]);
 
+  submitNameRef.current = submitName;
+  skipNameRef.current = skipName;
+  selectCategoryRef.current = selectCategory;
+  restartSessionRef.current = restartSession;
+
   const send = useCallback((text) => {
     presence.triggerTouchEngaged();
-    pendingTranscriptRef.current = text;
-    finaliseAndSend();
-  }, [finaliseAndSend, presence]);
+    if (text) {
+      kioskWS.sendWsMessage(text);
+    }
+  }, [presence]);
 
   const enquire = useCallback(() => {
     presence.triggerTouchEngaged();
@@ -1025,41 +1169,12 @@ export function useKiosk() {
     kioskWS.sendButtonClick(btn);
   }, [presence, restartSession, skipName]);
 
-  const categories = useMemo(() => {
-    if (backendAction?.categories && Array.isArray(backendAction.categories) && backendAction.categories.length > 0) {
-      return [
-        { id: "all", label: "All Products", name: "All Products" },
-        ...backendAction.categories.map((c) => ({
-          id: c.id,
-          label: c.name || c.label || c.id,
-          name: c.name || c.label || c.id,
-        })),
-      ];
-    }
-    const catMap = new Map();
-    catMap.set("all", { id: "all", label: "All Products", name: "All Products" });
-    const list = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
-    list.forEach((p) => {
-      const catName = p.category;
-      if (catName) {
-        const clean = normalizeCategory(catName);
-        if (!catMap.has(clean)) {
-          catMap.set(clean, {
-            id: clean,
-            label: catName,
-            name: catName,
-          });
-        }
-      }
-    });
-    return Array.from(catMap.values());
-  }, [backendAction, backendCatalog]);
-
   const products = useMemo(() => {
     if (liveTurnProducts.length > 0) {
       return liveTurnProducts;
     }
-    const catalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+    const catalog = backendCatalog;
+    if (!catalog || catalog.length === 0) return [];
     if (!category || category === "all") return catalog;
     const clean = normalizeCategory(category);
     return catalog.filter((p) => {
@@ -1070,11 +1185,13 @@ export function useKiosk() {
   }, [backendCatalog, category, liveTurnProducts]);
 
   const product = useMemo(() => {
-    const catalog = backendCatalog.length > 0 ? backendCatalog : PRODUCTS;
+    const catalog = backendCatalog;
+    if (!catalog || catalog.length === 0) return null;
     return (
       catalog.find((p) => p.id === productId || p.sku === productId) ||
       products[0] ||
-      catalog[0]
+      catalog[0] ||
+      null
     );
   }, [backendCatalog, productId, products]);
 

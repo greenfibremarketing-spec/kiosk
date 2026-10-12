@@ -549,7 +549,12 @@ export class GreenieAvatar {
 
     // 1. Primary: EdgeTTS Ana Neural Voice from voice server (http://localhost:4000/api/tts)
     try {
-      const res = await fetch(`http://localhost:4000/api/tts?text=${encodeURIComponent(text)}`);
+      const ttsAbort = new AbortController();
+      const ttsTimeout = setTimeout(() => ttsAbort.abort(), 4500); // Allow EdgeTTS sufficient time to generate high-quality voice
+      const res = await fetch(`http://localhost:4000/api/tts?text=${encodeURIComponent(text)}`, {
+        signal: ttsAbort.signal,
+      });
+      clearTimeout(ttsTimeout);
       if (token !== this.generation) return;
       if (res.ok) {
         const blob = await res.blob();
@@ -588,10 +593,20 @@ export class GreenieAvatar {
         audio.onended = cleanupAudio;
         audio.onerror = cleanupAudio;
 
-        await audio.play();
+        try {
+          await audio.play();
+        } catch (playErr) {
+          if (playErr?.name === "AbortError") {
+            // Audio was paused or superseded by newer utterance
+            cleanupAudio();
+            return;
+          }
+          throw playErr;
+        }
         return;
       }
     } catch (e) {
+      if (e?.name === "AbortError") return;
       console.warn("[Avatar] EdgeTTS Ana unavailable, falling back to Web Speech:", e?.message);
     }
 

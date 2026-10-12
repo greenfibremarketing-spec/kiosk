@@ -1,5 +1,6 @@
 // kioskWebSocket.js — Real-time Protocol v2 WebSocket Client for Greenie AI Backend
 import { getWsUrl, CURRENT_ENV, KIOSK_ID } from "@/lib/apiConfig";
+import KioskStepCache, { KIOSK_STEPS } from "@/lib/kioskStepCache";
 
 class KioskWebSocketClient {
   constructor() {
@@ -21,6 +22,10 @@ class KioskWebSocketClient {
       done: new Set(),
       error: new Set(),
       status: new Set(),
+      hint: new Set(),
+      ping_silence: new Set(),
+      auto_reset: new Set(),
+      cancelled: new Set(),
     };
 
     // Store last action received from backend (e.g. for speech_id acknowledgement)
@@ -33,8 +38,7 @@ class KioskWebSocketClient {
 
   generateTurnId() {
     this.turnCounter += 1;
-    const num = this.turnCounter < 10 ? `0${this.turnCounter}` : `${this.turnCounter}`;
-    return `turn-${num}`;
+    return `turn_${Date.now()}`;
   }
 
   // ── Event Subscription API ──
@@ -64,13 +68,15 @@ class KioskWebSocketClient {
   }
 
   // ── Connection Management ──
-  connect(sessionId = "kiosk-session", autoGreet = true) {
+  connect(sessionId = null, autoGreet = true) {
     if (typeof window === "undefined") return;
+
+    const resolvedSessionId = sessionId || KioskStepCache.getOrCreateSessionId();
 
     // If already connected to the requested session, skip reconnecting
     if (
       this.ws &&
-      this.sessionId === sessionId &&
+      this.sessionId === resolvedSessionId &&
       (this.ws.readyState === WebSocket.OPEN ||
         this.ws.readyState === WebSocket.CONNECTING)
     ) {
@@ -85,11 +91,17 @@ class KioskWebSocketClient {
       this.ws = null;
     }
 
-    this.sessionId = sessionId;
-    const wsUrl = getWsUrl(this.sessionId, KIOSK_ID, autoGreet);
+    this.sessionId = resolvedSessionId;
+    KioskStepCache.setSessionId(resolvedSessionId);
+
+    // If already greeted in this session, do not request auto_greet again!
+    const isAlreadyGreeted = KioskStepCache.hasPassedStep(KIOSK_STEPS.GREETED);
+    const shouldAutoGreet = autoGreet && !isAlreadyGreeted;
+
+    const wsUrl = getWsUrl(this.sessionId, KIOSK_ID, shouldAutoGreet);
 
     try {
-      console.log(`[KioskWS] Connecting (${CURRENT_ENV}) to:`, wsUrl);
+      console.log(`[KioskWS] Connecting (${CURRENT_ENV}) to:`, wsUrl, `[autoGreet=${shouldAutoGreet}, step=${KioskStepCache.getCurrentStep()}]`);
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
@@ -126,11 +138,11 @@ class KioskWebSocketClient {
         }
         this.activeTurns.clear();
 
-        // Auto-reconnect after 2 seconds
+        // Auto-reconnect after 2 seconds (with autoGreet=false so reconnect never re-greets)
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = setTimeout(() => {
           if (this.sessionId) {
-            this.connect(this.sessionId);
+            this.connect(this.sessionId, false);
           }
         }, 2000);
       };
@@ -185,16 +197,7 @@ class KioskWebSocketClient {
       if (isAwaitingSpeech && incomingSpeechId) {
         console.log(`[KioskWS] Greeting/Action awaiting SPEECH_DONE (speech_id: ${incomingSpeechId})`);
         this.pendingSpeechId = incomingSpeechId;
-
-        // Reset any existing timer
-        if (this.speechDoneTimer) {
-          clearTimeout(this.speechDoneTimer);
-        }
-
-        // Auto-acknowledge speech completion after 1.5s delay to allow greeting audio to play
-        this.speechDoneTimer = setTimeout(() => {
-          this.flushSpeechDone(incomingSpeechId);
-        }, 1500);
+        this.currentSpeechId = incomingSpeechId;
       }
 
       switch (type) {
@@ -307,6 +310,20 @@ class KioskWebSocketClient {
           // Heartbeat ack, no-op
           break;
 
+        case "ping_silence": {
+          // Backend inactivity nudge after 8s silence
+          const silenceMsg = typeof data === "string" ? data : "Still there? Say something or tap a button.";
+          this.emit("ping_silence", silenceMsg);
+          break;
+        }
+
+        case "auto_reset": {
+          // Backend auto-reset after 2 silence strikes (16s idle)
+          const resetMsg = typeof data === "string" ? data : "Resetting for the next customer...";
+          this.emit("auto_reset", resetMsg);
+          break;
+        }
+
         default:
           console.log("[KioskWS] Unknown message frame:", payload);
       }
@@ -389,10 +406,8 @@ class KioskWebSocketClient {
       });
 
       const frame = {
-        v: 2,
         message: String(message || ""),
         turn_id: turnId,
-        input_mode: callbacks?.inputMode || "text",
       };
 
       this.ws.send(JSON.stringify(frame));
@@ -453,30 +468,59 @@ class KioskWebSocketClient {
       });
 
       // Strict frame construction to respect backend Pydantic (extra = 'forbid')
-      const frame = {
-        v: 2,
-        action,
-        turn_id: turnId,
-        input_mode: options.inputMode || "button",
-      };
-
-      if (action === "SET_NAME" && payload.name) {
-        frame.name = String(payload.name).trim();
-      } else if (action === "SELECT_CATEGORY" && (payload.category_id || payload.categoryId)) {
-        frame.category_id = String(payload.category_id || payload.categoryId).trim().toLowerCase();
-      } else if (action === "SELECT_PRODUCT" && (payload.sku || payload.id)) {
-        const rawSku = String(payload.sku || payload.id).trim();
-        frame.sku = rawSku.startsWith("GF:") ? rawSku : `GF:${rawSku}`;
-      }
+      const frame = this.buildActionFrame(action, payload, turnId);
 
       console.log(`[KioskWS] Sending sanitized flow action: ${action}`, frame);
       this.ws.send(JSON.stringify(frame));
     });
   }
 
+  // ── Construct Validated Pydantic-Compliant Action Frame (Section 4.4 Helper) ──
+  buildActionFrame(action, payload = {}, turnId = null) {
+    const tid = turnId || this.generateTurnId();
+    const frame = {
+      v: 2,
+      action,
+      turn_id: tid,
+    };
+
+    switch (action) {
+      case "SET_NAME":
+        frame.name = String(payload.name || payload.customer_name || "").trim();
+        break;
+      case "SELECT_CATEGORY":
+        if (payload.category_id || payload.categoryId) {
+          frame.category_id = String(payload.category_id || payload.categoryId).trim().toLowerCase();
+        }
+        if (payload.category_name || payload.categoryName) {
+          frame.category_name = String(payload.category_name || payload.categoryName).trim();
+        }
+        break;
+      case "SELECT_PRODUCT":
+        if (payload.product_name || payload.name) {
+          frame.product_name = String(payload.product_name || payload.name).trim();
+        }
+        if (payload.sku || payload.id) {
+          frame.sku = String(payload.sku || payload.id).trim();
+        }
+        break;
+      case "SPEECH_DONE":
+        if (payload.speech_id) {
+          frame.speech_id = String(payload.speech_id).trim();
+        }
+        break;
+      case "SKIP_NAME":
+      case "SHOW_ALL":
+      case "NAVIGATE_BACK":
+      case "RESTART":
+        break;
+    }
+    return frame;
+  }
+
   // ── Send SPEECH_DONE Acknowledgement Frame (Crucial for Sales Stage Transition) ──
   flushSpeechDone(speechId = null) {
-    const sid = speechId || this.pendingSpeechId;
+    const sid = speechId || this.pendingSpeechId || this.currentSpeechId;
     if (!sid) return;
 
     if (this.speechDoneTimer) {
@@ -484,14 +528,22 @@ class KioskWebSocketClient {
       this.speechDoneTimer = null;
     }
     this.pendingSpeechId = null;
+    this.currentSpeechId = null;
+
+    // Check if already acknowledged to prevent redundant frame
+    if (KioskStepCache.isSpeechAcked(sid)) {
+      console.log(`[KioskWS] speech_id ${sid} already acknowledged. Skipping redundant frame.`);
+      return;
+    }
+    KioskStepCache.markSpeechDone(sid);
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const turnId = this.generateTurnId();
       const ackFrame = {
         v: 2,
         action: "SPEECH_DONE",
         speech_id: sid,
-        turn_id: `ack-${Date.now()}`,
-        input_mode: "button",
+        turn_id: turnId,
       };
       console.log(`[KioskWS] Emitting SPEECH_DONE frame (speech_id: ${sid}):`, ackFrame);
       try {
@@ -512,7 +564,6 @@ class KioskWebSocketClient {
   sendWsMessage(text) {
     const turnId = this.generateTurnId();
     const frame = {
-      v: 2,
       message: String(text || ""),
       turn_id: turnId,
     };
@@ -526,12 +577,10 @@ class KioskWebSocketClient {
   }
 
   sendWsAction(actionPayload = {}) {
+    const action = actionPayload?.action;
     const turnId = actionPayload?.turn_id || this.generateTurnId();
-    const frame = {
-      v: 2,
-      ...actionPayload,
-      turn_id: turnId,
-    };
+    const frame = this.buildActionFrame(action, actionPayload, turnId);
+
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       console.log("[KioskWS] Sending action frame:", frame);
       this.ws.send(JSON.stringify(frame));
@@ -543,6 +592,7 @@ class KioskWebSocketClient {
 
   // Section 4 convenience methods
   sendSetName(name) {
+    KioskStepCache.setCustomerName(name);
     return this.sendWsAction({
       action: "SET_NAME",
       name: String(name || "").trim(),
@@ -550,16 +600,38 @@ class KioskWebSocketClient {
   }
 
   sendSkipName() {
+    KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
     return this.sendWsAction({
       action: "SKIP_NAME",
     });
   }
 
-  sendSelectCategory(categoryId) {
-    return this.sendWsAction({
-      action: "SELECT_CATEGORY",
-      category_id: String(categoryId || "").trim().toLowerCase(),
-    });
+  sendSelectCategory(category) {
+    const payload = { action: "SELECT_CATEGORY" };
+    if (typeof category === "string") {
+      payload.category_id = category.trim().toLowerCase();
+    } else if (category) {
+      if (category.category_id || category.id) {
+        payload.category_id = String(category.category_id || category.id).trim().toLowerCase();
+      }
+      if (category.category_name || category.name || category.label) {
+        payload.category_name = String(category.category_name || category.name || category.label).trim();
+      }
+    }
+    return this.sendWsAction(payload);
+  }
+
+  sendSelectProduct(product) {
+    const payload = { action: "SELECT_PRODUCT" };
+    if (typeof product === "string") {
+      payload.product_name = product.trim();
+    } else if (product) {
+      if (product.name) payload.product_name = String(product.name).trim();
+      if (product.sku) payload.sku = String(product.sku).trim();
+      else if (product.id && !product.name) payload.sku = String(product.id).trim();
+    }
+    KioskStepCache.setSelectedProduct(product);
+    return this.sendWsAction(payload);
   }
 
   sendButtonClick(button) {
@@ -593,9 +665,5 @@ class KioskWebSocketClient {
 }
 
 export const kioskWS = new KioskWebSocketClient();
-
-if (typeof window !== "undefined") {
-  kioskWS.connect("kiosk-session");
-}
 
 export default kioskWS;

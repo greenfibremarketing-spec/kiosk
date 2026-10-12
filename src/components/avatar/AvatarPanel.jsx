@@ -109,14 +109,6 @@ export default function AvatarPanel({
       clearTimeout(introTimerRef.current);
       if (stageRef.current) {
         stageRef.current.flyIn(1.8);
-        if (caption) {
-          stageRef.current.speak(caption, {
-            voice: customVoice,
-            pitch: CUSTOM_VOICE_OPTIONS.pitch,
-            rate: CUSTOM_VOICE_OPTIONS.rate,
-            lang: customVoice?.lang || "en-IN",
-          });
-        }
       }
       introTimerRef.current = setTimeout(() => setShowGrandLeaves(false), 3000);
     } else if (!isEngaged) {
@@ -127,7 +119,7 @@ export default function AvatarPanel({
       stageRef.current?.setEngaged(false);
     }
     prevEngagedRef.current = isEngaged;
-  }, [isEngaged, caption, customVoice]);
+  }, [isEngaged]);
 
   // ── Caption / speechId change → speak ────────────────────────────────────
   const prevSpeechIdRef = useRef(speechId);

@@ -56,11 +56,8 @@ export function getWsUrl(sessionId = "kiosk-session", kioskId = KIOSK_ID, autoGr
   const cleanBase = WS_BASE_URL.replace(/\/+$/, "");
   const cleanSess = encodeURIComponent(String(sessionId || "kiosk-session"));
   const cleanKiosk = encodeURIComponent(String(kioskId || KIOSK_ID));
-  let url = `${cleanBase}/ws/${cleanSess}?v=2&kiosk_id=${cleanKiosk}`;
-  if (autoGreet) {
-    url += "&auto_greet=true";
-  }
-  return url;
+  const greetVal = autoGreet ? "1" : "0";
+  return `${cleanBase}/ws/${cleanSess}?v=2&kiosk_id=${cleanKiosk}&auto_greet=${greetVal}`;
 }
 
 // 4. REST Endpoints

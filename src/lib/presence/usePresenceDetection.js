@@ -34,6 +34,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
   const dwellStartRef = useRef(null);
   const graceStartRef = useRef(null);
   const touchExpiryRef = useRef(0);
+  const hasAutoEngagedRef = useRef(false);
   const lastTimestampRef = useRef(0);
   const cameraFailuresRef = useRef(0);
   const fpsCountRef = useRef({ frames: 0, lastCheck: Date.now(), currentFps: 0 });
@@ -103,6 +104,21 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [calibrate100Cm, debugOpen]);
+
+  // ── Auto-engage on mount ─────────────────────────────────────────────────
+  // A kiosk is always on. Start mic + WS immediately so voice works without
+  // requiring camera face-detection or a screen tap first.
+  useEffect(() => {
+    if (hasAutoEngagedRef.current) return;
+    hasAutoEngagedRef.current = true;
+    const timer = setTimeout(() => {
+      touchExpiryRef.current = Date.now() + 86_400_000; // Stay engaged all day
+      updateMainState("ENGAGED");
+      if (onEnterEngaged) onEnterEngaged();
+    }, 800);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // mount-only
 
   // Initialize MediaPipe FaceDetector using local files
   useEffect(() => {

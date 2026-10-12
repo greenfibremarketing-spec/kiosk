@@ -2,7 +2,6 @@
 import React, { useState } from "react";
 import ProductArt from "./ProductArt";
 import PriceTag from "./PriceTag";
-import { PRODUCTS } from "@/data/products";
 
 export default function ProductDetailPage({
   product,
@@ -27,7 +26,7 @@ export default function ProductDetailPage({
   if (!product) return null;
 
   // Recommended complementary products from live catalog
-  const sourceProducts = products && products.length > 0 ? products : PRODUCTS;
+  const sourceProducts = products && products.length > 0 ? products : [];
   const recommended = sourceProducts
     .filter((p) => p.id !== product.id)
     .sort((a, b) => {
@@ -324,44 +323,46 @@ export default function ProductDetailPage({
         </div>
       </div>
 
-      {/* ── Avatar Recommendations Section (Requirement 6) ── */}
-      <section className="pdp-recommended-section" aria-label="Avatar Recommendations">
-        <div className="section-head">
-          <div className="section-head__title">
-            <span className="section-tag" style={{ background: "#e6f7ec", color: "#007a2d", fontWeight: "700", border: "1px solid rgba(0, 166, 62, 0.25)" }}>
-              🤖 Avatar Recommendations
+      {/* ── Avatar Recommendations Section ── */}
+      {recommended.length > 0 && (
+        <section className="pdp-recommended-section" aria-label="Avatar Recommendations">
+          <div className="section-head">
+            <div className="section-head__title">
+              <span className="section-tag" style={{ background: "#e6f7ec", color: "#007a2d", fontWeight: "700", border: "1px solid rgba(0, 166, 62, 0.25)" }}>
+                🤖 Avatar Recommendations
+              </span>
+              <h2>Handpicked by Greenie</h2>
+            </div>
+            <span className="section-subtitle">
+              Looking for something else? Greenie suggests these verified sustainable alternatives and complementary pairings for your {product.name}:
             </span>
-            <h2>Handpicked by Greenie</h2>
           </div>
-          <span className="section-subtitle">
-            Looking for something else? Greenie suggests these verified sustainable alternatives and complementary pairings for your {product.name}:
-          </span>
-        </div>
 
-        <div className="recommended-grid">
-          {recommended.map((item) => (
-            <article
-              key={item.id}
-              className="recommended-card"
-              onClick={() => onSelectProduct(item)}
-              role="button"
-              tabIndex={0}
-            >
-              <div className="rec-card__media">
-                <ProductArt image={item.image} name={item.name} shape={item.shape} />
-                <span className="rec-badge">{item.badge || "Avatar Pick"}</span>
-              </div>
-              <div className="rec-card__body">
-                <h3 className="rec-card__title">{item.name}</h3>
-                <div className="rec-card__price-row">
-                  <PriceTag product={item} size="md" />
-                  <span className="rec-card__action">Explore with Greenie →</span>
+          <div className="recommended-grid">
+            {recommended.map((item) => (
+              <article
+                key={item.id}
+                className="recommended-card"
+                onClick={() => onSelectProduct(item)}
+                role="button"
+                tabIndex={0}
+              >
+                <div className="rec-card__media">
+                  <ProductArt image={item.image} name={item.name} shape={item.shape} />
+                  <span className="rec-badge">{item.badge || "Avatar Pick"}</span>
                 </div>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+                <div className="rec-card__body">
+                  <h3 className="rec-card__title">{item.name}</h3>
+                  <div className="rec-card__price-row">
+                    <PriceTag product={item} size="md" />
+                    <span className="rec-card__action">Explore with Greenie →</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

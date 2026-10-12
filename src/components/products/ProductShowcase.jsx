@@ -7,11 +7,9 @@ import CheckoutPage from "../checkout/CheckoutPage";
 import OrderSuccessPage from "../checkout/OrderSuccessPage";
 import RightNavbar from "@/components/navigation/RightNavbar";
 import PremiumSidebar from "@/components/navigation/PremiumSidebar";
-import { CATEGORIES } from "@/data/products";
-
 export default function ProductShowcase({
   category,
-  categories = CATEGORIES,
+  categories = [],
   product,
   products = [],
   onCategory,
@@ -27,7 +25,7 @@ export default function ProductShowcase({
   const [orderResult, setOrderResult] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  const activeCats = categories && categories.length > 0 ? categories : CATEGORIES;
+  const activeCats = categories && categories.length > 0 ? categories : [{ id: "all", label: "All Products" }];
   const currentCategory = activeCats.find((c) => c.id === category || c.id === String(category).toLowerCase());
   const label = currentCategory?.label || currentCategory?.name || "All Products";
 
@@ -87,7 +85,7 @@ export default function ProductShowcase({
       {/* ── Top Sticky Navbar: Logo on left, Menubar on right ── */}
       <RightNavbar
         activeCategory={category}
-        productCount={products?.length || 8}
+        productCount={products?.length || 0}
         onOpenMenu={() => setIsSidebarOpen(true)}
         onSelectCategory={handleSidebarCategory}
       />
@@ -114,8 +112,8 @@ export default function ProductShowcase({
               </p>
             </div>
             <div className="showcase__counter-badge">
-              <span className="dot-green" />
-              <span>{products?.length || 8} Products</span>
+              <span className={products?.length > 0 ? "dot-green" : "dot-gray"} />
+              <span>{products?.length || 0} Products</span>
             </div>
           </header>
 
@@ -129,16 +127,56 @@ export default function ProductShowcase({
 
           {/* Main Product Listing Grid */}
           <div className="products-grid-wrapper">
-            <div className="products-grid">
-              {products?.map((p) => (
-                <ProductCard
-                  key={p.id}
-                  product={p}
-                  active={p.id === product?.id}
-                  onSelect={handleSelectProduct}
-                />
-              ))}
-            </div>
+            {products && products.length > 0 ? (
+              <div className="products-grid">
+                {products.map((p) => (
+                  <ProductCard
+                    key={p.id}
+                    product={p}
+                    active={p.id === product?.id}
+                    onSelect={handleSelectProduct}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="products-empty-state">
+                <div className="empty-state-card">
+                  <div className="empty-state-icon">
+                    <svg
+                      width="40"
+                      height="40"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="11" cy="11" r="8" />
+                      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      <line x1="8" y1="11" x2="14" y2="11" />
+                    </svg>
+                  </div>
+                  <h3 className="empty-state-title">No Products Found</h3>
+                  <p className="empty-state-desc">
+                    {category && category !== "all"
+                      ? `We couldn't find any products in the "${label}" collection.`
+                      : "No products are currently available in the catalog."}
+                  </p>
+                  {category && category !== "all" && (
+                    <button
+                      type="button"
+                      className="empty-state-btn"
+                      onClick={() => onCategory?.("all")}
+                    >
+                      <span>View All Products</span>
+                      <span>→</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </section>
       )}

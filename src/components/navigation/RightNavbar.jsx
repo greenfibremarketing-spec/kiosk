@@ -3,7 +3,7 @@ import React from "react";
 
 export default function RightNavbar({
   activeCategory,
-  productCount = 8,
+  productCount = 0,
   onOpenMenu,
   onSelectCategory,
 }) {

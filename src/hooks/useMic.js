@@ -19,7 +19,8 @@ export function useMic({ isEngaged = false } = {}) {
   const getRecent = useCallback(() => ring.current.slice(), []);
 
   useEffect(() => {
-    if (!isEngaged) return;
+    // Always start mic capture — the kiosk is always listening.
+    // The PCM gate in useSpeech prevents avatar self-hearing.
     let cancelled = false;
     let stream, ctx, node, source, zero;
     let loud = 0, lastLoud = 0, vadOn = false, lastLevelTs = 0;
@@ -101,7 +102,7 @@ export function useMic({ isEngaged = false } = {}) {
       setVadSpeech(false);
       setAudioLevel(0);
     };
-  }, [isEngaged]);
+  }, []); // mount-only — always-on mic
 
   return { vadSpeech, audioLevel, micError, subscribePcm, getRecent };
 }

@@ -5,7 +5,7 @@ const WS_URL =
   "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-IN" +
   "&encoding=linear16&sample_rate=16000&channels=1" +
   "&smart_format=true&interim_results=true" +
-  "&endpointing=250&utterance_end_ms=800";
+  "&endpointing=250";
 
 export function useSpeech({
   mic,                 // { subscribePcm, getRecent } from useMic
@@ -166,7 +166,11 @@ export function useSpeech({
     ws.onclose = () => {
       teardownSocket();
       if (wantRef.current) {
-        const delay = Math.min(250 * 2 ** retryCountRef.current++, 3000);
+        if (retryCountRef.current > 4) {
+          retryRef.current = setTimeout(() => connectRef.current?.(), 15000);
+          return;
+        }
+        const delay = Math.min(500 * 2 ** retryCountRef.current++, 5000);
         retryRef.current = setTimeout(() => connectRef.current?.(), delay);
       }
     };
@@ -193,10 +197,18 @@ export function useSpeech({
     connect();
   }, [connect]);
 
+  // Always-on STT: start Deepgram immediately on mount.
+  // PCM gating (getGate) inside the stream handler prevents avatar self-hearing.
+  // isEngaged controls whether we reconnect if the connection drops.
+  useEffect(() => {
+    startContinuousListening();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // mount-only \u2014 always-on
+
+  // Reconnect if dropped while engaged
   useEffect(() => {
     if (isEngaged) startContinuousListening();
-    else stopContinuousListening();
-  }, [isEngaged, startContinuousListening, stopContinuousListening]);
+  }, [isEngaged, startContinuousListening]);
 
   useEffect(() => () => {
     clearTimeout(clearTimerRef.current);

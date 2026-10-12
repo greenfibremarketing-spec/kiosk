@@ -2,12 +2,12 @@
 import React, { useState, useEffect } from "react";
 import ProductArt from "../products/ProductArt";
 import PriceTag from "../products/PriceTag";
-import { PRODUCTS } from "@/data/products";
 
 export default function RightOnboardingFlow({
   isOpen,
   onClose,
   name = "",
+  liveTranscript = "",
   step: controlledStep = null,
   backendAction = null,
   categories = [],
@@ -32,6 +32,23 @@ export default function RightOnboardingFlow({
     }
   }, [name]);
 
+  // Live voice input for name during step 1
+  useEffect(() => {
+    if (step === 1 && liveTranscript) {
+      const clean = liveTranscript
+        .replace(/^(?:my name is|i am|i'm|this is|call me|myself|it's|it is)\s+/i, "")
+        .replace(/[.,!?]/g, "")
+        .trim();
+      if (clean && clean.split(/\s+/).length <= 3 && !/^(?:skip|no|what|how|why)\b/i.test(clean)) {
+        const formatted = clean
+          .split(/\s+/)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+          .join(" ");
+        setInputName(formatted);
+      }
+    }
+  }, [step, liveTranscript]);
+
   // Sync if controlledStep changes dynamically (from AI backend action)
   useEffect(() => {
     if (controlledStep) {
@@ -50,22 +67,21 @@ export default function RightOnboardingFlow({
 
   if (!isOpen) return null;
 
-  // Handle Step 1 (Name) submission -> Go directly to All Products page
+  // Handle Step 1 (Name) submission -> Transition to Step 2 (Categories & Recommendations)
   const handleProceedFromStep1 = (chosenName = "") => {
     const trimmed = (chosenName || inputName).trim();
     if (trimmed) {
       onSubmitName?.(trimmed);
+      setStep(2);
     } else {
       onSkipName?.();
+      setStep(2);
     }
-    onGoToAllProducts?.();
-    handleDismiss();
   };
 
   const handleSkipStep1 = () => {
     onSkipName?.();
-    onGoToAllProducts?.();
-    handleDismiss();
+    setStep(2);
   };
 
   // Close with smooth exit animation
@@ -99,19 +115,11 @@ export default function RightOnboardingFlow({
     }).length;
   };
 
-  // Build clean categories list directly from backend categories or fallback
+  // Build clean categories list directly from backend categories
   const displayCategories =
     categories && categories.length > 0
       ? categories.filter((c) => c.id !== "all")
-      : [
-          { id: "kitchen-dining", label: "Kitchen & Dining" },
-          { id: "bottle", label: "Bottle" },
-          { id: "drinkware", label: "Drinkware" },
-          { id: "gift-boxes-hampers", label: "Gift Boxes & Hampers" },
-          { id: "tableware", label: "Tableware" },
-          { id: "planter", label: "Planter" },
-          { id: "storage", label: "Storage" },
-        ];
+      : [];
 
   return (
     <div
@@ -230,7 +238,7 @@ export default function RightOnboardingFlow({
                     className="right-cat-card"
                     style={{ animationDelay: `${idx * 0.04}s` }}
                     onClick={() => {
-                      onSelectCategory?.(cat.id);
+                      onSelectCategory?.(cat);
                       handleDismiss();
                     }}
                   >
