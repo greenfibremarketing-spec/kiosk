@@ -124,29 +124,67 @@ export default function AvatarPanel({
   // ── Caption / speechId change → speak ────────────────────────────────────
   const prevSpeechIdRef = useRef(speechId);
   const prevCaptionRef  = useRef(caption);
+  const currentSpokenRef = useRef({ speechId: null, caption: null });
+
   useEffect(() => {
     const changed = speechId !== prevSpeechIdRef.current || caption !== prevCaptionRef.current;
-    if (caption && changed && !userSpeaking && isEngaged) {
-      // If the avatar is already speaking or streaming via queue (from useKiosk's
-      // sentence/done handlers), skip to avoid interrupting playback that already started.
-      const avatarInstance = stageRef.current?.getInstance?.();
-      if (avatarInstance && (avatarInstance.isSpeaking?.() || avatarInstance.speechQueue?.length > 0)) {
-        // Already speaking or queuing — just update the refs and skip
-        prevSpeechIdRef.current = speechId;
-        prevCaptionRef.current  = caption;
-        return;
-      }
-
-      stageRef.current?.speak(caption, {
-        voice: customVoice,
-        pitch: CUSTOM_VOICE_OPTIONS.pitch,
-        rate: CUSTOM_VOICE_OPTIONS.rate,
-        lang: customVoice?.lang || "en-IN",
-      });
-
+    if (!changed) {
+      return;
     }
+
+    if (!caption || typeof caption !== "string" || !caption.trim()) {
+      console.log(`[AvatarPanel] Skipping speak: reason="empty_caption"`);
+      prevSpeechIdRef.current = speechId;
+      prevCaptionRef.current  = caption;
+      return;
+    }
+
+    if (!isEngaged) {
+      console.log(`[AvatarPanel] Skipping speak: reason="not_engaged" (caption="${caption.slice(0, 30)}")`);
+      prevSpeechIdRef.current = speechId;
+      prevCaptionRef.current  = caption;
+      return;
+    }
+
+    if (userSpeaking) {
+      console.log(`[AvatarPanel] Skipping speak: reason="user_speaking" (caption="${caption.slice(0, 30)}")`);
+      prevSpeechIdRef.current = speechId;
+      prevCaptionRef.current  = caption;
+      return;
+    }
+
+    // Only skip if it is the SAME speech_id/caption already being spoken (log "duplicate")
+    if (
+      currentSpokenRef.current.speechId === speechId &&
+      currentSpokenRef.current.caption === caption
+    ) {
+      console.log(`[AvatarPanel] Skipping speak: reason="duplicate" (already speaking speech_id=${speechId})`);
+      prevSpeechIdRef.current = speechId;
+      prevCaptionRef.current  = caption;
+      return;
+    }
+
+    // LATEST REPLY WINS:
+    // If a non-greeting reply, clear any previous speech and speak new reply immediately.
+    // Greeting -> ASK_NAME sequence appends without clearing.
+    const isGreetingSeq =
+      (caption.includes("Welcome to Green") || caption.includes("What's your name") || caption.includes("May I know your name")) &&
+      speechId <= 2;
+
+    if (!isGreetingSeq) {
+      stageRef.current?.clearQueue?.("superseded_by_new_reply");
+    }
+
+    currentSpokenRef.current = { speechId, caption };
     prevSpeechIdRef.current = speechId;
     prevCaptionRef.current  = caption;
+
+    stageRef.current?.speak(caption, {
+      voice: customVoice,
+      pitch: CUSTOM_VOICE_OPTIONS.pitch,
+      rate: CUSTOM_VOICE_OPTIONS.rate,
+      lang: customVoice?.lang || "en-IN",
+    });
   }, [caption, speechId, customVoice, userSpeaking, isEngaged]);
 
 

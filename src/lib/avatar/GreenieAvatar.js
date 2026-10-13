@@ -4,7 +4,9 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { preferredVoice } from "./voice";
 import { attachLipSync, getMouth, resetLipSync } from "../lipSync";
 import { TTS_CONFIG } from "../ttsConfig";
-import { sanitizeTtsText, splitIntoSentences } from "../ttsTextSanitizer";
+import { sanitizeTtsText, splitIntoSentences, splitIntoTtsChunks } from "../ttsTextSanitizer";
+
+export const ENABLE_SPEECH_SYNTH_FALLBACK = false;
 
 /**
  * Helper to build a cute fairy wing geometry
@@ -99,6 +101,12 @@ export class GreenieAvatar {
     this._onQueueEmpty = null;
     this._uttCounter = 0;
     this.currentTurnId = null;
+    this._genToken = 0;
+    this._pendingPlaybackResolve = null;
+    this._activePrefetches = new Set();
+    this._playbackTimeoutTimer = null;
+    this.hasQueuedSentences = false;
+    this.interrupted = false;
 
 
     // Expression state (set via setExpression())
@@ -549,32 +557,43 @@ export class GreenieAvatar {
   }
 
   /**
-   * Clears the speech queue and stops active audio on explicit user interrupt.
+   * Clears the speech queue and stops active audio on user action or interrupt.
+   * Guarantees cancellation of in-flight promises, timeouts, and fetches.
    */
   clearQueue(reason = "user_interrupt") {
     const droppedCount = this.speechQueue.length;
     if (droppedCount > 0) {
       console.log(`[VoiceServer] Speech queue cleared (reason: ${reason}, dropped items: ${droppedCount})`);
     }
-    this.speechQueue.length = 0;
-    this.currentPlayingUtterance = null;
-    this.isQueueProcessing = false;
 
+    // 1. Advance generation token so in-flight awaits immediately abort and do not touch state
+    this._genToken++;
+
+    // 2. Abort all active prefetch requests
+    if (this._activePrefetches && this._activePrefetches.size > 0) {
+      for (const abortFn of this._activePrefetches) {
+        try { abortFn(); } catch (_) {}
+      }
+      this._activePrefetches.clear();
+    }
+
+    // 3. Abort active TTS fetch if running
     if (this.activeFetchAbort) {
       try { this.activeFetchAbort.abort(); } catch (_) {}
       this.activeFetchAbort = null;
     }
 
-    if (this.detachLipSync) {
-      try { this.detachLipSync(); } catch (_) {}
-      this.detachLipSync = null;
+    // 4. Clear watchdog timeout timer
+    if (this._playbackTimeoutTimer) {
+      clearTimeout(this._playbackTimeoutTimer);
+      this._playbackTimeoutTimer = null;
     }
-    resetLipSync();
 
-    if (typeof window !== "undefined") {
-      try { window.speechSynthesis?.cancel(); } catch (_) {}
-    }
+    // 5. Remove all listeners from active audio element
     if (this.audio) {
+      this.audio.onended = null;
+      this.audio.onerror = null;
+      this.audio.onloadedmetadata = null;
       try {
         this.audio.pause();
         this.audio.removeAttribute("src");
@@ -582,6 +601,32 @@ export class GreenieAvatar {
       } catch (_) {}
       this.audio = null;
     }
+
+    // 6. Detach lip sync
+    if (this.detachLipSync) {
+      try { this.detachLipSync(); } catch (_) {}
+      this.detachLipSync = null;
+    }
+    resetLipSync();
+
+    // 7. Cancel browser speech synthesis if active
+    if (typeof window !== "undefined") {
+      try { window.speechSynthesis?.cancel(); } catch (_) {}
+    }
+
+    // 8. Immediately resolve any pending playback promise with "cancelled"
+    if (this._pendingPlaybackResolve) {
+      const resolveFn = this._pendingPlaybackResolve;
+      this._pendingPlaybackResolve = null;
+      try { resolveFn("cancelled"); } catch (_) {}
+    }
+
+    // 9. Reset all queue and playback states
+    this.speechQueue.length = 0;
+    this.currentPlayingUtterance = null;
+    this.isQueueProcessing = false;
+    this.hasQueuedSentences = false;
+    this.interrupted = false;
 
     this.mode = "idle";
     this.reaction = null;
@@ -592,6 +637,14 @@ export class GreenieAvatar {
     this.onSpeakingChange(false);
     this.setStatus("Listening...");
 
+    // Assertion check: isSpeaking() must be false
+    if (this.isSpeaking()) {
+      console.warn(`[Avatar Assert] isSpeaking() is true while queue is empty after clear! Resetting state.`);
+      this.mode = "idle";
+      this.isQueueProcessing = false;
+      this.audio = null;
+    }
+
     if (this._onQueueEmpty) {
       const cb = this._onQueueEmpty;
       this._onQueueEmpty = null;
@@ -600,7 +653,13 @@ export class GreenieAvatar {
   }
 
   isSpeaking() {
-    return this.isQueueProcessing || this.speechQueue.length > 0 || this.mode === "audio" || this.mode === "tts";
+    return (
+      (this.isQueueProcessing && this.speechQueue.length > 0) ||
+      this.speechQueue.length > 0 ||
+      this.mode === "audio" ||
+      this.mode === "tts" ||
+      this.audio !== null
+    );
   }
 
   isQueueEmpty() {
@@ -627,6 +686,99 @@ export class GreenieAvatar {
   }
 
   /**
+   * Prefetch upcoming chunks concurrently (up to 3 in parallel).
+   */
+  _prefetchNextChunks() {
+    const requestedModel = TTS_CONFIG.model || "aura-2-luna-en";
+    let activePrefetchesCount = 0;
+
+    for (let i = 0; i < this.speechQueue.length && activePrefetchesCount < 3; i++) {
+      const item = this.speechQueue[i];
+      if (item.audioUrl || item.audioPromise) {
+        if (!item.audioUrl) activePrefetchesCount++;
+        continue;
+      }
+
+      activePrefetchesCount++;
+      const cacheKey = `${requestedModel}:${item.sanitized}`;
+      const cachedUrl = audioBlobCache.get(cacheKey);
+
+      if (cachedUrl) {
+        item.audioUrl = cachedUrl;
+        continue;
+      }
+
+      const abortCtrl = new AbortController();
+      item.fetchAbortController = abortCtrl;
+      const abortWrapper = () => {
+        try { abortCtrl.abort(); } catch (_) {}
+      };
+      this._activePrefetches.add(abortWrapper);
+
+      const token = this._genToken;
+      item.tEnqueued = item.tEnqueued || Date.now();
+
+      item.audioPromise = (async () => {
+        const timeoutMs = 8000 + (item.sanitized.length * 60);
+        let audioUrl = null;
+
+        for (let attempt = 0; attempt <= 1; attempt++) {
+          if (token !== this._genToken) break;
+          const fetchTimeout = setTimeout(() => {
+            try { abortCtrl.abort(); } catch (_) {}
+          }, timeoutMs);
+
+          try {
+            item.tReqSent = Date.now();
+            console.log(`[VoiceServer] TTS req sent attempt=${attempt} ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 60)}"`);
+            const res = await fetch(
+              `http://localhost:4000/api/tts?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(requestedModel)}`,
+              { signal: abortCtrl.signal }
+            );
+            clearTimeout(fetchTimeout);
+
+            if (token !== this._genToken) break;
+
+            if (res.ok) {
+              item.tFirstByte = Date.now();
+              console.log(`[VoiceServer] TTS first audio byte status=${res.status} ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 40)}"`);
+              const blob = await res.blob();
+              if (token !== this._genToken) break;
+              audioUrl = URL.createObjectURL(blob);
+              audioBlobCache.set(cacheKey, audioUrl);
+              break;
+            }
+
+            const status = res.status;
+            const bodyText = await res.text().catch(() => "(unreadable)");
+            console.error(`[VoiceServer] TTS FAILED attempt=${attempt} status=${status} body="${bodyText}" text="${item.sanitized.slice(0, 80)}"`);
+
+            if (status === 400) break; // Never retry 400
+            if (attempt === 0 && (status === 429 || status >= 500)) {
+              await new Promise((r) => setTimeout(r, 300));
+            } else {
+              break;
+            }
+          } catch (e) {
+            clearTimeout(fetchTimeout);
+            if (e?.name === "AbortError" || token !== this._genToken) break;
+            console.error(`[VoiceServer] TTS network error attempt=${attempt}:`, e?.message || e);
+            if (attempt === 0) {
+              await new Promise((r) => setTimeout(r, 300));
+            }
+          }
+        }
+
+        this._activePrefetches.delete(abortWrapper);
+        if (token === this._genToken) {
+          item.audioUrl = audioUrl;
+        }
+        return audioUrl;
+      })();
+    }
+  }
+
+  /**
    * Enqueue a sentence into the global FIFO speech queue.
    */
   enqueueSentence(sentence, options = {}) {
@@ -646,10 +798,17 @@ export class GreenieAvatar {
       sanitized,
       turnId: options.turnId || this.currentTurnId || "N/A",
       options,
+      tEnqueued: Date.now(),
+      audioUrl: null,
+      audioPromise: null,
+      fetchAbortController: null,
     };
 
     this.speechQueue.push(item);
     console.log(`[VoiceServer] Enqueued sentence (queue length: ${this.speechQueue.length}): "${sanitized.slice(0, 60)}" [turn=${item.turnId}]`);
+
+    // Top up prefetch pipeline
+    this._prefetchNextChunks();
 
     this._processQueue();
   }
@@ -678,9 +837,12 @@ export class GreenieAvatar {
   async _processQueue() {
     if (this.isQueueProcessing) return;
     this.isQueueProcessing = true;
+    const processToken = this._genToken;
 
     try {
       while (this.speechQueue.length > 0) {
+        if (processToken !== this._genToken) break;
+
         const item = this.speechQueue[0];
         this.currentPlayingUtterance = item;
 
@@ -697,19 +859,29 @@ export class GreenieAvatar {
         }
       }
     } finally {
-      this.isQueueProcessing = false;
-      this.currentPlayingUtterance = null;
+      if (processToken === this._genToken) {
+        this.isQueueProcessing = false;
+        this.currentPlayingUtterance = null;
 
-      // Queue is now completely empty
-      this.mode = "idle";
-      this.setMouth("rest", 0);
-      this.onSpeakingChange(false);
-      this.setStatus("Listening...");
+        // Queue is now completely empty
+        this.mode = "idle";
+        this.setMouth("rest", 0);
+        this.onSpeakingChange(false);
+        this.setStatus("Listening...");
 
-      if (this._onQueueEmpty) {
-        const cb = this._onQueueEmpty;
-        this._onQueueEmpty = null;
-        try { cb(); } catch (_) {}
+        // Assert state integrity
+        if (this.isSpeaking()) {
+          console.warn(`[Avatar Assert] isSpeaking() is true while queue empty! Resetting state.`);
+          this.mode = "idle";
+          this.isQueueProcessing = false;
+          this.audio = null;
+        }
+
+        if (this._onQueueEmpty) {
+          const cb = this._onQueueEmpty;
+          this._onQueueEmpty = null;
+          try { cb(); } catch (_) {}
+        }
       }
     }
   }
@@ -718,71 +890,83 @@ export class GreenieAvatar {
    * Synthesize and play a single utterance.
    */
   async _playUtterance(item) {
-    const token = this.generation;
-    const requestedModel = TTS_CONFIG.model || "aura-2-luna-en";
-    const cacheKey = `${requestedModel}:${item.sanitized}`;
+    const token = this._genToken;
+    this._prefetchNextChunks();
 
-    let audioUrl = audioBlobCache.get(cacheKey) || null;
+    let audioUrl = item.audioUrl;
+    if (!audioUrl && item.audioPromise) {
+      audioUrl = await item.audioPromise;
+    } else if (!audioUrl) {
+      const requestedModel = TTS_CONFIG.model || "aura-2-luna-en";
+      const cacheKey = `${requestedModel}:${item.sanitized}`;
+      audioUrl = audioBlobCache.get(cacheKey) || null;
 
-    if (!audioUrl) {
-      for (let attempt = 0; attempt <= 1; attempt++) {
-        if (token !== this.generation) break;
-        try {
-          this.activeFetchAbort = new AbortController();
-          const fetchTimeout = setTimeout(() => {
-            try { this.activeFetchAbort?.abort(); } catch (_) {}
-          }, 4500);
+      if (!audioUrl) {
+        const timeoutMs = 8000 + (item.sanitized.length * 60);
+        for (let attempt = 0; attempt <= 1; attempt++) {
+          if (token !== this._genToken) break;
+          try {
+            this.activeFetchAbort = new AbortController();
+            const fetchTimeout = setTimeout(() => {
+              try { this.activeFetchAbort?.abort(); } catch (_) {}
+            }, timeoutMs);
 
-          console.log(`[VoiceServer] TTS req sent attempt=${attempt} ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 60)}"`);
-          const res = await fetch(
-            `http://localhost:4000/api/tts?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(requestedModel)}`,
-            { signal: this.activeFetchAbort.signal }
-          );
-          clearTimeout(fetchTimeout);
+            item.tReqSent = Date.now();
+            console.log(`[VoiceServer] TTS req sent attempt=${attempt} ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 60)}"`);
+            const res = await fetch(
+              `http://localhost:4000/api/tts?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(requestedModel)}`,
+              { signal: this.activeFetchAbort.signal }
+            );
+            clearTimeout(fetchTimeout);
 
-          if (token !== this.generation) break;
+            if (token !== this._genToken) break;
 
-          if (res.ok) {
-            console.log(`[VoiceServer] TTS first audio byte status=${res.status} ts=${new Date().toISOString()}`);
-            const blob = await res.blob();
-            if (token !== this.generation) break;
-            audioUrl = URL.createObjectURL(blob);
-            audioBlobCache.set(cacheKey, audioUrl);
-            break;
+            if (res.ok) {
+              item.tFirstByte = Date.now();
+              console.log(`[VoiceServer] TTS first audio byte status=${res.status} ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 40)}"`);
+              const blob = await res.blob();
+              if (token !== this._genToken) break;
+              audioUrl = URL.createObjectURL(blob);
+              audioBlobCache.set(cacheKey, audioUrl);
+              break;
+            }
+
+            const status = res.status;
+            const bodyText = await res.text().catch(() => "(unreadable)");
+            console.error(`[VoiceServer] TTS FAILED attempt=${attempt} status=${status} body="${bodyText}" text="${item.sanitized.slice(0, 80)}"`);
+
+            if (status === 400) break;
+            if (attempt === 0 && (status === 429 || status >= 500)) {
+              await new Promise((r) => setTimeout(r, 300));
+            } else {
+              break;
+            }
+          } catch (e) {
+            if (e?.name === "AbortError" && token !== this._genToken) break;
+            console.error(`[VoiceServer] TTS network error attempt=${attempt}:`, e?.message || e);
+            if (attempt === 0) {
+              await new Promise((r) => setTimeout(r, 300));
+            }
+          } finally {
+            this.activeFetchAbort = null;
           }
-
-          const status = res.status;
-          const bodyText = await res.text().catch(() => "(unreadable)");
-          console.error(`[VoiceServer] TTS FAILED attempt=${attempt} status=${status} body="${bodyText}" text="${item.sanitized.slice(0, 80)}"`);
-
-          // Never retry 400
-          if (status === 400) break;
-
-          // Retry once on 5xx / 429
-          if (attempt === 0 && (status === 429 || status >= 500)) {
-            await new Promise((r) => setTimeout(r, 300));
-          } else {
-            break;
-          }
-        } catch (e) {
-          if (e?.name === "AbortError" && token !== this.generation) break;
-          console.error(`[VoiceServer] TTS network error attempt=${attempt}:`, e?.message || e);
-          if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 300));
-          }
-        } finally {
-          this.activeFetchAbort = null;
         }
       }
     }
 
-    if (token !== this.generation) return;
+    if (token !== this._genToken) return;
 
     if (audioUrl) {
       await this._playAudio(audioUrl, item);
     } else {
-      console.warn(`[Avatar] Deepgram TTS unavailable, fallback to speechSynthesis: "${item.sanitized.slice(0, 60)}"`);
-      await this._playSpeechSynthesis(item);
+      console.warn(`[Avatar] Deepgram TTS unavailable for utterance: "${item.sanitized.slice(0, 60)}"`);
+      if (ENABLE_SPEECH_SYNTH_FALLBACK) {
+        await this._playSpeechSynthesis(item);
+      } else {
+        // Skip audio for this chunk, advance queue, and ensure full subtitle is shown
+        console.log(`[Avatar] Skipping audio (ENABLE_SPEECH_SYNTH_FALLBACK=false): "${item.sanitized.slice(0, 60)}"`);
+        this.onBoundary(item.sanitized.length);
+      }
     }
   }
 
@@ -790,6 +974,7 @@ export class GreenieAvatar {
    * Play audio element with lip-sync and guaranteed resolution.
    */
   _playAudio(audioUrl, item) {
+    const token = this._genToken;
     return new Promise((resolve) => {
       let resolved = false;
       let timeoutTimer = null;
@@ -802,9 +987,14 @@ export class GreenieAvatar {
       const safeResolve = (reason) => {
         if (resolved) return;
         resolved = true;
+        this._pendingPlaybackResolve = null;
+
         if (timeoutTimer) {
           clearTimeout(timeoutTimer);
           timeoutTimer = null;
+        }
+        if (this._playbackTimeoutTimer === timeoutTimer) {
+          this._playbackTimeoutTimer = null;
         }
         if (this.detachLipSync) {
           try { this.detachLipSync(); } catch (_) {}
@@ -814,14 +1004,30 @@ export class GreenieAvatar {
         if (this.audio === audio) {
           this.audio = null;
         }
+        audio.onended = null;
+        audio.onerror = null;
+        audio.onloadedmetadata = null;
         try {
           audio.pause();
           audio.removeAttribute("src");
           audio.load();
         } catch (_) {}
+
+        item.tEnded = Date.now();
+        const durationSec = Number.isFinite(audio.duration) ? audio.duration : 0;
+        const playElapsed = item.tPlayStart ? (item.tEnded - item.tPlayStart) : 0;
+
         console.log(`[VoiceServer] TTS playback ended (${reason}) ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 50)}"`);
-        resolve();
+
+        // Check if playback ended unusually late compared to audio.duration
+        if (durationSec > 0 && playElapsed > (durationSec * 1000 + 1000)) {
+          console.warn(`[VoiceServer] WARNING: Playback duration mismatch: actual=${playElapsed}ms vs duration=${Math.round(durationSec * 1000)}ms text="${item.sanitized.slice(0, 40)}"`);
+        }
+
+        resolve(reason);
       };
+
+      this._pendingPlaybackResolve = safeResolve;
 
       const setWatchdogTimeout = (durationSec) => {
         if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -831,13 +1037,19 @@ export class GreenieAvatar {
         timeoutTimer = setTimeout(() => {
           safeResolve("timeout");
         }, timeoutMs);
+        this._playbackTimeoutTimer = timeoutTimer;
       };
 
       // Initial default 8s timeout in case loadedmetadata doesn't fire
       setWatchdogTimeout(0);
 
       audio.onloadedmetadata = () => {
+        if (token !== this._genToken) {
+          safeResolve("cancelled");
+          return;
+        }
         setWatchdogTimeout(audio.duration);
+        console.log(`[VoiceServer] Audio loadedmetadata duration=${audio.duration.toFixed(2)}s text="${item.sanitized.slice(0, 40)}"`);
       };
 
       audio.onended = () => {
@@ -853,11 +1065,17 @@ export class GreenieAvatar {
         this.detachLipSync = attachLipSync(audio);
       } catch (_) {}
 
-      console.log(`[VoiceServer] TTS playback start ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 50)}"`);
+      item.tPlayStart = Date.now();
+      const enqToPlay = item.tEnqueued ? (item.tPlayStart - item.tEnqueued) : 0;
+      console.log(`[VoiceServer] TTS playback start (enqueued->play=${enqToPlay}ms) ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 50)}"`);
+
+      // Notify subtitle of chunk start character position
+      const startOffset = item.options?.charOffset ?? 0;
+      this.onBoundary?.(startOffset);
 
       audio.src = audioUrl;
       audio.play().catch((playErr) => {
-        if (playErr?.name === "AbortError") {
+        if (playErr?.name === "AbortError" || token !== this._genToken) {
           safeResolve("abort");
         } else {
           console.warn("[VoiceServer] TTS audio play() rejection:", playErr?.message);
@@ -936,7 +1154,7 @@ export class GreenieAvatar {
   }
 
   /**
-   * Speak full text: split into sentences and stream through FIFO queue.
+   * Speak full text: split into chunks and stream through FIFO queue.
    */
   async speak(
     text,
@@ -954,9 +1172,21 @@ export class GreenieAvatar {
       return;
     }
 
-    const sentences = splitIntoSentences(sanitized);
-    for (const sentence of sentences) {
-      this.enqueueSentence(sentence, { voice, lang, rate, pitch, turnId });
+    const chunks = splitIntoTtsChunks(sanitized);
+    let offset = 0;
+    for (const chunk of chunks) {
+      const idx = text.indexOf(chunk, offset);
+      const charOffset = idx !== -1 ? idx : offset;
+      this.enqueueSentence(chunk, {
+        voice,
+        lang,
+        rate,
+        pitch,
+        turnId,
+        charOffset,
+        chunkLength: chunk.length,
+      });
+      offset = charOffset + chunk.length;
     }
   }
 

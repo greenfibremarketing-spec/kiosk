@@ -3,10 +3,18 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
-const DEFAULT_MODEL = process.env.TTS_MODEL || "aura-2-luna-en";
-const FALLBACK_MODEL = "aura-luna-en";
-const CACHE_DIR = path.join(os.tmpdir(), "greenie-tts");
-fs.mkdirSync(CACHE_DIR, { recursive: true });
+export const DEFAULT_MODEL = process.env.TTS_MODEL || "aura-2-luna-en";
+export const FALLBACK_MODEL = "aura-luna-en";
+
+// Persistent disk cache location in project .cache/tts, falling back to os.tmpdir
+let resolvedCacheDir = process.env.TTS_CACHE_DIR || path.join(process.cwd(), ".cache", "tts");
+try {
+  fs.mkdirSync(resolvedCacheDir, { recursive: true });
+} catch (_) {
+  resolvedCacheDir = path.join(os.tmpdir(), "greenie-tts");
+  fs.mkdirSync(resolvedCacheDir, { recursive: true });
+}
+export const CACHE_DIR = resolvedCacheDir;
 
 function getApiKey() {
   return (
@@ -17,12 +25,15 @@ function getApiKey() {
 }
 
 /**
- * Synthesizes speech using Deepgram Aura TTS with retry backoff and disk caching.
+ * Synthesizes speech using Deepgram Aura TTS with retry backoff, disk caching,
+ * and client disconnect cancellation via AbortSignal.
+ *
  * @param {string} text - The text to speak
  * @param {string} [requestedModel] - Aura voice model name
+ * @param {AbortSignal} [signal] - Optional abort signal to cancel upstream Deepgram request
  * @returns {Promise<{ file: string, model: string }>}
  */
-export async function synth(text, requestedModel) {
+export async function synth(text, requestedModel, signal = null) {
   const clean = String(text || "").trim().slice(0, 1000);
   if (!clean) {
     throw new Error("Text is required for TTS synthesis");
@@ -53,6 +64,12 @@ export async function synth(text, requestedModel) {
   let attemptModel = model;
 
   for (let attempt = 0; attempt <= 2; attempt++) {
+    if (signal?.aborted) {
+      const abortErr = new Error("Upstream TTS aborted: client disconnected");
+      abortErr.name = "AbortError";
+      throw abortErr;
+    }
+
     try {
       const url = `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(attemptModel)}&encoding=mp3`;
       const res = await fetch(url, {
@@ -62,6 +79,7 @@ export async function synth(text, requestedModel) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ text: clean }),
+        signal: signal || undefined,
       });
 
       if (res.ok) {
@@ -97,6 +115,9 @@ export async function synth(text, requestedModel) {
 
       throw lastError;
     } catch (err) {
+      if (err.name === "AbortError" || signal?.aborted) {
+        throw err;
+      }
       lastError = err;
       if (attempt < 2) {
         await new Promise((resolve) => setTimeout(resolve, 200 * Math.pow(2, attempt)));
@@ -118,4 +139,55 @@ export async function checkTtsHealth() {
   } catch (err) {
     return { ok: false, model: DEFAULT_MODEL, error: err.message };
   }
+}
+
+/**
+ * Pre-warms the persistent disk cache at startup with static lines.
+ * Concurrently processes items with a maximum concurrency limit.
+ *
+ * @param {string[]} lines
+ * @param {string} [model]
+ */
+export async function prewarmTtsCache(lines, model = DEFAULT_MODEL) {
+  if (!Array.isArray(lines) || lines.length === 0) return { total: 0, warmed: 0, cached: 0 };
+
+  const unique = Array.from(new Set(lines.map((l) => String(l || "").trim()).filter(Boolean)));
+  console.log(`[TTS Pre-Warm] Pre-warming ${unique.length} static lines into persistent cache...`);
+
+  let cachedCount = 0;
+  let warmedCount = 0;
+  let errorCount = 0;
+  const toSynth = [];
+
+  for (const line of unique) {
+    const cacheKey = crypto.createHash("md5").update(`${model}:${line}`).digest("hex") + ".mp3";
+    const file = path.join(CACHE_DIR, cacheKey);
+    if (fs.existsSync(file) && fs.statSync(file).size > 100) {
+      cachedCount++;
+    } else {
+      toSynth.push(line);
+    }
+  }
+
+  // Synthesize missing lines with controlled concurrency (2 at a time)
+  const CONCURRENCY = 2;
+  for (let i = 0; i < toSynth.length; i += CONCURRENCY) {
+    const batch = toSynth.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (text) => {
+        try {
+          await synth(text, model);
+          warmedCount++;
+        } catch (e) {
+          errorCount++;
+          console.warn(`[TTS Pre-Warm] Notice: could not pre-warm line "${text.slice(0, 30)}":`, e.message);
+        }
+      })
+    );
+  }
+
+  console.log(
+    `[TTS Pre-Warm] Cache ready: ${cachedCount} already cached, ${warmedCount} freshly synthesized, ${errorCount} errors.`
+  );
+  return { total: unique.length, cached: cachedCount, warmed: warmedCount, errors: errorCount };
 }

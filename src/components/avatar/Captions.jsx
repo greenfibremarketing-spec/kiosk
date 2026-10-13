@@ -99,7 +99,7 @@ export default function Captions({ text, speaking, status, charIndex = 0 }) {
   }, [speaking, chunkIndex, chunks, charIndex]);
 
   const activeChunk = chunks[Math.min(chunkIndex, chunks.length - 1)];
-  const displayText = activeChunk?.text || (speaking ? status : text ? text.slice(0, 80) : "");
+  const displayText = speaking ? (activeChunk?.text || status) : (text || "");
 
   if (!displayText) return null;
 

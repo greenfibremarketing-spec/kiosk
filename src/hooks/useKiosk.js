@@ -656,6 +656,7 @@ export function useKiosk() {
         }
         const msg = action?.message || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          stageRef.current?.clearQueue?.("superseded_by_new_reply");
           say(msg.trim());
         }
         break;
@@ -703,6 +704,7 @@ export function useKiosk() {
 
         const msg = action?.message || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          stageRef.current?.clearQueue?.("superseded_by_new_reply");
           say(msg.trim());
         }
         break;
@@ -747,6 +749,7 @@ export function useKiosk() {
 
         const msg = action?.message || action?.blurb || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          stageRef.current?.clearQueue?.("superseded_by_new_reply");
           say(msg.trim());
         }
         break;
@@ -770,6 +773,7 @@ export function useKiosk() {
         });
         const msg = action?.message;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          stageRef.current?.clearQueue?.("superseded_by_new_reply");
           say(msg.trim());
         }
         break;
@@ -794,6 +798,7 @@ export function useKiosk() {
         });
         const msg = action?.message;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          stageRef.current?.clearQueue?.("superseded_by_new_reply");
           say(msg.trim());
         }
         break;
@@ -809,6 +814,7 @@ export function useKiosk() {
           autoResetAfterMs: action?.auto_reset_after_ms || 4000,
         });
         const msg = action?.message || "Thank you, have a great day!";
+        stageRef.current?.clearQueue?.("superseded_by_new_reply");
         say(msg);
         break;
       }
@@ -816,6 +822,7 @@ export function useKiosk() {
       case "REQUEST_HUMAN": {
         setStaffBanner(action?.message || "A store associate is on the way.");
         const msg = action?.message || "A store associate is on the way.";
+        stageRef.current?.clearQueue?.("superseded_by_new_reply");
         say(msg);
         break;
       }
@@ -868,9 +875,11 @@ export function useKiosk() {
     const unsubSentence = kioskWS.on("sentence", (sentence, turnId) => {
       console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${turnId || "N/A"} text="${sentence.slice(0, 50)}"`);
       setConv(S.SPEAKING);
-      const stage = latestRef.current._stageRef?.current;
+      const stage = stageRef.current || latestRef.current._stageRef?.current;
       if (stage && typeof stage.enqueueSentence === "function") {
         stage.enqueueSentence(sentence, { turnId });
+      } else {
+        console.warn(`[Kiosk] Dropping sentence: stage not ready (sentence="${sentence.slice(0, 30)}")`);
       }
     });
 
@@ -884,7 +893,7 @@ export function useKiosk() {
         const replyText = doneData.reply.trim();
         setCaption(replyText);
 
-        const stage = latestRef.current._stageRef?.current;
+        const stage = stageRef.current || latestRef.current._stageRef?.current;
         if (stage) {
           const avatar = stage.getInstance?.();
           // If sentences were already streamed or are currently queued/playing, just signal stream finish
@@ -898,7 +907,6 @@ export function useKiosk() {
         } else {
           say(replyText);
         }
-
       }
     });
 
@@ -1300,6 +1308,7 @@ export function useKiosk() {
   const selectCategory = useCallback((cat) => {
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
+    stageRef.current?.clearQueue?.("superseded_by_new_reply");
     const rawId = typeof cat === "string" ? cat : (cat?.id || "all");
     const cleanId = normalizeCategory(rawId);
     const catObj = categories.find((c) => c.id === cleanId || c.id === rawId);
@@ -1322,6 +1331,7 @@ export function useKiosk() {
   const selectProduct = useCallback((p) => {
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
+    stageRef.current?.clearQueue?.("superseded_by_new_reply");
     setProductId(p.id);
     setShowDetail(true);
     setOnboardingOpen(false);
@@ -1331,6 +1341,7 @@ export function useKiosk() {
 
   const showAll = useCallback(() => {
     lastInputAtRef.current = Date.now();
+    stageRef.current?.clearQueue?.("superseded_by_new_reply");
     setCategory("all");
     setShowDetail(false);
     setOnboardingOpen(false);
@@ -1448,6 +1459,8 @@ export function useKiosk() {
     navigateBack,
     restartSession,
     handleServerAction,
+    stageRef,
+    _stageRef: stageRef,
   };
 
   return {

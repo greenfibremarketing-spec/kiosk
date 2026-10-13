@@ -77,41 +77,125 @@ export function sanitizeTtsText(text) {
  * @returns {string[]} array of non-empty sentence strings
  */
 export function splitIntoSentences(text) {
-  if (!text || typeof text !== "string") return [];
-
-  const sentences = [];
-  // Split on . ? ! that are followed by whitespace or end of string
-  // Use a regex that keeps the delimiter in the sentence
-  const raw = text.split(/(?<=[.?!])\s+/);
-
-  for (const part of raw) {
-    const trimmed = part.trim();
-    if (!trimmed) continue;
-
-    // If a single segment is longer than 120 chars, break further at word boundaries
-    if (trimmed.length > 120) {
-      const words = trimmed.split(/\s+/);
-      let chunk = "";
-      for (const word of words) {
-        if (chunk && (chunk + " " + word).length > 120) {
-          if (chunk.trim()) sentences.push(chunk.trim());
-          chunk = word;
-        } else {
-          chunk = chunk ? chunk + " " + word : word;
-        }
-      }
-      if (chunk.trim()) sentences.push(chunk.trim());
-    } else {
-      sentences.push(trimmed);
-    }
-  }
-
-  return sentences.filter(Boolean);
+  return splitIntoTtsChunks(text);
 }
 
 /**
- * Buffers streamed tokens and emits sentences as soon as completed.
- * Splits on punctuation (. ? !) followed by whitespace, or after ~120 characters at a word boundary.
+ * Splits text into optimal TTS chunks (~25 to 80 chars) for low-latency synthesis.
+ *
+ * Rules:
+ *  1. Isolate name-personalised intros ("Nice to meet you, <name>!", "<name>,", "Great choice, <name>!")
+ *     so the remainder of the sentence matches the pre-warmed static disk cache.
+ *  2. Split at sentence endings (. ? !).
+ *  3. Split long sentences (> 80 chars) at commas, semicolons, colons, or " and " into chunks of ~25-80 chars.
+ *  4. Fall back to word boundaries if a segment still exceeds 80 chars.
+ *
+ * @param {string} text
+ * @returns {string[]} array of sanitized, non-empty chunks
+ */
+export function splitIntoTtsChunks(text) {
+  if (!text || typeof text !== "string") return [];
+
+  const raw = text.trim();
+  if (!raw) return [];
+
+  const chunks = [];
+
+  // 1. Isolate name-personalised prefix if present
+  // Matches e.g. "Nice to meet you, David!", "Hello David!", "David,", "Great choice, Sarah!"
+  const namePrefixRegex = /^(?:(?:Nice to meet you|Pleased to meet you|Welcome|Hello|Hi|Hey|Great choice|Nice pick|Wonderful choice),\s*[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)?[!.,?]|(?:[A-Z][a-zA-Z]*,))\s*/i;
+  let remainingText = raw;
+  const nameMatch = raw.match(namePrefixRegex);
+  if (nameMatch) {
+    const nameChunk = nameMatch[0].trim();
+    if (nameChunk) {
+      chunks.push(nameChunk);
+    }
+    remainingText = raw.slice(nameMatch[0].length).trim();
+  }
+
+  if (!remainingText) {
+    return chunks.map(sanitizeTtsText).filter(Boolean);
+  }
+
+  // 2. Split on sentence boundaries (. ? !)
+  const rawSentences = remainingText.split(/(?<=[.?!])\s+/);
+
+  for (const sentence of rawSentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+
+    // If within ideal chunk length, keep intact
+    if (trimmed.length <= 80) {
+      chunks.push(trimmed);
+      continue;
+    }
+
+    // 3. For long sentences (> 80 chars), split at commas, semicolons, colons, or " and " / " but "
+    // Look for comma/semicolon/colon followed by space, or " and ", " but ", " or "
+    const pauseSplitRegex = /(?:,\s*|;\s*|:\s*|\s+(?:and|but|or)\s+)/gi;
+    let match;
+    let lastIndex = 0;
+    let currentChunk = "";
+
+    const segments = [];
+    // Manual sub-split preserving readable phrasing
+    const parts = trimmed.split(/(?<=[,;:])\s+|\s+(?=and\b|\bbut\b|\bor\b)/i);
+
+    for (const part of parts) {
+      const p = part.trim();
+      if (!p) continue;
+
+      if (!currentChunk) {
+        currentChunk = p;
+      } else if ((currentChunk + " " + p).length <= 80) {
+        currentChunk += " " + p;
+      } else {
+        if (currentChunk.length >= 20) {
+          segments.push(currentChunk.trim());
+          currentChunk = p;
+        } else {
+          // If currentChunk is too small (<20 chars), combine anyway or push
+          currentChunk += " " + p;
+          if (currentChunk.length > 80) {
+            segments.push(currentChunk.trim());
+            currentChunk = "";
+          }
+        }
+      }
+    }
+    if (currentChunk.trim()) {
+      segments.push(currentChunk.trim());
+    }
+
+    // 4. Fallback: if any segment is still > 80 chars, break at word boundary
+    for (const seg of segments) {
+      if (seg.length <= 80) {
+        chunks.push(seg);
+      } else {
+        const words = seg.split(/\s+/);
+        let wordChunk = "";
+        for (const w of words) {
+          if (wordChunk && (wordChunk + " " + w).length > 80) {
+            chunks.push(wordChunk.trim());
+            wordChunk = w;
+          } else {
+            wordChunk = wordChunk ? wordChunk + " " + w : w;
+          }
+        }
+        if (wordChunk.trim()) {
+          chunks.push(wordChunk.trim());
+        }
+      }
+    }
+  }
+
+  return chunks.map(sanitizeTtsText).filter(Boolean);
+}
+
+/**
+ * Buffers streamed tokens and emits chunks as soon as completed.
+ * Splits on punctuation (. ? !) or after ~60-80 characters at natural break points.
  */
 export class SentenceTokenStreamer {
   constructor(onSentence) {
@@ -131,20 +215,27 @@ export class SentenceTokenStreamer {
         const advanceBy = match[0].length;
         this.buffer = this.buffer.slice(advanceBy);
         if (sentence && this.onSentence) {
-          this.onSentence(sentence);
+          // Emit sub-chunks if sentence is long
+          const chunks = splitIntoTtsChunks(sentence);
+          for (const c of chunks) {
+            this.onSentence(c);
+          }
         }
         continue;
       }
 
-      // If buffer has grown beyond 120 chars without punctuation, break at word boundary
-      if (this.buffer.length >= 120) {
-        const slice = this.buffer.slice(0, 140);
-        const lastSpace = slice.lastIndexOf(" ");
-        if (lastSpace > 40) {
-          const sentence = this.buffer.slice(0, lastSpace).trim();
-          this.buffer = this.buffer.slice(lastSpace).trimStart();
-          if (sentence && this.onSentence) {
-            this.onSentence(sentence);
+      // If buffer has grown beyond 75 chars without ending punctuation, break at comma or word boundary
+      if (this.buffer.length >= 75) {
+        const slice = this.buffer.slice(0, 85);
+        const commaIdx = slice.lastIndexOf(",");
+        const spaceIdx = slice.lastIndexOf(" ");
+        const splitIdx = commaIdx > 25 ? commaIdx + 1 : (spaceIdx > 35 ? spaceIdx : -1);
+
+        if (splitIdx > 25) {
+          const chunk = this.buffer.slice(0, splitIdx).trim();
+          this.buffer = this.buffer.slice(splitIdx).trimStart();
+          if (chunk && this.onSentence) {
+            this.onSentence(chunk);
           }
           continue;
         }
@@ -158,7 +249,10 @@ export class SentenceTokenStreamer {
     const remaining = this.buffer.trim();
     this.buffer = "";
     if (remaining && this.onSentence) {
-      this.onSentence(remaining);
+      const chunks = splitIntoTtsChunks(remaining);
+      for (const c of chunks) {
+        this.onSentence(c);
+      }
     }
   }
 

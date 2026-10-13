@@ -87,6 +87,7 @@ const GreenieStage = forwardRef(function GreenieStage(
 
       react: (kind) => avatarRef.current?.react(kind),
       stop: () => avatarRef.current?.stop(),
+      clearQueue: (reason) => avatarRef.current?.clearQueue(reason),
       playSpeech: (url, cues) => avatarRef.current?.playSpeech(url, cues),
       setListening: (active) => avatarRef.current?.setListening(active),
       setEngaged: (engaged) => avatarRef.current?.setEngaged(engaged),
