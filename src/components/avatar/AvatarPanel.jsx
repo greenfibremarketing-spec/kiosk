@@ -127,16 +127,28 @@ export default function AvatarPanel({
   useEffect(() => {
     const changed = speechId !== prevSpeechIdRef.current || caption !== prevCaptionRef.current;
     if (caption && changed && !userSpeaking && isEngaged) {
+      // If the avatar is already speaking or streaming via queue (from useKiosk's
+      // sentence/done handlers), skip to avoid interrupting playback that already started.
+      const avatarInstance = stageRef.current?.getInstance?.();
+      if (avatarInstance && (avatarInstance.isSpeaking?.() || avatarInstance.speechQueue?.length > 0)) {
+        // Already speaking or queuing — just update the refs and skip
+        prevSpeechIdRef.current = speechId;
+        prevCaptionRef.current  = caption;
+        return;
+      }
+
       stageRef.current?.speak(caption, {
         voice: customVoice,
         pitch: CUSTOM_VOICE_OPTIONS.pitch,
         rate: CUSTOM_VOICE_OPTIONS.rate,
         lang: customVoice?.lang || "en-IN",
       });
+
     }
     prevSpeechIdRef.current = speechId;
     prevCaptionRef.current  = caption;
   }, [caption, speechId, customVoice, userSpeaking, isEngaged]);
+
 
   // ── Drive avatar expressions from convState ────────────────────────────────
   useEffect(() => {

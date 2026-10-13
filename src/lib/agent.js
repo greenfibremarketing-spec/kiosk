@@ -341,6 +341,7 @@ export async function sendSpeechDone(speechId) {
  */
 export async function resetBackendSession(sessionId = "kiosk-session") {
   try {
+    console.log(`[FRONTEND >> BACKEND] POST ${ENDPOINTS.sessionReset} (session: ${sessionId})`);
     const res = await fetch(ENDPOINTS.sessionReset, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -349,7 +350,9 @@ export async function resetBackendSession(sessionId = "kiosk-session") {
         kiosk_id: KIOSK_ID,
       }),
     });
-    return await res.json();
+    const data = await res.json();
+    console.log(`[BACKEND >> REST RESET]`, data);
+    return data;
   } catch (e) {
     console.warn("[Agent] Failed to reset backend session:", e.message);
     return null;
@@ -361,9 +364,12 @@ export async function resetBackendSession(sessionId = "kiosk-session") {
  */
 export async function fetchBackendProducts() {
   try {
+    console.log(`[FRONTEND >> BACKEND] GET ${ENDPOINTS.products}`);
     const res = await fetch(ENDPOINTS.products);
     if (res.ok) {
-      return await res.json();
+      const data = await res.json();
+      console.log(`[BACKEND >> REST PRODUCTS] Fetched ${data?.products?.length || 0} products`);
+      return data;
     }
   } catch (e) {
     console.warn("[Agent] Failed to fetch backend products:", e.message);
@@ -376,9 +382,12 @@ export async function fetchBackendProducts() {
  */
 export async function checkBackendHealth() {
   try {
+    console.log(`[FRONTEND >> BACKEND] GET ${ENDPOINTS.health}`);
     const res = await fetch(ENDPOINTS.health);
     if (res.ok) {
-      return await res.json();
+      const data = await res.json();
+      console.log(`[BACKEND >> REST HEALTH]`, data);
+      return data;
     }
   } catch (e) {
     console.warn("[Agent] Failed to check backend health:", e.message);

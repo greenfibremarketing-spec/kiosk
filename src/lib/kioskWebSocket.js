@@ -1,6 +1,7 @@
 // kioskWebSocket.js — Real-time Protocol v2 WebSocket Client for Greenie AI Backend
 import { getWsUrl, CURRENT_ENV, KIOSK_ID } from "@/lib/apiConfig";
 import KioskStepCache, { KIOSK_STEPS } from "@/lib/kioskStepCache";
+import { SentenceTokenStreamer } from "@/lib/ttsTextSanitizer";
 
 class KioskWebSocketClient {
   constructor() {
@@ -11,8 +12,18 @@ class KioskWebSocketClient {
     this.pingInterval = null;
     this.turnCounter = 0;
 
+    // Streamed sentence buffer to emit sentences as tokens arrive
+    this.sentenceStreamer = new SentenceTokenStreamer((sentence) => {
+      console.log(`[BACKEND >> SENTENCE (streamed)] "${sentence}"`);
+      this.emit("sentence", sentence, this.currentTurnId);
+      for (const pending of this.activeTurns.values()) {
+        pending.onSentence?.(sentence, this.currentTurnId);
+      }
+    });
+
     // Active request resolvers: Map<turnId, { resolve, reject, timeout, onToken, onSentence, onAction }>
     this.activeTurns = new Map();
+
 
     // Global event listeners
     this.listeners = {
@@ -101,7 +112,7 @@ class KioskWebSocketClient {
     const wsUrl = getWsUrl(this.sessionId, KIOSK_ID, shouldAutoGreet);
 
     try {
-      console.log(`[KioskWS] Connecting (${CURRENT_ENV}) to:`, wsUrl, `[autoGreet=${shouldAutoGreet}, step=${KioskStepCache.getCurrentStep()}]`);
+      console.log(`[FRONTEND >> WS CONNECT] Connecting (${CURRENT_ENV}) to:`, wsUrl, `[autoGreet=${shouldAutoGreet}, step=${KioskStepCache.getCurrentStep()}]`);
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
@@ -109,7 +120,7 @@ class KioskWebSocketClient {
         clearTimeout(this.reconnectTimer);
         this.startHeartbeat();
         this.emit("status", { connected: true, sessionId: this.sessionId });
-        console.log(`[KioskWS] Connected to backend session: ${this.sessionId}`);
+        console.log(`[BACKEND >> WS CONNECTED] Session: ${this.sessionId}`);
       };
 
       this.ws.onmessage = (event) => {
@@ -204,7 +215,11 @@ class KioskWebSocketClient {
         case "token": {
           const tokenStr = typeof data === "string" ? data : "";
           this.currentResponse += tokenStr;
+          console.log(`[BACKEND >> TOKEN] "${tokenStr}"`);
           this.emit("token", tokenStr);
+
+          // Buffer streamed tokens into sentences and emit completed sentences for early TTS
+          this.sentenceStreamer?.push(tokenStr);
 
           // Notify turn-specific callbacks
           for (const pending of this.activeTurns.values()) {
@@ -215,6 +230,7 @@ class KioskWebSocketClient {
 
         case "sentence": {
           const sentenceStr = typeof data === "string" ? data : "";
+          console.log(`[BACKEND >> SENTENCE] "${sentenceStr}"`);
           this.emit("sentence", sentenceStr);
 
           for (const pending of this.activeTurns.values()) {
@@ -229,6 +245,9 @@ class KioskWebSocketClient {
             this.currentSpeechId = act.speech_id;
           }
           this.lastAction = act;
+          const actName = act?.action || act?.type || "ACTION";
+          const actMsg = act?.message || act?.prompt || (act?.products ? `${act.products.length} products` : "") || "";
+          console.log(`[BACKEND >> ACTION] ${actName}${actMsg ? ` | "${actMsg}"` : ""}`, act);
           this.emit("action", act);
 
           for (const pending of this.activeTurns.values()) {
@@ -238,12 +257,15 @@ class KioskWebSocketClient {
         }
 
         case "hint": {
+          console.log(`[BACKEND >> HINT]`, data);
           this.emit("hint", data);
           break;
         }
 
         case "done": {
           this.isBusy = false;
+          // Flush any remaining buffered tokens as the final sentence
+          this.sentenceStreamer?.flush();
           this.currentTurnId = null;
           const fullText = typeof data === "string" ? data : this.currentResponse;
           const turnId = meta?.turn_id;
@@ -255,6 +277,8 @@ class KioskWebSocketClient {
             action: resolvedAction,
             meta,
           };
+
+          console.log(`[BACKEND >> DONE] stage: ${meta?.sales_stage || "complete"} | turn: ${turnId || "N/A"}\n  reply: "${fullText}"`);
 
           this.emit("done", result);
 
@@ -278,7 +302,9 @@ class KioskWebSocketClient {
 
         case "cancelled": {
           this.isBusy = false;
+          this.sentenceStreamer?.reset();
           this.currentTurnId = null;
+          console.log(`[BACKEND >> CANCELLED] turn: ${meta?.turn_id || "N/A"}`);
           this.emit("cancelled", { turnId: meta?.turn_id });
           if (meta?.turn_id && this.activeTurns.has(meta.turn_id)) {
             const pending = this.activeTurns.get(meta.turn_id);
@@ -292,8 +318,11 @@ class KioskWebSocketClient {
 
         case "error": {
           this.isBusy = false;
+          this.sentenceStreamer?.reset();
           this.currentTurnId = null;
+
           const errMessage = typeof data === "string" ? data : "Backend error";
+          console.log(`[BACKEND >> ERROR] "${errMessage}"`, metadata);
           this.emit("error", { message: errMessage, metadata });
 
           // Reject active turns if critical
@@ -313,6 +342,7 @@ class KioskWebSocketClient {
         case "ping_silence": {
           // Backend inactivity nudge after 8s silence
           const silenceMsg = typeof data === "string" ? data : "Still there? Say something or tap a button.";
+          console.log(`[BACKEND >> SILENCE PING] "${silenceMsg}"`);
           this.emit("ping_silence", silenceMsg);
           break;
         }
@@ -320,12 +350,13 @@ class KioskWebSocketClient {
         case "auto_reset": {
           // Backend auto-reset after 2 silence strikes (16s idle)
           const resetMsg = typeof data === "string" ? data : "Resetting for the next customer...";
+          console.log(`[BACKEND >> AUTO RESET] "${resetMsg}"`);
           this.emit("auto_reset", resetMsg);
           break;
         }
 
         default:
-          console.log("[KioskWS] Unknown message frame:", payload);
+          console.log(`[BACKEND >> FRAME] [${type || "unknown"}]`, payload);
       }
     } catch (e) {
       console.warn("[KioskWS] Failed to parse incoming frame:", e);
@@ -381,8 +412,10 @@ class KioskWebSocketClient {
     const turnId = this.generateTurnId();
     this.isBusy = true;
     this.currentTurnId = turnId;
+    this.sentenceStreamer?.reset();
     this.currentResponse = "";
     this.lastAction = null;
+
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -410,6 +443,7 @@ class KioskWebSocketClient {
         turn_id: turnId,
       };
 
+      console.log(`[FRONTEND >> BACKEND QUERY] "${frame.message}" (turn: ${turnId})`);
       this.ws.send(JSON.stringify(frame));
     });
   }
@@ -470,7 +504,7 @@ class KioskWebSocketClient {
       // Strict frame construction to respect backend Pydantic (extra = 'forbid')
       const frame = this.buildActionFrame(action, payload, turnId);
 
-      console.log(`[KioskWS] Sending sanitized flow action: ${action}`, frame);
+      console.log(`[FRONTEND >> BACKEND ACTION] ${action} (turn: ${turnId})`, frame);
       this.ws.send(JSON.stringify(frame));
     });
   }
@@ -545,7 +579,7 @@ class KioskWebSocketClient {
         speech_id: sid,
         turn_id: turnId,
       };
-      console.log(`[KioskWS] Emitting SPEECH_DONE frame (speech_id: ${sid}):`, ackFrame);
+      console.log(`[FRONTEND >> BACKEND ACK] SPEECH_DONE (speech_id: ${sid}):`, ackFrame);
       try {
         this.ws.send(JSON.stringify(ackFrame));
       } catch (err) {

@@ -32,21 +32,38 @@ export default function RightOnboardingFlow({
     }
   }, [name]);
 
-  // Live voice input for name during step 1
+  const autoAdvanceTimerRef = React.useRef(null);
+  const [autoSubmitting, setAutoSubmitting] = useState(false);
+
+  // Live voice input for name during step 1 + Auto-advance progression
   useEffect(() => {
     if (step === 1 && liveTranscript) {
+      const lower = liveTranscript.toLowerCase().trim();
+      if (/^(?:skip|skip name|no|pass|not now)$/i.test(lower)) {
+        handleSkipStep1();
+        return;
+      }
       const clean = liveTranscript
         .replace(/^(?:my name is|i am|i'm|this is|call me|myself|it's|it is)\s+/i, "")
         .replace(/[.,!?]/g, "")
         .trim();
-      if (clean && clean.split(/\s+/).length <= 3 && !/^(?:skip|no|what|how|why)\b/i.test(clean)) {
+      if (clean && clean.split(/\s+/).length <= 3 && !/^(?:skip|no|what|how|why|hello|hi|hey)\b/i.test(clean)) {
         const formatted = clean
           .split(/\s+/)
           .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
           .join(" ");
         setInputName(formatted);
+
+        // Auto-advance after 800ms pause once name is spoken
+        clearTimeout(autoAdvanceTimerRef.current);
+        setAutoSubmitting(true);
+        autoAdvanceTimerRef.current = setTimeout(() => {
+          setAutoSubmitting(false);
+          handleProceedFromStep1(formatted);
+        }, 800);
       }
     }
+    return () => clearTimeout(autoAdvanceTimerRef.current);
   }, [step, liveTranscript]);
 
   // Sync if controlledStep changes dynamically (from AI backend action)
@@ -181,10 +198,10 @@ export default function RightOnboardingFlow({
               <div className="right-name-actions-row">
                 <button
                   type="submit"
-                  className="right-btn-continue"
+                  className={`right-btn-continue ${autoSubmitting ? "btn-auto-submitting" : ""}`}
                   disabled={!inputName.trim()}
                 >
-                  <span>Continue</span>
+                  <span>{autoSubmitting ? "Continuing..." : "Continue"}</span>
                   <span className="btn-arrow">→</span>
                 </button>
                 <button

@@ -94,6 +94,14 @@ export function getMouth(isSpeaking, dt = 1 / 60) {
         (1 - tWide);
       tHiss = hiss;
     }
+  } else if (isSpeaking) {
+    // Fallback procedural mouth movement for WebSpeech API so lips never stay closed
+    const t = (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000;
+    const flap = Math.max(0, Math.sin(t * 26) * 0.55 + Math.sin(t * 13) * 0.35 + 0.15);
+    tOpen = Math.min(0.85, flap * 0.8);
+    tWide = 0.3 + Math.sin(t * 17) * 0.2;
+    tRound = 0.15 + Math.sin(t * 11) * 0.1;
+    level = tOpen * 0.8;
   }
 
   S.open = ease(S.open, tOpen, 0.55, 0.2, dt);

@@ -8,6 +8,7 @@ import CheckoutQRModal from "@/components/modals/CheckoutQRModal";
 import GoodbyeOverlay from "@/components/modals/GoodbyeOverlay";
 import StaffAssistanceBanner from "@/components/kiosk/StaffAssistanceBanner";
 import HintTooltip from "@/components/kiosk/HintTooltip";
+import SessionTimeoutBanner from "@/components/kiosk/SessionTimeoutBanner";
 import { useKiosk } from "@/hooks/useKiosk";
 
 export default function KioskShell() {
@@ -20,6 +21,14 @@ export default function KioskShell() {
       onClick={() => k.presence.triggerTouchEngaged()}
       onTouchStart={() => k.presence.triggerTouchEngaged()}
     >
+      {/* ── Top-Right Inactivity Warning Banner (15s not seeing -> 10s timer -> Reset to Step 1) ── */}
+      <SessionTimeoutBanner
+        isOpen={k.sessionTimeoutWarning?.active}
+        secondsRemaining={k.sessionTimeoutWarning?.secondsRemaining}
+        onContinue={k.continueSession}
+        onExit={k.exitSession}
+      />
+
       {/* ── Top Staff Assistance Notification (REQUEST_HUMAN) ── */}
       {k.staffBanner && (
         <StaffAssistanceBanner

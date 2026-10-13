@@ -45,8 +45,9 @@ const speechConfig = {
   /**
    * After userSpeaking goes false, wait this long before finalising the turn
    * and sending the transcript to the AI backend (ms).
+   * Tuned to 450ms for snappy, instant conversational turn response.
    */
-  endOfTurnSilenceMs: 1200,
+  endOfTurnSilenceMs: 450,
 
   // ─── Pre-roll buffer ─────────────────────────────────────────────────────────
 

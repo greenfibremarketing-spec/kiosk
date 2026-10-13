@@ -243,6 +243,22 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
 
     win.webContents.on("console-message", (event, level, message) => {
+      // Suppress emotion live spam & raw CSS styling strings from terminal
+      if (
+        message.includes("[EMOTION LIVE]") ||
+        message.includes("background: #00A63E") ||
+        message.includes("mouthSmileLeft") ||
+        message.includes("mouthFrownLeft")
+      ) {
+        return;
+      }
+
+      // Highlight real-time backend/frontend dialogue cleanly in terminal
+      if (message.startsWith("[BACKEND >>") || message.startsWith("[FRONTEND >>")) {
+        log.info(message);
+        return;
+      }
+
       log.info(`[Renderer] ${message}`);
     });
 

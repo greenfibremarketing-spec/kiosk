@@ -17,6 +17,7 @@ export function useSpeech({
 } = {}) {
   const [listening, setListening] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
+  const [status, setStatus] = useState("closed");
 
   const wsRef = useRef(null);
   const wantRef = useRef(false);
@@ -55,10 +56,12 @@ export function useSpeech({
     unsubRef.current = null;
     wsRef.current = null;
     setListening(false);
+    setStatus("closed");
   }, []);
 
   const connect = useCallback(async () => {
     if (!wantRef.current || wsRef.current) return;
+    setStatus("connecting");
 
     let key;
     try {
@@ -89,6 +92,7 @@ export function useSpeech({
     ws.onopen = () => {
       retryCountRef.current = 0;
       setListening(true);
+      setStatus("open");
 
       unsubRef.current = micRef.current?.subscribePcm?.((b) => {
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -153,15 +157,18 @@ export function useSpeech({
         if (d.speech_final) {
           flush();
         } else {
-          // Fallback debounce: if UtteranceEnd / speech_final doesn't arrive in 450ms, flush
+          // Fallback debounce: if UtteranceEnd / speech_final doesn't arrive in 250ms, flush
           finalFlushTimerRef.current = setTimeout(() => {
             flush();
-          }, 450);
+          }, 250);
         }
       }
     };
 
-    ws.onerror = (e) => console.warn("[STT] socket error", e);
+    ws.onerror = (e) => {
+      console.warn("[STT] socket error", e);
+      setStatus("error");
+    };
 
     ws.onclose = () => {
       teardownSocket();
@@ -203,7 +210,7 @@ export function useSpeech({
   useEffect(() => {
     startContinuousListening();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // mount-only \u2014 always-on
+  }, []); // mount-only — always-on
 
   // Reconnect if dropped while engaged
   useEffect(() => {
@@ -223,6 +230,7 @@ export function useSpeech({
   return {
     listening,
     liveTranscript,
+    status,
     toggleListening,
     startContinuousListening,
     stopContinuousListening,

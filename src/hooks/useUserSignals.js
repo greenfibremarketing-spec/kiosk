@@ -75,7 +75,7 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
 
         if (active && lm) {
           landmarkerRef.current = lm;
-          console.log("%c[Greenie Vision] FaceLandmarker loaded successfully with 52 blendshapes", "color: #00A63E; font-weight: bold;");
+          console.log("[Greenie Vision] FaceLandmarker loaded successfully with 52 blendshapes");
         }
       } catch (e) {
         console.error("Critical: Could not load FaceLandmarker:", e);
@@ -262,20 +262,6 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
         if (moodChanged || timeSinceLastLog > LOG_INTERVAL_MS) {
           lastLoggedMoodRef.current = currentMood;
           lastLogTimeRef.current = now;
-
-          const moodColor =
-            currentMood.startsWith("Happy") ? "#10b981" :
-            currentMood.startsWith("Sad")   ? "#ef4444" :
-            currentMood.startsWith("Conf")  ? "#f59e0b" :
-            currentMood.startsWith("Surp")  ? "#8b5cf6" : "#94a3b8";
-
-          console.log(
-            `%c[EMOTION LIVE]%c %c${currentMood} (${Math.round(dominantScore * 100)}%)%c | Smile: ${(smileAvg).toFixed(2)} | Sad: ${(sadAvg).toFixed(2)} | Confused: ${(confusedAvg).toFixed(2)} | Jaw: ${(jawOpenScore).toFixed(2)} (${isSpeakingNow ? "🗣️ SPEAKING" : "SILENT"}) | Gaze: ${attention === "screen" ? "👀 Screen" : "↩️ Away"}`,
-            "background: #00A63E; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold;",
-            "color: #ffffff;",
-            `color: ${moodColor}; font-weight: bold; font-size: 13px;`,
-            "color: #cbd5e1;"
-          );
         }
 
         setSignals((prev) => {

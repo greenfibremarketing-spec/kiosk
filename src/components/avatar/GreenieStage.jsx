@@ -77,7 +77,14 @@ const GreenieStage = forwardRef(function GreenieStage(
     () => ({
       flyIn: (duration) => avatarRef.current?.flyIn(duration),
       speak: (text, options) => avatarRef.current?.speak(text, options),
+      enqueueSentence: (sentence, options) => avatarRef.current?.enqueueSentence(sentence, options),
+      startTurn: (turnId) => avatarRef.current?.startTurn(turnId),
+      finishTurn: (turnId) => avatarRef.current?.finishTurn(turnId),
+      isSpeaking: () => avatarRef.current?.isSpeaking(),
+      isQueueEmpty: () => avatarRef.current?.isQueueEmpty(),
+      onQueueEmpty: (cb) => avatarRef.current?.onQueueEmpty(cb),
       wave: (duration) => avatarRef.current?.wave(duration),
+
       react: (kind) => avatarRef.current?.react(kind),
       stop: () => avatarRef.current?.stop(),
       playSpeech: (url, cues) => avatarRef.current?.playSpeech(url, cues),
@@ -88,6 +95,7 @@ const GreenieStage = forwardRef(function GreenieStage(
     }),
     []
   );
+
 
   return (
     <div className="greenie-stage-wrapper">

@@ -1,16 +1,19 @@
 "use client";
 /**
- * useKiosk.js  (v2 – with conversation state machine)
+ * useKiosk.js  (v2 – Production-Hardened Real-Time Kiosk Engine)
  * ─────────────────────────────────────────────────────────────────────────────
  * States: IDLE → ATTENTIVE → LISTENING → THINKING → SPEAKING → LISTENING …
  *
- * Key behaviours
- *   • userSpeaking true  → LISTENING; interrupts avatar immediately
- *   • end-of-turn silence (900 ms) → send transcript → THINKING → SPEAKING
- *   • Never start avatar speech while userSpeaking is true
- *   • "I can't hear you" NEVER fires while userSpeaking is true
- *   • Low-audio nudge after 2 s of face-evidence-but-no-audio
- *   • Two failures → show push-to-talk
+ * Key guarantees:
+ *   • Fused human evidence tracker: presence, attention, voice, input.
+ *     No inactivity warning/countdown while any evidence exists.
+ *     15s absent → 10s wall-clock countdown → reset to Step 1.
+ *   • Monotonic onboarding: NAME (1) → CATEGORIES (2) → BROWSING (3).
+ *     Synchronous optimistic categories opening; server ASK_NAME / SHOW_GREETING
+ *     ignored once NAME_SET is passed.
+ *   • Single source of truth for TTS: Deepgram Aura (aura-2-luna-en).
+ *   • Latest ref pattern on all callbacks to avoid stale closures.
+ *   • Deepgram primary STT with WebSpeech gated only on Deepgram failure (>3s).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -37,9 +40,7 @@ import { useMic } from "@/hooks/useMic";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
 import { useSpeech } from "@/hooks/useSpeech";
 import speechConfig from "@/lib/speechConfig";
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-const IDLE_RESET_MS = 60_000;
+import { prefetchAudio } from "@/lib/avatar/GreenieAvatar";
 
 // Conversation states
 const S = {
@@ -75,27 +76,45 @@ export function useKiosk() {
   const [goodbyeData, setGoodbyeData] = useState(null);
   const [staffBanner, setStaffBanner] = useState(null);
   const [hintBubble, setHintBubble] = useState(null);
-  const sendTranscriptRef = useRef(null);
-  const submitNameRef = useRef(null);
-  const skipNameRef = useRef(null);
-  const selectCategoryRef = useRef(null);
-  const restartSessionRef = useRef(null);
 
-  // Preload verified database catalog from backend API
+  // Guards & references
+  const nameSubmittedRef = useRef(false);
+  const categoriesFallbackTimerRef = useRef(null);
+  const catalogRetryCountRef = useRef(0);
+  const lastAppliedTurnIdRef = useRef(null);
+  const lastAppliedSeqRef = useRef(0);
+  const isSendingRef = useRef(false);
+  const nameRef = useRef(name);
+  nameRef.current = name;
+
+  // Preload catalog with retry backoff
   useEffect(() => {
-    fetchBackendProducts().then((data) => {
-      if (data?.products && Array.isArray(data.products) && data.products.length > 0) {
-        const mapped = data.products.map(normalizeBackendProduct).filter(Boolean);
-        setBackendCatalog(mapped);
-        if (mapped[0]?.id) {
-          setProductId(mapped[0].id);
-        }
-      } else {
-        setBackendCatalog([]);
+    let active = true;
+    async function loadCatalog() {
+      for (let attempt = 0; attempt <= 2; attempt++) {
+        try {
+          const data = await fetchBackendProducts();
+          if (!active) return;
+          if (data?.products && Array.isArray(data.products) && data.products.length > 0) {
+            const mapped = data.products.map(normalizeBackendProduct).filter(Boolean);
+            setBackendCatalog(mapped);
+            if (mapped[0]?.id) {
+              setProductId((curr) => curr || mapped[0].id);
+            }
+            return;
+          }
+        } catch (_) {}
+        if (!active) return;
+        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
       }
-    }).catch(() => {
-      setBackendCatalog([]);
-    });
+    }
+    loadCatalog();
+    return () => { active = false; };
+  }, []);
+
+  // Prefetch initial greeting audio on mount
+  useEffect(() => {
+    prefetchAudio(GREETING);
   }, []);
 
   // ── Conversation state machine ────────────────────────────────────────────
@@ -115,25 +134,240 @@ export function useKiosk() {
   const eotTimerRef          = useRef(null);     // end-of-turn countdown
   const failureCountRef      = useRef(0);
   const [showPTT, setShowPTT] = useState(false); // push-to-talk buttons
-  const lowAudioTimerRef     = useRef(null);
-  const idleTimerRef         = useRef(null);
+
+  // ── Fused Human Evidence Tracker ──────────────────────────────────────────
+  const lastFaceAtRef      = useRef(Date.now());
+  const lastAttentionAtRef = useRef(Date.now());
+  const lastVoiceAtRef     = useRef(Date.now());
+  const lastInputAtRef     = useRef(Date.now());
+  const warningDeadlineRef = useRef(null);
+
+  const [sessionTimeoutWarning, setSessionTimeoutWarning] = useState({
+    active: false,
+    secondsRemaining: 10,
+  });
+  const sessionTimeoutWarningRef = useRef(sessionTimeoutWarning);
+  sessionTimeoutWarningRef.current = sessionTimeoutWarning;
 
   // ── Abort controller for SSE/AI fetch ────────────────────────────────────
   const abortRef = useRef(null);
 
-  // ── Presence detection & session lifecycle ──────────────────────────────
+  // ── Latest Ref Pattern for zero stale closures across async handlers ───────
+  const latestRef = useRef({});
+
+  // ── Presence Hook ────────────────────────────────────────────────────────
+  const presence = usePresenceDetection({
+    onEnterEngaged: useCallback(() => {
+      lastFaceAtRef.current = Date.now();
+      if (convStateRef.current === S.IDLE) {
+        setConv(S.ATTENTIVE);
+      }
+    }, [setConv]),
+    onExitToIdle: useCallback(() => {
+      // The presence hook only reports face movement; fused tracker is single reset authority
+      if (convStateRef.current === S.ATTENTIVE) {
+        setConv(S.IDLE);
+      }
+    }, [setConv]),
+  });
+
+  const isEngaged = presence.state === "ENGAGED" || onboardingOpen;
+
+  // Sync engagement presence state with Electron main process
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
+      window.kiosk.sendPresenceState(isEngaged ? "ENGAGED" : "IDLE");
+    }
+  }, [isEngaged]);
+
+  // ── Face signals (jaw-open VAD in useUserSignals) ─────────────────────────
+  const signals = useUserSignals({
+    videoRef: presence.videoRef,
+    isEngaged,
+    onSpeechStart: useCallback(() => {}, []),
+    onSpeechEnd:   useCallback(() => {}, []),
+  });
+
+  // Build the face object expected by useUserSpeechState (reads facePx from ref to avoid re-renders)
+  const face = {
+    present:        signals.present,
+    jawOpen:        signals.jawOpen,
+    lookingAtScreen: signals.attention === "screen",
+    faceSizeRatio:  (presence.debugStatsRef?.current?.facePx ?? presence.debugStats?.facePx ?? 0) / 640,
+  };
+
+  // ── Mic + single AudioWorklet PCM stream ──────────────────────────────────
+  const mic = useMic({ isEngaged });
+  const { vadSpeech, audioLevel, micError } = mic;
+
+  // ── Avatar speech / active status ─────────────────────────────────────────
+  const isAvatarActive = speaking || convState === S.SPEAKING || convState === S.THINKING;
+  const isAvatarActiveRef = useRef(isAvatarActive);
+  isAvatarActiveRef.current = isAvatarActive;
+
+  // ── Fused speech state (gated by isAvatarActive to prevent avatar self-hearing) ──
+  const { userSpeaking, evidence, speakingForMs, silentForMs } =
+    useUserSpeechState({ vadSpeech, audioLevel, face, isSpeaking: isAvatarActive });
+
+  const userSpeakingRef = useRef(userSpeaking);
+  userSpeakingRef.current = userSpeaking;
+
+  // ── Audio Gating & Cooldown to prevent avatar hearing itself ──────────────
+  const COOLDOWN_MS = 700;
+  const ECHO_WINDOW_MS = 3500;
+  const BARGE_MIN_LEVEL = 0.02;
+
+  const bargeUntilRef = useRef(0);
+  const avatarEndedAtRef = useRef(0);
+  const avatarActiveNowRef = useRef(false);
+
+  useEffect(() => {
+    avatarActiveNowRef.current = isAvatarActive;
+    if (isAvatarActive) {
+      bargeUntilRef.current = 0;
+    } else {
+      avatarEndedAtRef.current = Date.now();
+    }
+  }, [isAvatarActive]);
+
+  // Watchdog: Ensure speaking state automatically unblocks as a true last resort
+  useEffect(() => {
+    if (speaking || convState === S.SPEAKING) {
+      const maxMs = 35000; // Generous last resort watchdog (35s)
+      const timer = setTimeout(() => {
+        const stage = latestRef.current._stageRef?.current;
+        const isStillPlaying = stage && typeof stage.isSpeaking === "function" ? stage.isSpeaking() : false;
+        if (!isStillPlaying && (speaking || convStateRef.current === S.SPEAKING)) {
+          console.warn("[Kiosk] Avatar speaking safety watchdog: releasing speaking lock to allow listening");
+          setSpeaking(false);
+          if (convStateRef.current === S.SPEAKING) {
+            setConv(S.ATTENTIVE);
+          }
+        }
+      }, maxMs);
+      return () => clearTimeout(timer);
+    }
+  }, [speaking, convState, setConv]);
+
+
+  // Read by useSpeech on every audio chunk
+  const getGate = useCallback(() => {
+    const now = Date.now();
+    const inCooldown = now - avatarEndedAtRef.current < COOLDOWN_MS;
+    return {
+      blocked: avatarActiveNowRef.current || inCooldown,
+      bargeIn: now < bargeUntilRef.current,
+    };
+  }, []);
+
+  // Avatar echo filter
+  const lastAvatarTextRef = useRef("");
+  useEffect(() => {
+    if (caption) lastAvatarTextRef.current = caption;
+  }, [caption]);
+
+  const isEchoOfAvatar = useCallback((text) => {
+    const sinceEnd = Date.now() - avatarEndedAtRef.current;
+    const recent = avatarActiveNowRef.current || sinceEnd < ECHO_WINDOW_MS;
+    const cap = lastAvatarTextRef.current;
+    if (!recent || !cap || !text) return false;
+
+    const cleanCap = cap.toLowerCase().trim();
+    const cleanText = text.toLowerCase().trim();
+    if (cleanText.length >= 6 && (cleanCap.includes(cleanText) || cleanText.includes(cleanCap))) {
+      return true;
+    }
+
+    const norm = (s) =>
+      s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2);
+    const capWords = new Set(norm(cap));
+    const words = norm(text);
+    if (!words.length) return false;
+    return words.filter((w) => capWords.has(w)).length / words.length >= 0.35;
+  }, []);
+
+  // ── Global Document Input Capture Listeners (Touch / Click / Typing counts) ──
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleHumanInput = () => {
+      lastInputAtRef.current = Date.now();
+    };
+    const inputEvents = [
+      "pointerdown",
+      "touchstart",
+      "mousedown",
+      "keydown",
+      "input",
+      "wheel",
+      "scroll",
+    ];
+    inputEvents.forEach((ev) =>
+      window.addEventListener(ev, handleHumanInput, { capture: true, passive: true })
+    );
+    return () => {
+      inputEvents.forEach((ev) =>
+        window.removeEventListener(ev, handleHumanInput, { capture: true })
+      );
+    };
+  }, []);
+
+  // ── Update Evidence Timestamps each render/event ──────────────────────────
+  if (
+    (presence.lastFaceAtRef && presence.lastFaceAtRef.current > lastFaceAtRef.current) ||
+    signals.present
+  ) {
+    lastFaceAtRef.current = Date.now();
+  }
+  if (signals.attention === "screen") {
+    lastAttentionAtRef.current = Date.now();
+  }
+  const isHumanVoice =
+    userSpeaking || (vadSpeech && audioLevel > BARGE_MIN_LEVEL && !getGate().blocked);
+  if (isHumanVoice) {
+    lastVoiceAtRef.current = Date.now();
+  }
+
+  // ── Avatar control helpers ────────────────────────────────────────────────
+  const stageRef = useRef(null);
+  const setStageRef = useCallback((ref) => {
+    stageRef.current = ref;
+    // Keep latestRef._stageRef in sync so the done/sentence handlers can speak directly
+    latestRef.current._stageRef = stageRef;
+  }, []);
+
+
+  // ── Say something ────────────────────────────────────────────────────────
+  const say = useCallback((text) => {
+    if (!text || typeof text !== "string") return;
+    setCaption(text);
+    setSpeechId((p) => p + 1);
+  }, []);
+
+  // ── Reset session to Step 1 ──────────────────────────────────────────────
   const reset = useCallback(() => {
+    warningDeadlineRef.current = null;
+    setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
+    const now = Date.now();
+    lastFaceAtRef.current = now;
+    lastAttentionAtRef.current = now;
+    lastVoiceAtRef.current = now;
+    lastInputAtRef.current = now;
+
+    nameSubmittedRef.current = false;
+    clearTimeout(categoriesFallbackTimerRef.current);
     KioskStepCache.clearCache();
     setName("");
     setCategory("all");
     setProductId(backendCatalog[0]?.id || null);
     setCaption(GREETING);
+
     const oldSession = sessionIdRef.current;
     const newSession = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
     KioskStepCache.setSessionId(newSession);
     sessionIdRef.current = newSession;
     kioskWS.connect(newSession, true);
     resetBackendSession(oldSession);
+
     pendingSpeechAckRef.current = null;
     clearTimeout(speechAckTimerRef.current);
     if (kioskWS.speechDoneTimer) {
@@ -141,6 +375,10 @@ export function useKiosk() {
       kioskWS.speechDoneTimer = null;
     }
     kioskWS.pendingSpeechId = null;
+
+    // Stop any in-flight TTS so stale replies from old turn never play
+    stageRef.current?.stop();
+
     setBackendAction(null);
     setActionButtons([]);
     setCartModalOpen(false);
@@ -161,137 +399,74 @@ export function useKiosk() {
     setLiveTranscript("");
     failureCountRef.current = 0;
     setShowPTT(false);
-  }, [setConv]);
+  }, [backendCatalog, setConv]);
 
-  // Connect WebSocket client on mount for current session with auto_greet
+
+  // Connect WebSocket on mount for current session with auto_greet
   useEffect(() => {
     kioskWS.connect(sessionIdRef.current, true);
   }, []);
 
-  const presence = usePresenceDetection({
-    onEnterEngaged: useCallback(() => {
-      if (convStateRef.current === S.IDLE) {
-        setConv(S.ATTENTIVE);
-      }
-    }, [setConv]),
-    onExitToIdle: useCallback(() => {
-      reset();
-    }, [reset]),
-  });
-
-  const isEngaged = presence.state === "ENGAGED" || onboardingOpen;
-
-  // Sync engagement presence state with Electron main process
+  // ── Single Fused Human Evidence & Inactivity Interval (250 ms) ────────────
   useEffect(() => {
-    if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
-      window.kiosk.sendPresenceState(isEngaged ? "ENGAGED" : "IDLE");
-    }
-  }, [isEngaged]);
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const lastEvidence = Math.max(
+        lastFaceAtRef.current,
+        lastAttentionAtRef.current,
+        lastVoiceAtRef.current,
+        lastInputAtRef.current
+      );
 
-  // ── Face signals (jaw-open VAD already in useUserSignals) ─────────────────
-  const signals = useUserSignals({
-    videoRef: presence.videoRef,
-    isEngaged,
-    onSpeechStart: useCallback(() => {}, []),
-    onSpeechEnd:   useCallback(() => {}, []),
-  });
+      const hasCameraError = Boolean(presence.cameraError);
+      const noEvidenceThreshold = hasCameraError ? 45000 : 15000;
+      const elapsed = now - lastEvidence;
 
-  // Build the face object expected by useUserSpeechState
-  const face = {
-    present:        signals.present,
-    jawOpen:        signals.jawOpen,
-    lookingAtScreen: signals.attention === "screen",
-    // faceSizeRatio from debugStats facePx / 640
-    faceSizeRatio:  (presence.debugStats?.facePx ?? 0) / 640,
-  };
-
-  // ── Mic + single AudioWorklet PCM stream ──────────────────────────────────
-  const mic = useMic({ isEngaged });
-  const { vadSpeech, audioLevel, micError } = mic;
-
-  // ── Avatar speech / active status ─────────────────────────────────────────
-  const isAvatarActive = speaking || convState === S.SPEAKING || convState === S.THINKING;
-  const isAvatarActiveRef = useRef(isAvatarActive);
-  isAvatarActiveRef.current = isAvatarActive;
-
-  // ── Fused speech state (gated by isAvatarActive to prevent avatar self-hearing) ──
-  const { userSpeaking, evidence, speakingForMs, silentForMs } =
-    useUserSpeechState({ vadSpeech, audioLevel, face, isSpeaking: isAvatarActive });
-
-  const userSpeakingRef = useRef(userSpeaking);
-  userSpeakingRef.current = userSpeaking;
-
-  // ── Audio Gating & Cooldown to prevent avatar hearing itself ──────────────
-  const COOLDOWN_MS = 200;
-  const ECHO_WINDOW_MS = 2500;
-  const BARGE_MIN_LEVEL = 0.02;
-
-  const bargeUntilRef = useRef(0); // Timestamp, expires by itself
-  const avatarEndedAtRef = useRef(0);
-  const avatarActiveNowRef = useRef(false);
-
-  useEffect(() => {
-    avatarActiveNowRef.current = isAvatarActive;
-    if (isAvatarActive) {
-      // A new avatar turn always starts with the gate closed
-      bargeUntilRef.current = 0;
-    } else {
-      avatarEndedAtRef.current = Date.now();
-    }
-  }, [isAvatarActive]);
-
-  // Watchdog: Ensure speaking state automatically unblocks if TTS onend is missed
-  useEffect(() => {
-    if (speaking || convState === S.SPEAKING) {
-      const maxMs = Math.max(2500, (caption?.length || 20) * 80 + 1500);
-      const timer = setTimeout(() => {
-        if (speaking || convStateRef.current === S.SPEAKING) {
-          console.warn("[Kiosk] Avatar speaking safety watchdog: releasing speaking lock to allow listening");
-          setSpeaking(false);
-          if (convStateRef.current === S.SPEAKING) {
-            setConv(S.ATTENTIVE);
-          }
+      if (elapsed < noEvidenceThreshold) {
+        // Any human evidence immediately cancels active warning/countdown
+        if (warningDeadlineRef.current !== null || sessionTimeoutWarningRef.current.active) {
+          warningDeadlineRef.current = null;
+          setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
         }
-      }, maxMs);
-      return () => clearTimeout(timer);
-    }
-  }, [speaking, convState, caption, setConv]);
+        return;
+      }
 
-  // Read by useSpeech on every audio chunk (refs, so never stale)
-  const getGate = useCallback(() => {
-    const now = Date.now();
-    const inCooldown = now - avatarEndedAtRef.current < COOLDOWN_MS;
-    return {
-      blocked: avatarActiveNowRef.current || inCooldown,
-      bargeIn: now < bargeUntilRef.current,
-    };
+      // No human evidence for threshold: run 10s wall-clock countdown
+      if (warningDeadlineRef.current === null) {
+        warningDeadlineRef.current = now + 10000;
+        setSessionTimeoutWarning({ active: true, secondsRemaining: 10 });
+      } else {
+        const remainingSec = Math.max(0, Math.ceil((warningDeadlineRef.current - now) / 1000));
+        if (remainingSec <= 0) {
+          console.log("[Kiosk] Human evidence absent for timeout. Resetting session to Step 1.");
+          warningDeadlineRef.current = null;
+          setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
+          latestRef.current.reset?.();
+        } else {
+          setSessionTimeoutWarning((prev) =>
+            prev.secondsRemaining === remainingSec
+              ? prev
+              : { active: true, secondsRemaining: remainingSec }
+          );
+        }
+      }
+    }, 250);
+
+    return () => clearInterval(interval);
+  }, [presence.cameraError]);
+
+  const continueSession = useCallback(() => {
+    lastInputAtRef.current = Date.now();
+    warningDeadlineRef.current = null;
+    setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
+    presence.triggerTouchEngaged();
+  }, [presence]);
+
+  const exitSession = useCallback(() => {
+    warningDeadlineRef.current = null;
+    setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
+    latestRef.current.reset?.();
   }, []);
-
-  // Stronger echo filter as backup
-  const lastAvatarTextRef = useRef("");
-  useEffect(() => {
-    if (caption) lastAvatarTextRef.current = caption;
-  }, [caption]);
-
-  const isEchoOfAvatar = useCallback((text) => {
-    const sinceEnd = Date.now() - avatarEndedAtRef.current;
-    const recent = avatarActiveNowRef.current || sinceEnd < ECHO_WINDOW_MS;
-    const cap = lastAvatarTextRef.current;
-    if (!recent || !cap || !text) return false;
-
-    const norm = (s) =>
-      s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2);
-    const capWords = new Set(norm(cap));
-    const words = norm(text);
-    if (!words.length) return false;
-    return words.filter((w) => capWords.has(w)).length / words.length >= 0.5;
-  }, []);
-
-  // ── Avatar control helpers (set from AvatarPanel via callbacks) ────────────
-  const stageRef = useRef(null);
-  const setStageRef = useCallback((ref) => { stageRef.current = ref; }, []);
-
-  const handleServerActionRef = useRef(null);
 
   // ── Interrupt avatar speech ────────────────────────────────────────────────
   const interruptAvatar = useCallback(async () => {
@@ -303,7 +478,6 @@ export function useKiosk() {
     setSpeaking(false);
     setConv(S.LISTENING);
 
-    // Unblock backend state machine if speech was interrupted
     const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
     if (sid) {
       pendingSpeechAckRef.current = null;
@@ -311,22 +485,78 @@ export function useKiosk() {
       try {
         const ackRes = await sendSpeechDone(sid, sessionIdRef.current);
         if (ackRes?.action) {
-          handleServerActionRef.current?.(ackRes.action, ackRes.sales_stage);
+          latestRef.current.handleServerAction?.(ackRes.action, ackRes.sales_stage);
         }
       } catch (_) {}
     }
   }, [setConv]);
 
-  // ── Say something (queues new caption + increments speechId) ─────────────
-  const say = useCallback((text) => {
-    if (!text || typeof text !== "string") return;
-    setCaption(text);
-    setSpeechId((p) => p + 1);
+  // ── Monotonic Onboarding Navigation: submitName & skipName ─────────────────
+  const submitName = useCallback((n) => {
+    lastInputAtRef.current = Date.now();
+    const trimmed = String(n || "").trim();
+    if (!trimmed) return;
+
+    nameSubmittedRef.current = true;
+    KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
+    KioskStepCache.setCustomerName(trimmed);
+    setName(trimmed);
+
+    // Optimistically open Categories screen immediately; never wait for server
+    setOnboardingStep(2);
+    setOnboardingOpen(true);
+
+    kioskWS.sendSetName(trimmed);
+
+    // 1.5s fallback timer: ensure categories are rendered even if server SHOW_CATEGORIES is delayed
+    clearTimeout(categoriesFallbackTimerRef.current);
+    categoriesFallbackTimerRef.current = setTimeout(() => {
+      if (latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
+        console.log("[Kiosk] 1.5s categories fallback timer: displaying categories");
+        setOnboardingStep(2);
+        setOnboardingOpen(true);
+      }
+    }, 1500);
+  }, []);
+
+  const skipName = useCallback(() => {
+    lastInputAtRef.current = Date.now();
+    nameSubmittedRef.current = true;
+    KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
+
+    // Optimistically open Categories screen immediately
+    setOnboardingStep(2);
+    setOnboardingOpen(true);
+
+    kioskWS.sendSkipName();
+
+    clearTimeout(categoriesFallbackTimerRef.current);
+    categoriesFallbackTimerRef.current = setTimeout(() => {
+      if (latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
+        console.log("[Kiosk] 1.5s categories fallback timer: displaying categories");
+        setOnboardingStep(2);
+        setOnboardingOpen(true);
+      }
+    }, 1500);
   }, []);
 
   // ── AI Screen Director: Handle structured server actions ────────────────
   const handleServerAction = useCallback((action, salesStage) => {
     if (!action && !salesStage) return;
+
+    // Stale action protection: drop actions from different session or out-of-order sequence
+    if (action?.session_id && action.session_id !== sessionIdRef.current) {
+      console.log("[Kiosk] Dropping action from different session:", action.session_id);
+      return;
+    }
+    if (action?.seq && lastAppliedSeqRef.current && action.seq < lastAppliedSeqRef.current) {
+      console.log("[Kiosk] Dropping out-of-order action seq:", action.seq);
+      return;
+    }
+    if (action?.seq) {
+      lastAppliedSeqRef.current = action.seq;
+    }
+
     const actionType =
       action?.action ||
       action?.type ||
@@ -343,7 +573,6 @@ export function useKiosk() {
     if (action?.speech_id && action?.awaiting_speech_done) {
       pendingSpeechAckRef.current = action.speech_id;
       clearTimeout(speechAckTimerRef.current);
-      // Auto-acknowledge speech completion safety watchdog (8s safety delay in case TTS audio blocked)
       speechAckTimerRef.current = setTimeout(() => {
         if (pendingSpeechAckRef.current === action.speech_id) {
           console.log("[Kiosk] Auto-acknowledging speech_id safety watchdog:", action.speech_id);
@@ -354,17 +583,22 @@ export function useKiosk() {
       }, 8000);
     }
 
+    const isPassedName =
+      KioskStepCache.hasPassedStep(KIOSK_STEPS.NAME_SET) ||
+      latestRef.current.onboardingStep >= 2 ||
+      nameSubmittedRef.current;
+
     switch (actionType) {
       case "SHOW_GREETING": {
         // Welcome Screen: Avatar speaks greeting, await SPEECH_DONE
-        if (KioskStepCache.hasPassedStep(KIOSK_STEPS.GREETED)) {
-          console.log("[Kiosk] SHOW_GREETING received but greeting already completed in this session. Skipping replay.");
+        if (KioskStepCache.hasPassedStep(KIOSK_STEPS.GREETED) || isPassedName) {
+          console.log("[Kiosk] SHOW_GREETING received but greeting or name already completed. Skipping replay.");
           if (action?.speech_id) {
             kioskWS.flushSpeechDone(action.speech_id);
           }
           break;
         }
-        presence.triggerTouchEngaged();
+        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingOpen(false);
         setShowDetail(false);
         setCartModalOpen(false);
@@ -380,18 +614,19 @@ export function useKiosk() {
 
       case "ASK_NAME": {
         // Name Input Modal / Tab
-        if (KioskStepCache.hasPassedStep(KIOSK_STEPS.NAME_SET)) {
+        if (isPassedName) {
           console.log("[Kiosk] ASK_NAME received but name step already completed. Bypassing prompt.");
-          const cachedName = KioskStepCache.getCustomerName() || name;
+          const cachedName = KioskStepCache.getCustomerName() || latestRef.current.name;
           if (cachedName) {
             kioskWS.sendSetName(cachedName);
           } else {
             kioskWS.sendSkipName();
           }
           setOnboardingStep(2);
+          setOnboardingOpen(true);
           break;
         }
-        presence.triggerTouchEngaged();
+        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingStep(1);
         setOnboardingOpen(true);
         setShowDetail(false);
@@ -408,9 +643,9 @@ export function useKiosk() {
       }
 
       case "SHOW_CATEGORIES": {
-        // Navigate to Pre-built Products Catalog View / Step 2
+        clearTimeout(categoriesFallbackTimerRef.current);
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
-        presence.triggerTouchEngaged();
+        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingStep(2);
         setOnboardingOpen(true);
         setShowDetail(false);
@@ -428,17 +663,19 @@ export function useKiosk() {
 
       case "SHOW_CATEGORY": {
         if (action?.category) {
-          selectCategory(action.category);
+          latestRef.current.selectCategory?.(action.category);
         }
         break;
       }
 
       case "SHOW_PRODUCTS": {
-        // Category Selection: Stay on category view, show all product cards!
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
-        presence.triggerTouchEngaged();
-        setOnboardingOpen(false);
-        setShowDetail(false); // ALWAYS stay on category view
+        latestRef.current.presence?.triggerTouchEngaged?.();
+        // Server actions must not close categories screen if user is currently selecting categories
+        if (latestRef.current.onboardingStep !== 2) {
+          setOnboardingOpen(false);
+        }
+        setShowDetail(false);
         setCartModalOpen(false);
         setQrModalOpen(false);
 
@@ -464,8 +701,6 @@ export function useKiosk() {
           setActionButtons(action.buttons);
         }
 
-        // Greeny dynamically announces products in the category:
-        // "{name}, in {category} we have {N} products: {P1} and {P2}. Which one would you like to see?"
         const msg = action?.message || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
           say(msg.trim());
@@ -475,16 +710,15 @@ export function useKiosk() {
 
       case "SHOW_PRODUCT_CARD":
       case "SHOW_PRODUCT": {
-        // Specific Product Selected: Open PDP and stream pitch!
         KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
-        presence.triggerTouchEngaged();
+        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingOpen(false);
-        setShowDetail(true); // Open product detail page
+        setShowDetail(true);
         setCartModalOpen(false);
         setQrModalOpen(false);
 
         const prodData = action?.product || (action?.products && action.products[0]);
-        const currentCatalog = backendCatalog;
+        const currentCatalog = latestRef.current.backendCatalog || [];
         const target =
           (prodData && findMatchingLocalProduct(prodData, currentCatalog)) ||
           (action?.sku && findMatchingLocalProduct(action.sku, currentCatalog)) ||
@@ -511,7 +745,6 @@ export function useKiosk() {
           setActionButtons(["Next", "Cheaper", "Compare", "I'll take it"]);
         }
 
-        // Greeny greets with: "Great choice, {userName}! Here is our {product_name} for ₹{price}..."
         const msg = action?.message || action?.blurb || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
           say(msg.trim());
@@ -520,14 +753,13 @@ export function useKiosk() {
       }
 
       case "CONFIRM_BUY": {
-        // Cart Confirmation Modal
-        presence.triggerTouchEngaged();
+        latestRef.current.presence?.triggerTouchEngaged?.();
         setCartModalOpen(true);
-        const currentCatalog = backendCatalog;
+        const currentCatalog = latestRef.current.backendCatalog || [];
         const target =
           findMatchingLocalProduct(action?.sku, currentCatalog) ||
           findMatchingLocalProduct(action?.product, currentCatalog) ||
-          product ||
+          latestRef.current.product ||
           currentCatalog[0] ||
           null;
 
@@ -544,15 +776,14 @@ export function useKiosk() {
       }
 
       case "CHECKOUT_HANDOFF": {
-        // Checkout & QR Screen
-        presence.triggerTouchEngaged();
+        latestRef.current.presence?.triggerTouchEngaged?.();
         setCartModalOpen(false);
         setQrModalOpen(true);
-        const currentCatalog = backendCatalog;
+        const currentCatalog = latestRef.current.backendCatalog || [];
         const target =
           findMatchingLocalProduct(action?.sku, currentCatalog) ||
           findMatchingLocalProduct(action?.product, currentCatalog) ||
-          product ||
+          latestRef.current.product ||
           currentCatalog[0] ||
           null;
 
@@ -569,8 +800,7 @@ export function useKiosk() {
       }
 
       case "GOODBYE": {
-        // Farewell / Thank You Screen
-        presence.triggerTouchEngaged();
+        latestRef.current.presence?.triggerTouchEngaged?.();
         setCartModalOpen(false);
         setQrModalOpen(false);
         setGoodbyeOpen(true);
@@ -584,7 +814,6 @@ export function useKiosk() {
       }
 
       case "REQUEST_HUMAN": {
-        // Staff Assistance Banner
         setStaffBanner(action?.message || "A store associate is on the way.");
         const msg = action?.message || "A store associate is on the way.";
         say(msg);
@@ -592,13 +821,14 @@ export function useKiosk() {
       }
 
       case "SHOW_HINT": {
-        // Help Tooltip / Bubble
         setHintBubble(action?.hint || action?.message);
         break;
       }
 
       case "SHOW_ALL": {
-        setOnboardingOpen(false);
+        if (latestRef.current.onboardingStep !== 2) {
+          setOnboardingOpen(false);
+        }
         setShowDetail(false);
         setCategory("all");
         setLiveTurnProducts([]);
@@ -611,7 +841,7 @@ export function useKiosk() {
       }
 
       case "RESTART": {
-        reset();
+        latestRef.current.reset?.();
         break;
       }
 
@@ -620,69 +850,83 @@ export function useKiosk() {
           console.log("[Kiosk] Action processed:", actionType);
         }
     }
-  }, [reset]);
+  }, [say]);
 
-  handleServerActionRef.current = handleServerAction;
-
-  // Connect WebSocket real-time action, token, and hint listeners
+  // Connect WebSocket listeners (reads handlers via latestRef to prevent stale closures)
   const lastSpokenTurnIdRef = useRef(null);
 
   useEffect(() => {
     const unsubAction = kioskWS.on("action", (actionData) => {
-      console.log("[KioskWS] Real-time action received:", actionData);
       handleServerAction(actionData);
     });
 
     const unsubHint = kioskWS.on("hint", (hintData) => {
-      console.log("[KioskWS] Hint received:", hintData);
       setHintBubble(hintData);
     });
 
+    // Streamed sentence listener: start TTS immediately for each completed sentence
+    const unsubSentence = kioskWS.on("sentence", (sentence, turnId) => {
+      console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${turnId || "N/A"} text="${sentence.slice(0, 50)}"`);
+      setConv(S.SPEAKING);
+      const stage = latestRef.current._stageRef?.current;
+      if (stage && typeof stage.enqueueSentence === "function") {
+        stage.enqueueSentence(sentence, { turnId });
+      }
+    });
+
     const unsubDone = kioskWS.on("done", (doneData) => {
+      console.log(`[Renderer] DONE received ts=${new Date().toISOString()} reply="${(doneData?.reply || "").slice(0, 60)}"`);
       if (doneData?.action || doneData?.salesStage) {
         handleServerAction(doneData.action, doneData.salesStage);
       }
       if (doneData?.reply && typeof doneData.reply === "string" && doneData.reply.trim().length > 0) {
         const turnId = doneData?.turnId || doneData?.meta?.turn_id;
-        if (turnId && turnId !== lastSpokenTurnIdRef.current) {
-          lastSpokenTurnIdRef.current = turnId;
-          setCaption(doneData.reply.trim());
-          say(doneData.reply.trim());
+        const replyText = doneData.reply.trim();
+        setCaption(replyText);
+
+        const stage = latestRef.current._stageRef?.current;
+        if (stage) {
+          const avatar = stage.getInstance?.();
+          // If sentences were already streamed or are currently queued/playing, just signal stream finish
+          if (avatar && (avatar.isSpeaking?.() || avatar.speechQueue?.length > 0)) {
+            stage.finishTurn?.(turnId);
+          } else {
+            // Unstreamed turn (single full reply): speak through queue
+            lastSpokenTurnIdRef.current = turnId;
+            stage.speak(replyText, { turnId });
+          }
+        } else {
+          say(replyText);
         }
+
       }
     });
 
-    // Backend inactivity nudge: show a hint bubble after 8s silence
     const unsubPingSilence = kioskWS.on("ping_silence", (msg) => {
-      console.log("[KioskWS] Silence ping from backend:", msg);
       setHintBubble(typeof msg === "string" ? msg : "Still there? Tap or speak to continue.");
     });
 
-    // Backend auto-reset: clear session only if user is NOT actively engaged in front of kiosk
     const unsubAutoReset = kioskWS.on("auto_reset", (msg) => {
-      console.log("[KioskWS] Auto-reset received from backend:", msg);
       if (!isEngaged && !onboardingOpen && !nameRef.current && !KioskStepCache.getCustomerName()) {
-        reset();
+        latestRef.current.reset?.();
       }
     });
 
     return () => {
       unsubAction();
       unsubHint();
+      unsubSentence();
       unsubDone();
       unsubPingSilence();
       unsubAutoReset();
     };
-  }, [handleServerAction, say, reset]);
+  }, [handleServerAction, say, isEngaged, onboardingOpen]);
 
-  // ── Core: send transcript to AI (Guarded with isSendingRef to prevent double-firing 409s) ──
-  const isSendingRef = useRef(false);
-  const nameRef = useRef(name);
-  nameRef.current = name;
 
+  // ── Core: Send transcript to AI backend ───────────────────────────────────
   const sendTranscript = useCallback(async (text, signalsSnap) => {
     if (isSendingRef.current) {
-      console.log("[Kiosk] Dropping duplicate in-flight chat request to avoid 409 conflict:", text);
+      console.log("[Kiosk] Dropping duplicate in-flight chat request:", text);
       return;
     }
 
@@ -693,46 +937,41 @@ export function useKiosk() {
     const currentStep = KioskStepCache.getCurrentStep();
     const hasNameAlready = Boolean(KioskStepCache.getCustomerName() || nameRef.current);
     const isAwaitingName =
-      (onboardingOpen && onboardingStep === 1) ||
-      (backendAction?.action === "ASK_NAME" && !hasNameAlready && currentStep < KIOSK_STEPS.NAME_SET);
+      (latestRef.current.onboardingOpen && latestRef.current.onboardingStep === 1) ||
+      (!nameSubmittedRef.current && !hasNameAlready && currentStep < KIOSK_STEPS.NAME_SET);
 
     const hasExplicitIntro = /^(?:my name is|i am|i'm|this is|call me|myself)\s+/i.test(trimmed);
-    if (isAwaitingName || (!hasNameAlready && hasExplicitIntro)) {
+
+    if (isAwaitingName || (!hasNameAlready && !nameSubmittedRef.current && hasExplicitIntro)) {
       if (/^(?:skip|skip name|skip for now|no thanks|later|pass|never mind)$/i.test(trimmed)) {
         console.log("[Kiosk] Spoken skip name detected:", trimmed);
-        skipNameRef.current?.();
+        skipName();
         return;
       }
       let candidate = trimmed
         .replace(/^(?:my name is|i am|i'm|this is|call me|myself|it's|it is)\s+/i, "")
         .replace(/[.,!?]/g, "")
         .trim();
-      if (candidate && candidate.split(/\s+/).length <= 3 && !/^(?:what|where|how|why|who|help|hello|hi|good|can)\b/i.test(candidate)) {
+
+      const isReserved =
+        /^(?:what|where|how|why|who|help|hello|hi|good|can|buy|shop|shirt|shirts|t-shirt|tshirts|kurta|kurtas|jeans|trouser|trousers|linen|all|next|back|restart|checkout)\b/i.test(
+          candidate
+        );
+
+      if (candidate && candidate.split(/\s+/).length <= 3 && !isReserved) {
         const formatted = candidate
           .split(/\s+/)
           .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
           .join(" ");
         console.log("[Kiosk] Spoken name detected:", formatted);
-        submitNameRef.current?.(formatted);
+        submitName(formatted);
         return;
       }
     }
 
-    // ── Spoken Category Selection (during Step 2 or catalog browsing) ──
-    const catMatch = detectCategory(trimmed);
-    if (catMatch && (onboardingStep === 2 || !showDetail)) {
-      console.log("[Kiosk] Spoken category detected:", catMatch);
-      if (catMatch === "all") {
-        showAll();
-      } else {
-        selectCategoryRef.current?.(catMatch);
-      }
-      return;
-    }
-
-    // ── Spoken session restart ──
+    // ── Spoken restart intent ──
     if (/^(?:restart|start over|reset|new session)$/i.test(trimmed)) {
-      restartSessionRef.current?.();
+      latestRef.current.restartSession?.();
       return;
     }
 
@@ -747,21 +986,17 @@ export function useKiosk() {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
 
+    // Start a new turn on the stage: aborts any in-flight TTS from previous turn immediately
+    const stage = latestRef.current._stageRef?.current;
+    stage?.startTurn?.("turn_" + Date.now());
+
     try {
-      let firstSentenceSpoken = false;
       const data = await replyAsync({
         text: String(text ?? ""),
         name: String(nameRef.current ?? ""),
         sessionId: sessionIdRef.current,
         signals: signalsSnap,
         signal: abortRef.current.signal,
-        onSentence: (sentence) => {
-          if (!firstSentenceSpoken && sentence?.trim()) {
-            firstSentenceSpoken = true;
-            setConv(S.SPEAKING);
-            say(sentence.trim());
-          }
-        },
         onAction: (act) => {
           if (act) handleServerAction(act);
         },
@@ -788,23 +1023,18 @@ export function useKiosk() {
       }
 
       setConv(S.SPEAKING);
-      if (!firstSentenceSpoken) {
-        say(data.message);
-      } else {
-        setCaption(data.message);
-      }
+      setCaption(data.message);
     } catch (err) {
-      if (err?.name === "AbortError") return; // User interrupted
+      if (err?.name === "AbortError") return;
       console.error("[Kiosk] AI backend error:", err);
       setConv(S.ATTENTIVE);
     } finally {
       isSendingRef.current = false;
     }
-  }, [handleServerAction, say, setConv]);
 
-  sendTranscriptRef.current = sendTranscript;
+  }, [handleServerAction, say, setConv, skipName, submitName]);
 
-  // ── End-of-turn logic (used directly or as safety fallback) ───────────────
+  // ── End-of-turn finalization ──────────────────────────────────────────────
   const finaliseAndSend = useCallback((explicitText) => {
     clearTimeout(eotTimerRef.current);
     const text = (typeof explicitText === "string" ? explicitText : pendingTranscriptRef.current).trim();
@@ -828,7 +1058,7 @@ export function useKiosk() {
   const finaliseAndSendRef = useRef(finaliseAndSend);
   finaliseAndSendRef.current = finaliseAndSend;
 
-  // Forward interim hypotheses from Deepgram so the UI reacts in real time
+  // Hypotheses from Deepgram
   const handleHypothesis = useCallback((text) => {
     if (text) {
       setLiveTranscript(text);
@@ -838,9 +1068,9 @@ export function useKiosk() {
     }
   }, [setConv]);
 
-  // Deepgram final transcript (Deepgram ends the turn)
+  // Final transcript from Deepgram
   const handleFinal = useCallback((text) => {
-    if (isEchoOfAvatar(text)) return; // Last line of defence
+    if (isEchoOfAvatar(text)) return;
     const g = getGate();
     if (g.blocked && !g.bargeIn) return;
     clearTimeout(eotTimerRef.current);
@@ -859,7 +1089,7 @@ export function useKiosk() {
     getGate,
   });
 
-  // ── UI state + face/jaw barge-in (only real user speech interrupts) ────────
+  // ── UI state + face/jaw barge-in ──────────────────────────────────────────
   useEffect(() => {
     if (!isEngaged) return;
     const gateBlocked = getGate().blocked;
@@ -871,7 +1101,7 @@ export function useKiosk() {
       if (isAvatarActive) {
         const realUser = (userSpeaking || vadSpeech) && audioLevel > BARGE_MIN_LEVEL;
         if (realUser) {
-          bargeUntilRef.current = Date.now() + 2500; // Gate opens for 2.5s only
+          bargeUntilRef.current = Date.now() + 2500;
           interruptAvatar();
         }
       } else if (convStateRef.current !== S.LISTENING) {
@@ -881,36 +1111,59 @@ export function useKiosk() {
       clearTimeout(eotTimerRef.current);
       eotTimerRef.current = setTimeout(finaliseAndSend, speechConfig.endOfTurnSilenceMs);
     }
-  }, [userSpeaking, vadSpeech, evidence, audioLevel, isEngaged, isAvatarActive, getGate, interruptAvatar, setConv, finaliseAndSend]);
+  }, [userSpeaking, vadSpeech, audioLevel, isEngaged, isAvatarActive, getGate, interruptAvatar, setConv, finaliseAndSend]);
 
-  // ── Web Speech API — browser fallback (feeds pendingTranscriptRef) ────────
+  // ── Web Speech API — browser fallback (ONLY if Deepgram failed > 3s) ──────
+  const deepgramFailedRef = useRef(false);
+  const deepgramFailTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (deepgram.status === "open") {
+      clearTimeout(deepgramFailTimerRef.current);
+      deepgramFailedRef.current = false;
+    } else {
+      clearTimeout(deepgramFailTimerRef.current);
+      deepgramFailTimerRef.current = setTimeout(() => {
+        if (deepgram.status !== "open") {
+          deepgramFailedRef.current = true;
+          console.warn("[Kiosk] Deepgram unavailable for >3s, WebSpeech fallback active");
+        }
+      }, 3000);
+    }
+    return () => clearTimeout(deepgramFailTimerRef.current);
+  }, [deepgram.status]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
-
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRec) {
-      return;
-    }
+    if (!SpeechRec) return;
 
     let stopped = false;
     let restartTimer = null;
-    let backoffMs = 300;
-
     const rec = new SpeechRec();
-    rec.continuous      = true;
-    rec.interimResults  = true;
-    rec.lang            = "en-IN";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-IN";
     rec.maxAlternatives = 1;
-
-    rec.onstart = () => {
-      backoffMs = 300;
-    };
 
     const webSpeechTimerRef = { current: null };
 
     rec.onresult = (event) => {
-      if (convStateRef.current === S.SPEAKING && !userSpeakingRef.current) return;
+      // Discard Web Speech if Deepgram is operational to prevent double-send race condition
+      if (!deepgramFailedRef.current) return;
+
+      const now = Date.now();
+      if (
+        avatarActiveNowRef.current ||
+        isAvatarActiveRef.current ||
+        speaking ||
+        convStateRef.current === S.SPEAKING ||
+        now - avatarEndedAtRef.current < COOLDOWN_MS
+      ) {
+        pendingTranscriptRef.current = "";
+        setLiveTranscript("");
+        return;
+      }
 
       let interim = "";
       let hasFinal = false;
@@ -932,8 +1185,7 @@ export function useKiosk() {
           setConv(S.LISTENING);
         }
         clearTimeout(webSpeechTimerRef.current);
-        // If final chunk detected, short pause triggers send; if continuous interim, 1.2s pause triggers send
-        const waitMs = hasFinal ? 750 : 1300;
+        const waitMs = hasFinal ? 400 : 900;
         webSpeechTimerRef.current = setTimeout(() => {
           const toSend = pendingTranscriptRef.current.trim() || fullLive;
           if (toSend && convStateRef.current !== S.THINKING) {
@@ -944,9 +1196,7 @@ export function useKiosk() {
     };
 
     rec.onerror = (e) => {
-      if (e.error === "not-allowed") {
-        stopped = true;
-      }
+      if (e.error === "not-allowed") stopped = true;
     };
 
     rec.onend = () => {
@@ -957,17 +1207,13 @@ export function useKiosk() {
       if (!stopped) {
         restartTimer = setTimeout(() => {
           if (!stopped) {
-            try {
-              rec.start();
-            } catch (_) {}
+            try { rec.start(); } catch (_) {}
           }
-        }, 120);
+        }, 150);
       }
     };
 
-    try {
-      rec.start();
-    } catch (_) {}
+    try { rec.start(); } catch (_) {}
 
     return () => {
       stopped = true;
@@ -984,35 +1230,40 @@ export function useKiosk() {
       if (convStateRef.current === S.SPEAKING) {
         setConv(S.ATTENTIVE);
       }
-      // Unblock backend state machine if it was awaiting SPEECH_DONE (On TTS end)
-      const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
-      if (sid) {
-        pendingSpeechAckRef.current = null;
-        clearTimeout(speechAckTimerRef.current);
-        kioskWS.sendSpeechDone(sid);
+
+      const stage = latestRef.current._stageRef?.current;
+      const isQueueEmpty = !stage || (typeof stage.isQueueEmpty === "function" ? stage.isQueueEmpty() : true);
+
+      if (isQueueEmpty) {
+        const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
+        if (sid) {
+          console.log(`[Kiosk] All queued sentences finished playing. Sending SPEECH_DONE for sid: ${sid}`);
+          pendingSpeechAckRef.current = null;
+          clearTimeout(speechAckTimerRef.current);
+          kioskWS.sendSpeechDone(sid);
+        }
+      } else if (stage && typeof stage.onQueueEmpty === "function") {
+        stage.onQueueEmpty(() => {
+          const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
+          if (sid) {
+            console.log(`[Kiosk] All queued sentences finished playing (onQueueEmpty). Sending SPEECH_DONE for sid: ${sid}`);
+            pendingSpeechAckRef.current = null;
+            clearTimeout(speechAckTimerRef.current);
+            kioskWS.sendSpeechDone(sid);
+          }
+        });
       }
     }
   }, [setConv]);
 
+
   // ── Attentive state: face present but not speaking ────────────────────────
   useEffect(() => {
     if (!isEngaged) return;
-    if (
-      face.present &&
-      !userSpeaking &&
-      convStateRef.current === S.IDLE
-    ) {
+    if (face.present && !userSpeaking && convStateRef.current === S.IDLE) {
       setConv(S.ATTENTIVE);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [face.present, isEngaged, userSpeaking]);
-
-  // ── Idle reset ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    clearTimeout(idleTimerRef.current);
-    idleTimerRef.current = setTimeout(reset, IDLE_RESET_MS);
-    return () => clearTimeout(idleTimerRef.current);
-  }, [caption, productId, reset]);
+  }, [face.present, isEngaged, userSpeaking, setConv]);
 
   // ── Categories & Products Memos ──────────────────────────────────────────
   const categories = useMemo(() => {
@@ -1045,8 +1296,9 @@ export function useKiosk() {
     return Array.from(catMap.values());
   }, [backendAction, backendCatalog]);
 
-  // ── Touch / quick-reply & guided flow helpers (Sub-15ms WebSocket Direct) ─
+  // ── Flow Actions ──────────────────────────────────────────────────────────
   const selectCategory = useCallback((cat) => {
+    lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     const rawId = typeof cat === "string" ? cat : (cat?.id || "all");
     const cleanId = normalizeCategory(rawId);
@@ -1057,48 +1309,28 @@ export function useKiosk() {
         : (catObj?.label || catObj?.name || cleanId.replace("-", " ").replace(/\b\w/g, (l) => l.toUpperCase()));
 
     setCategory(cleanId);
-    setShowDetail(false); // ALWAYS stay on category view, showing product cards!
+    setShowDetail(false);
     setOnboardingOpen(false);
-    setLiveTurnProducts([]); // Reset previous turn filter so new category displays
-
-    const activeList = backendCatalog;
-    const items = cleanId === "all" ? activeList : productsIn(cleanId, activeList);
-    const productNames = items.map((p) => p.name).filter(Boolean);
+    setLiveTurnProducts([]);
 
     kioskWS.sendSelectCategory({
       category_id: cleanId,
       category_name: catName,
     });
-  }, [backendCatalog, categories, presence]);
+  }, [categories, presence]);
 
   const selectProduct = useCallback((p) => {
+    lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     setProductId(p.id);
     setShowDetail(true);
     setOnboardingOpen(false);
     KioskStepCache.setSelectedProduct(p);
-    // Real-time salesperson pitch is streamed from backend: "Great choice, {userName}! Here is our..."
     kioskWS.sendSelectProduct(p);
   }, [presence]);
 
-  const submitName = useCallback((n) => {
-    const trimmed = String(n || "").trim();
-    if (!trimmed) return;
-    KioskStepCache.setCustomerName(trimmed);
-    setName(trimmed);
-    setOnboardingStep(2);
-    setOnboardingOpen(true);
-    kioskWS.sendSetName(trimmed);
-  }, []);
-
-  const skipName = useCallback(() => {
-    KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
-    setOnboardingStep(2);
-    setOnboardingOpen(true);
-    kioskWS.sendSkipName();
-  }, []);
-
   const showAll = useCallback(() => {
+    lastInputAtRef.current = Date.now();
     setCategory("all");
     setShowDetail(false);
     setOnboardingOpen(false);
@@ -1106,21 +1338,19 @@ export function useKiosk() {
   }, []);
 
   const navigateBack = useCallback(() => {
+    lastInputAtRef.current = Date.now();
     setShowDetail(false);
     kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
   }, []);
 
   const restartSession = useCallback(() => {
+    lastInputAtRef.current = Date.now();
     kioskWS.sendWsAction({ action: "RESTART" });
     reset();
   }, [reset]);
 
-  submitNameRef.current = submitName;
-  skipNameRef.current = skipName;
-  selectCategoryRef.current = selectCategory;
-  restartSessionRef.current = restartSession;
-
   const send = useCallback((text) => {
+    lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     if (text) {
       kioskWS.sendWsMessage(text);
@@ -1128,6 +1358,7 @@ export function useKiosk() {
   }, [presence]);
 
   const enquire = useCallback(() => {
+    lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     say(
       `Happy to help with a bulk enquiry${name ? ", " + name : ""}! ` +
@@ -1136,6 +1367,7 @@ export function useKiosk() {
   }, [name, presence, say]);
 
   const handleButtonClick = useCallback((btn) => {
+    lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     if (!btn) return;
     console.log("[Kiosk] User clicked flow button:", btn);
@@ -1165,7 +1397,6 @@ export function useKiosk() {
       return;
     }
 
-    // Standard buttons ("next", "cheaper", "compare", "i'll take it", etc.)
     kioskWS.sendButtonClick(btn);
   }, [presence, restartSession, skipName]);
 
@@ -1195,8 +1426,31 @@ export function useKiosk() {
     );
   }, [backendCatalog, productId, products]);
 
+  // Keep latestRef synchronized every render
+  latestRef.current = {
+    backendCatalog,
+    product,
+    productId,
+    name,
+    category,
+    categories,
+    selectCategory,
+    presence,
+    showDetail,
+    onboardingStep,
+    onboardingOpen,
+    sessionId: sessionIdRef.current,
+    say,
+    reset,
+    submitName,
+    skipName,
+    showAll,
+    navigateBack,
+    restartSession,
+    handleServerAction,
+  };
+
   return {
-    // product/UI
     caption,
     speechId,
     category,
@@ -1204,24 +1458,19 @@ export function useKiosk() {
     product,
     products,
     name,
-    // conv state
-    convState,         // "IDLE"|"ATTENTIVE"|"LISTENING"|"THINKING"|"SPEAKING"
-    // speech
+    convState,
     speaking,
     listening: deepgram.listening || listening,
     liveTranscript: deepgram.liveTranscript || liveTranscript,
     lastUserSpeech,
-    userSpeaking,      // fused
-    evidence,          // "audio"|"face"|"both"|"none"
+    userSpeaking,
+    evidence,
     speakingForMs,
     silentForMs,
     audioLevel,
     vadSpeech,
-    // face
     signals,
-    // presence
     presence,
-    // actions & flow commands
     send,
     selectCategory,
     selectProduct,
@@ -1237,7 +1486,6 @@ export function useKiosk() {
     enquire,
     reset,
     handleButtonClick,
-    // Protocol v2 Modals & Screen Director
     cartModalOpen,
     setCartModalOpen,
     cartModalData,
@@ -1251,18 +1499,18 @@ export function useKiosk() {
     setStaffBanner,
     hintBubble,
     setHintBubble,
-    // automation & server action screen director
     onboardingOpen,
     setOnboardingOpen,
     onboardingStep,
     setOnboardingStep,
     handleServerAction,
-    // avatar wiring
     setStageRef,
     handleSpeakingChange,
     setSpeaking,
-    // PTT fallback
     showPTT,
     micError,
+    sessionTimeoutWarning,
+    continueSession,
+    exitSession,
   };
 }

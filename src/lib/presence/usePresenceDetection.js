@@ -9,7 +9,7 @@ const DEFAULT_CONFIG = {
   focalPx: 580,
   fps: 8,
   cameraLabel: "",
-  touchKeepEngagedMs: 60000
+  touchKeepEngagedMs: 60000,
 };
 
 export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
@@ -19,11 +19,11 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
   const [debugStats, setDebugStats] = useState({
     facePx: 0,
     rawCm: 0,
-    smoothCm: 0,
+    smoothCm: 150,
     fps: 0,
     facesCount: 0,
     isFacing: false,
-    cameraActive: false
+    cameraActive: false,
   });
   const [cameraError, setCameraError] = useState(null);
 
@@ -38,6 +38,21 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
   const lastTimestampRef = useRef(0);
   const cameraFailuresRef = useRef(0);
   const fpsCountRef = useRef({ frames: 0, lastCheck: Date.now(), currentFps: 0 });
+
+  // Single ref for fused human presence tracking
+  const lastFaceAtRef = useRef(0);
+  const consecutiveMissesRef = useRef(0);
+  const lastDetectionTimeRef = useRef(0);
+  const debugStatsRef = useRef({
+    facePx: 0,
+    rawCm: 0,
+    smoothCm: 150,
+    fps: 0,
+    facesCount: 0,
+    isFacing: false,
+    cameraActive: false,
+  });
+  const lastDebugUpdateRef = useRef(0);
 
   // Load config on mount
   useEffect(() => {
@@ -68,7 +83,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
 
   // Screen touch keeps ENGAGED for touchKeepEngagedMs
   const triggerTouchEngaged = useCallback(() => {
-    touchExpiryRef.current = Date.now() + (config.touchKeepEngagedMs || 30000);
+    touchExpiryRef.current = Date.now() + (config.touchKeepEngagedMs || 60000);
     graceStartRef.current = null;
     if (state !== "ENGAGED") {
       updateMainState("ENGAGED");
@@ -78,7 +93,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
 
   // Calibration helper: when C is pressed in debug mode
   const calibrate100Cm = useCallback(async () => {
-    const currentPx = debugStats.facePx;
+    const currentPx = debugStatsRef.current.facePx;
     if (currentPx > 20) {
       const newFocalPx = Math.round((100 * currentPx) / 15);
       const updated = { ...config, focalPx: newFocalPx };
@@ -89,7 +104,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
       return newFocalPx;
     }
     return null;
-  }, [config, debugStats.facePx]);
+  }, [config]);
 
   // Keyboard shortcuts: Ctrl+Shift+D (toggle debug) and C (calibrate)
   useEffect(() => {
@@ -106,19 +121,18 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
   }, [calibrate100Cm, debugOpen]);
 
   // ── Auto-engage on mount ─────────────────────────────────────────────────
-  // A kiosk is always on. Start mic + WS immediately so voice works without
-  // requiring camera face-detection or a screen tap first.
+  // Kiosk stays engaged with touchKeepEngagedMs duration upon startup
   useEffect(() => {
     if (hasAutoEngagedRef.current) return;
     hasAutoEngagedRef.current = true;
     const timer = setTimeout(() => {
-      touchExpiryRef.current = Date.now() + 86_400_000; // Stay engaged all day
+      touchExpiryRef.current = Date.now() + (config.touchKeepEngagedMs || 60000);
       updateMainState("ENGAGED");
       if (onEnterEngaged) onEnterEngaged();
     }, 800);
     return () => clearTimeout(timer);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // mount-only
+  }, []);
 
   // Initialize MediaPipe FaceDetector using local files
   useEffect(() => {
@@ -126,7 +140,6 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
 
     async function initMediaPipe() {
       try {
-        // Dynamically import local vision bundle or load via window
         const vision = await import("@mediapipe/tasks-vision");
         const { FaceDetector, FilesetResolver } = vision;
 
@@ -136,10 +149,10 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         const detector = await FaceDetector.createFromOptions(wasmFileset, {
           baseOptions: {
             modelAssetPath: "/mediapipe/blaze_face_short_range.tflite",
-            delegate: "GPU"
+            delegate: "GPU",
           },
           runningMode: "VIDEO",
-          minDetectionConfidence: 0.5
+          minDetectionConfidence: 0.5,
         });
 
         if (active) {
@@ -155,10 +168,10 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
           const detector = await FaceDetector.createFromOptions(wasmFileset, {
             baseOptions: {
               modelAssetPath: "/mediapipe/blaze_face_short_range.tflite",
-              delegate: "CPU"
+              delegate: "CPU",
             },
             runningMode: "VIDEO",
-            minDetectionConfidence: 0.5
+            minDetectionConfidence: 0.5,
           });
           if (active) detectorRef.current = detector;
         } catch (cpuErr) {
@@ -194,9 +207,9 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
           video: {
             width: { ideal: 640 },
             height: { ideal: 480 },
-            frameRate: { ideal: 15 }
+            frameRate: { ideal: 15 },
           },
-          audio: false
+          audio: false,
         };
 
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -217,7 +230,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         setCameraError("Camera unavailable");
         cameraFailuresRef.current += 1;
         if (cameraFailuresRef.current >= 3) {
-          console.error("Camera failed 3 times. Kiosk operating in touch-only mode.");
+          console.error("Camera failed 3 times. Kiosk operating in touch/voice-only mode.");
         }
       }
     }
@@ -232,9 +245,9 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     };
   }, [config.cameraLabel]);
 
-  // Main presence detection loop (~6 FPS)
+  // Main presence detection loop (~8 FPS)
   useEffect(() => {
-    const targetInterval = Math.round(1000 / (config.fps || 6));
+    const targetInterval = Math.round(1000 / (config.fps || 8));
     let timerId = null;
 
     function processFrame() {
@@ -268,9 +281,13 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
 
         for (const face of detections) {
           const box = face.boundingBox;
-          if (!box || box.width <= 0) continue;
+          if (!box || box.width < 20) continue; // Ignore tiny false positives
 
-          // Head orientation check (compare nose keypoint to eye midpoint)
+          const facePx = box.width;
+          const rawCm = Math.round((15 * (config.focalPx || 580)) / facePx);
+          if (rawCm > (config.exitCm || 260)) continue; // Ignore bystanders beyond exitCm
+
+          // Head orientation check (used for ATTENTION, NOT presence)
           let isFacingScreen = true;
           if (face.keypoints && face.keypoints.length >= 3) {
             const rightEye = face.keypoints[0];
@@ -282,20 +299,17 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
               if (eyeDist > 0.05) {
                 const noseOffset = Math.abs(nose.x - eyeMidX) / eyeDist;
                 if (noseOffset > 0.55) {
-                  isFacingScreen = false; // Turned away
+                  isFacingScreen = false; // Turned away, but still physically present!
                 }
               }
             }
           }
 
-          if (isFacingScreen) {
-            const facePx = box.width;
-            const rawCm = Math.round(((15 * (config.focalPx || 580)) / facePx));
-            validFaces.push({ facePx, rawCm, isFacing: true });
-          }
+          // Presence != facing: looking sideways or down at screen counts as present
+          validFaces.push({ facePx, rawCm, isFacing: isFacingScreen });
         }
 
-        // Pick the closest face (smallest rawCm)
+        // Pick closest face
         validFaces.sort((a, b) => a.rawCm - b.rawCm);
         const closest = validFaces[0] || null;
 
@@ -303,36 +317,58 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         let isPresentClose = false;
 
         if (closest) {
+          consecutiveMissesRef.current = 0;
+          lastDetectionTimeRef.current = now;
+          lastFaceAtRef.current = now;
+
           currentSmooth = Math.round(0.4 * closest.rawCm + 0.6 * currentSmooth);
           smoothDistanceRef.current = currentSmooth;
 
-          setDebugStats({
+          if (currentSmooth <= (config.enterCm || 220)) {
+            isPresentClose = true;
+          }
+
+          debugStatsRef.current = {
             facePx: Math.round(closest.facePx),
             rawCm: closest.rawCm,
             smoothCm: currentSmooth,
             fps: fpsCountRef.current.currentFps,
             facesCount: detections.length,
-            isFacing: true,
-            cameraActive: true
-          });
-
-          if (currentSmooth <= (config.enterCm || 170)) {
-            isPresentClose = true;
-          }
+            isFacing: closest.isFacing,
+            cameraActive: true,
+          };
         } else {
-          // No face detected -> immediately set smooth distance far
-          currentSmooth = 300;
-          smoothDistanceRef.current = 300;
+          consecutiveMissesRef.current += 1;
+          const timeSinceDetection = now - lastDetectionTimeRef.current;
 
-          setDebugStats({
-            facePx: 0,
-            rawCm: 0,
-            smoothCm: 300,
-            fps: fpsCountRef.current.currentFps,
-            facesCount: 0,
-            isFacing: false,
-            cameraActive: true
-          });
+          // Flicker tolerance: only declare face gone after 1500 ms OR 5 consecutive misses
+          if (timeSinceDetection >= 1500 || consecutiveMissesRef.current >= 5) {
+            currentSmooth = 300;
+            smoothDistanceRef.current = 300;
+
+            debugStatsRef.current = {
+              facePx: 0,
+              rawCm: 0,
+              smoothCm: 300,
+              fps: fpsCountRef.current.currentFps,
+              facesCount: 0,
+              isFacing: false,
+              cameraActive: true,
+            };
+          } else {
+            // Keep previous smooth distance during brief detection blip
+            debugStatsRef.current.fps = fpsCountRef.current.currentFps;
+            debugStatsRef.current.facesCount = 0;
+            if (currentSmooth <= (config.enterCm || 220)) {
+              isPresentClose = true;
+            }
+          }
+        }
+
+        // Throttle React state updates: only when debug panel is open or max 2x/second
+        if (debugOpen || now - lastDebugUpdateRef.current >= 500) {
+          lastDebugUpdateRef.current = now;
+          setDebugStats({ ...debugStatsRef.current });
         }
 
         // State Machine Decision Logic
@@ -340,8 +376,8 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
           if (isPresentClose) {
             if (!dwellStartRef.current) {
               dwellStartRef.current = now;
-            } else if (now - dwellStartRef.current >= (config.enterDwellMs || 250)) {
-              // Person stood in front of kiosk -> Switch to ENGAGED (Greenie arrives)
+            } else if (now - dwellStartRef.current >= (config.enterDwellMs || 150)) {
+              // Person stood in front of kiosk -> Switch to ENGAGED
               dwellStartRef.current = null;
               updateMainState("ENGAGED");
               if (onEnterEngaged) onEnterEngaged();
@@ -350,17 +386,18 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
             dwellStartRef.current = null;
           }
         } else if (state === "ENGAGED") {
-          // Check exit condition: no face detected or person moved past exitCm
-          const isFarOrGone = !closest || currentSmooth > (config.exitCm || 220);
+          const isFarOrGone = currentSmooth > (config.exitCm || 260);
 
           if (isFarOrGone) {
             const isTouchActive = now < touchExpiryRef.current;
-            const graceRequired = isTouchActive ? 30000 : (config.exitGraceMs || 15000);
+            const graceRequired = isTouchActive
+              ? (config.touchKeepEngagedMs || 60000)
+              : (config.exitGraceMs || 8000);
 
             if (!graceStartRef.current) {
               graceStartRef.current = now;
             } else if (now - graceStartRef.current >= graceRequired) {
-              // Absence confirmed for 2s -> Switch back to IDLE (Promo attract video)
+              // Absence confirmed -> Switch back to IDLE
               graceStartRef.current = null;
               touchExpiryRef.current = 0;
               updateMainState("IDLE");
@@ -380,7 +417,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     timerId = setTimeout(processFrame, targetInterval);
 
     return () => clearTimeout(timerId);
-  }, [config, onEnterEngaged, onExitToIdle, state, updateMainState]);
+  }, [config, debugOpen, onEnterEngaged, onExitToIdle, state, updateMainState]);
 
   return {
     state,
@@ -391,6 +428,8 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     cameraError,
     triggerTouchEngaged,
     setDebugOpen,
-    calibrate100Cm
+    calibrate100Cm,
+    lastFaceAtRef,
+    debugStatsRef,
   };
 }

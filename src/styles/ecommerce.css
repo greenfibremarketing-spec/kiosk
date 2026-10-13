@@ -3506,5 +3506,146 @@
   color: #14271c;
 }
 
+/* ── Top-Right Session Timeout Inactivity Banner ── */
+.session-timeout-banner {
+  position: fixed;
+  top: 24px;
+  right: 28px;
+  z-index: 10002;
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1.5px solid rgba(0, 166, 62, 0.35);
+  border-radius: 20px;
+  padding: 18px 20px;
+  box-shadow: 0 16px 40px rgba(20, 39, 28, 0.18), 0 4px 12px rgba(0, 166, 62, 0.12);
+  animation: timeoutSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes timeoutSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.timeout-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.timeout-timer-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%);
+  border: 1.5px solid #ef4444;
+  border-radius: 999px;
+  padding: 6px 12px;
+  animation: pulseTimer 1s ease-in-out infinite alternate;
+}
+
+@keyframes pulseTimer {
+  from {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.35);
+  }
+  to {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+}
+
+.timeout-clock-icon {
+  font-size: 15px;
+}
+
+.timeout-countdown-num {
+  font-family: var(--font-heading);
+  font-size: 15px;
+  font-weight: 800;
+  color: #b91c1c;
+  letter-spacing: -0.3px;
+}
+
+.timeout-title-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.timeout-title {
+  font-family: var(--font-heading);
+  font-size: 15px;
+  font-weight: 800;
+  color: #14271c;
+  line-height: 1.2;
+}
+
+.timeout-subtitle {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.timeout-message {
+  font-size: 13px;
+  color: #334155;
+  line-height: 1.45;
+  margin: 0 0 14px 0;
+}
+
+.timeout-actions-row {
+  display: flex;
+  gap: 10px;
+}
+
+.timeout-btn-continue {
+  flex: 1.2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: #00A63E;
+  color: #ffffff;
+  border: none;
+  border-radius: 12px;
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 166, 62, 0.28);
+  transition: all 0.16s ease;
+}
+
+.timeout-btn-continue:hover {
+  background: #008f35;
+  transform: translateY(-1px);
+}
+
+.timeout-btn-exit {
+  flex: 0.9;
+  padding: 10px 12px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  font-family: var(--font-heading);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+
+.timeout-btn-exit:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
 
 

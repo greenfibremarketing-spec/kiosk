@@ -3,6 +3,8 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { preferredVoice } from "./voice";
 import { attachLipSync, getMouth, resetLipSync } from "../lipSync";
+import { TTS_CONFIG } from "../ttsConfig";
+import { sanitizeTtsText, splitIntoSentences } from "../ttsTextSanitizer";
 
 /**
  * Helper to build a cute fairy wing geometry
@@ -25,6 +27,33 @@ function createLeafShape() {
   shape.quadraticCurveTo(0.1, 0, 0, 0.18);
   shape.quadraticCurveTo(-0.1, 0, 0, -0.12);
   return shape;
+}
+
+// In-memory cache for synthesized audio blobs (greetings and frequent phrases)
+const audioBlobCache = new Map();
+
+/**
+ * Prefetch an audio utterance in background and cache its object URL.
+ */
+export async function prefetchAudio(text, model = TTS_CONFIG.model) {
+  if (!text || typeof window === "undefined") return null;
+  const clean = String(text).trim();
+  const cacheKey = `${model}:${clean}`;
+  if (audioBlobCache.has(cacheKey)) {
+    return audioBlobCache.get(cacheKey);
+  }
+  try {
+    const res = await fetch(
+      `http://localhost:4000/api/tts?text=${encodeURIComponent(clean)}&model=${encodeURIComponent(model)}`
+    );
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      audioBlobCache.set(cacheKey, url);
+      return url;
+    }
+  } catch (_) {}
+  return null;
 }
 
 export class GreenieAvatar {
@@ -62,7 +91,18 @@ export class GreenieAvatar {
     this.flyingEntrance = null;
     this._hoverY = 0; // Flight hover height when explaining
 
+    // Global FIFO Speech Queue State
+    this.speechQueue = [];
+    this.isQueueProcessing = false;
+    this.currentPlayingUtterance = null;
+    this.activeFetchAbort = null;
+    this._onQueueEmpty = null;
+    this._uttCounter = 0;
+    this.currentTurnId = null;
+
+
     // Expression state (set via setExpression())
+
     this._expression = "attentive";
     this._expressionStart = 0;
 
@@ -502,204 +542,425 @@ export class GreenieAvatar {
     }
   }
 
-  stop() {
+  stop(reason = "user_interrupt") {
     this.generation++;
     this.started = 0;
+    this.clearQueue(reason);
+  }
+
+  /**
+   * Clears the speech queue and stops active audio on explicit user interrupt.
+   */
+  clearQueue(reason = "user_interrupt") {
+    const droppedCount = this.speechQueue.length;
+    if (droppedCount > 0) {
+      console.log(`[VoiceServer] Speech queue cleared (reason: ${reason}, dropped items: ${droppedCount})`);
+    }
+    this.speechQueue.length = 0;
+    this.currentPlayingUtterance = null;
+    this.isQueueProcessing = false;
+
+    if (this.activeFetchAbort) {
+      try { this.activeFetchAbort.abort(); } catch (_) {}
+      this.activeFetchAbort = null;
+    }
+
     if (this.detachLipSync) {
-      try {
-        this.detachLipSync();
-      } catch (_) {}
+      try { this.detachLipSync(); } catch (_) {}
       this.detachLipSync = null;
     }
     resetLipSync();
 
     if (typeof window !== "undefined") {
-      window.speechSynthesis?.cancel();
+      try { window.speechSynthesis?.cancel(); } catch (_) {}
     }
     if (this.audio) {
-      this.audio.pause();
-      this.audio.removeAttribute("src");
-      this.audio.load();
+      try {
+        this.audio.pause();
+        this.audio.removeAttribute("src");
+        this.audio.load();
+      } catch (_) {}
       this.audio = null;
     }
+
     this.mode = "idle";
     this.reaction = null;
     this.waveStart = -10000;
     this._hoverY = 0; // instantly cancel flight hover
-    this.setMouth();
+    this.setMouth("rest", 0);
+    this.setExpression("attentive");
     this.onSpeakingChange(false);
     this.setStatus("Listening...");
+
+    if (this._onQueueEmpty) {
+      const cb = this._onQueueEmpty;
+      this._onQueueEmpty = null;
+      try { cb(); } catch (_) {}
+    }
   }
 
+  isSpeaking() {
+    return this.isQueueProcessing || this.speechQueue.length > 0 || this.mode === "audio" || this.mode === "tts";
+  }
+
+  isQueueEmpty() {
+    return this.speechQueue.length === 0 && !this.isQueueProcessing && !this.audio;
+  }
+
+  onQueueEmpty(cb) {
+    if (this.isQueueEmpty()) {
+      if (typeof cb === "function") cb();
+    } else {
+      this._onQueueEmpty = cb;
+    }
+  }
+
+  /**
+   * Tracks turn ID without dropping queued sentences from previous turns.
+   */
+  startTurn(turnId) {
+    this.currentTurnId = turnId || "turn_default";
+    this._arrived = true;
+    if (this.model && this.model.position.x < -2.0 && !this.flyingEntrance) {
+      this.model.position.x = 0;
+    }
+  }
+
+  /**
+   * Enqueue a sentence into the global FIFO speech queue.
+   */
+  enqueueSentence(sentence, options = {}) {
+    if (!sentence || typeof sentence !== "string" || !sentence.trim()) {
+      console.log("[Avatar] Dropping empty sentence (reason: empty_text)");
+      return;
+    }
+    const sanitized = sanitizeTtsText(sentence);
+    if (!sanitized) {
+      console.log(`[Avatar] Dropping sentence after sanitization (reason: empty_sanitized, original: "${sentence.slice(0, 40)}")`);
+      return;
+    }
+
+    const item = {
+      id: "utt_" + (++this._uttCounter),
+      text: sentence,
+      sanitized,
+      turnId: options.turnId || this.currentTurnId || "N/A",
+      options,
+    };
+
+    this.speechQueue.push(item);
+    console.log(`[VoiceServer] Enqueued sentence (queue length: ${this.speechQueue.length}): "${sanitized.slice(0, 60)}" [turn=${item.turnId}]`);
+
+    this._processQueue();
+  }
+
+  /**
+   * Notification that a turn stream ended.
+   */
+  finishTurn(turnId) {
+    if (this.isQueueEmpty()) {
+      this.mode = "idle";
+      this.setMouth("rest", 0);
+      this.onSpeakingChange(false);
+      this.setStatus("Listening...");
+      if (this._onQueueEmpty) {
+        const cb = this._onQueueEmpty;
+        this._onQueueEmpty = null;
+        try { cb(); } catch (_) {}
+      }
+    }
+  }
+
+  /**
+   * Global FIFO Queue Processor:
+   * Sequentially plays queued utterances without stalling.
+   */
+  async _processQueue() {
+    if (this.isQueueProcessing) return;
+    this.isQueueProcessing = true;
+
+    try {
+      while (this.speechQueue.length > 0) {
+        const item = this.speechQueue[0];
+        this.currentPlayingUtterance = item;
+
+        try {
+          await this._playUtterance(item);
+        } catch (err) {
+          console.error(`[VoiceServer] Utterance error in queue (${item.id}):`, err?.message || err);
+        } finally {
+          // Always advance the FIFO queue in finally block!
+          if (this.speechQueue[0] === item) {
+            this.speechQueue.shift();
+          }
+          this.currentPlayingUtterance = null;
+        }
+      }
+    } finally {
+      this.isQueueProcessing = false;
+      this.currentPlayingUtterance = null;
+
+      // Queue is now completely empty
+      this.mode = "idle";
+      this.setMouth("rest", 0);
+      this.onSpeakingChange(false);
+      this.setStatus("Listening...");
+
+      if (this._onQueueEmpty) {
+        const cb = this._onQueueEmpty;
+        this._onQueueEmpty = null;
+        try { cb(); } catch (_) {}
+      }
+    }
+  }
+
+  /**
+   * Synthesize and play a single utterance.
+   */
+  async _playUtterance(item) {
+    const token = this.generation;
+    const requestedModel = TTS_CONFIG.model || "aura-2-luna-en";
+    const cacheKey = `${requestedModel}:${item.sanitized}`;
+
+    let audioUrl = audioBlobCache.get(cacheKey) || null;
+
+    if (!audioUrl) {
+      for (let attempt = 0; attempt <= 1; attempt++) {
+        if (token !== this.generation) break;
+        try {
+          this.activeFetchAbort = new AbortController();
+          const fetchTimeout = setTimeout(() => {
+            try { this.activeFetchAbort?.abort(); } catch (_) {}
+          }, 4500);
+
+          console.log(`[VoiceServer] TTS req sent attempt=${attempt} ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 60)}"`);
+          const res = await fetch(
+            `http://localhost:4000/api/tts?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(requestedModel)}`,
+            { signal: this.activeFetchAbort.signal }
+          );
+          clearTimeout(fetchTimeout);
+
+          if (token !== this.generation) break;
+
+          if (res.ok) {
+            console.log(`[VoiceServer] TTS first audio byte status=${res.status} ts=${new Date().toISOString()}`);
+            const blob = await res.blob();
+            if (token !== this.generation) break;
+            audioUrl = URL.createObjectURL(blob);
+            audioBlobCache.set(cacheKey, audioUrl);
+            break;
+          }
+
+          const status = res.status;
+          const bodyText = await res.text().catch(() => "(unreadable)");
+          console.error(`[VoiceServer] TTS FAILED attempt=${attempt} status=${status} body="${bodyText}" text="${item.sanitized.slice(0, 80)}"`);
+
+          // Never retry 400
+          if (status === 400) break;
+
+          // Retry once on 5xx / 429
+          if (attempt === 0 && (status === 429 || status >= 500)) {
+            await new Promise((r) => setTimeout(r, 300));
+          } else {
+            break;
+          }
+        } catch (e) {
+          if (e?.name === "AbortError" && token !== this.generation) break;
+          console.error(`[VoiceServer] TTS network error attempt=${attempt}:`, e?.message || e);
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 300));
+          }
+        } finally {
+          this.activeFetchAbort = null;
+        }
+      }
+    }
+
+    if (token !== this.generation) return;
+
+    if (audioUrl) {
+      await this._playAudio(audioUrl, item);
+    } else {
+      console.warn(`[Avatar] Deepgram TTS unavailable, fallback to speechSynthesis: "${item.sanitized.slice(0, 60)}"`);
+      await this._playSpeechSynthesis(item);
+    }
+  }
+
+  /**
+   * Play audio element with lip-sync and guaranteed resolution.
+   */
+  _playAudio(audioUrl, item) {
+    return new Promise((resolve) => {
+      let resolved = false;
+      let timeoutTimer = null;
+      const audio = new Audio();
+      this.audio = audio;
+      this.mode = "audio";
+      this.onSpeakingChange(true);
+      this.setStatus("Explaining...");
+
+      const safeResolve = (reason) => {
+        if (resolved) return;
+        resolved = true;
+        if (timeoutTimer) {
+          clearTimeout(timeoutTimer);
+          timeoutTimer = null;
+        }
+        if (this.detachLipSync) {
+          try { this.detachLipSync(); } catch (_) {}
+          this.detachLipSync = null;
+        }
+        resetLipSync();
+        if (this.audio === audio) {
+          this.audio = null;
+        }
+        try {
+          audio.pause();
+          audio.removeAttribute("src");
+          audio.load();
+        } catch (_) {}
+        console.log(`[VoiceServer] TTS playback ended (${reason}) ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 50)}"`);
+        resolve();
+      };
+
+      const setWatchdogTimeout = (durationSec) => {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        const timeoutMs = (Number.isFinite(durationSec) && durationSec > 0)
+          ? Math.round(durationSec * 1000 + 2000)
+          : 8000;
+        timeoutTimer = setTimeout(() => {
+          safeResolve("timeout");
+        }, timeoutMs);
+      };
+
+      // Initial default 8s timeout in case loadedmetadata doesn't fire
+      setWatchdogTimeout(0);
+
+      audio.onloadedmetadata = () => {
+        setWatchdogTimeout(audio.duration);
+      };
+
+      audio.onended = () => {
+        safeResolve("ended");
+      };
+
+      audio.onerror = (e) => {
+        console.error(`[VoiceServer] TTS playback error (${e?.type || "unknown"}) ts=${new Date().toISOString()}:`, e?.message || audio.error?.message || e);
+        safeResolve("error");
+      };
+
+      try {
+        this.detachLipSync = attachLipSync(audio);
+      } catch (_) {}
+
+      console.log(`[VoiceServer] TTS playback start ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 50)}"`);
+
+      audio.src = audioUrl;
+      audio.play().catch((playErr) => {
+        if (playErr?.name === "AbortError") {
+          safeResolve("abort");
+        } else {
+          console.warn("[VoiceServer] TTS audio play() rejection:", playErr?.message);
+          safeResolve("play_rejection");
+        }
+      });
+    });
+  }
+
+  /**
+   * Fallback Web Speech API utterance with lip-sync and guaranteed resolution.
+   */
+  _playSpeechSynthesis(item) {
+    return new Promise((resolve) => {
+      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+        resolve();
+        return;
+      }
+
+      let resolved = false;
+      let watchdogTimer = null;
+
+      const safeResolve = (reason) => {
+        if (resolved) return;
+        resolved = true;
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        if (this.utterance === u) this.utterance = null;
+        console.log(`[VoiceServer] SpeechSynthesis ended (${reason}) ts=${new Date().toISOString()} text="${item.sanitized.slice(0, 50)}"`);
+        resolve();
+      };
+
+      const { rate = 0.95, pitch = 1.15, lang = "en-IN", voice = null } = item.options || {};
+      const u = new SpeechSynthesisUtterance(item.sanitized);
+      this.utterance = u;
+      u.lang = lang;
+      u.rate = rate;
+      u.pitch = pitch;
+
+      const voices = window.speechSynthesis.getVoices();
+      const selected = voice || preferredVoice(voices, lang);
+      if (selected) {
+        u.voice = selected;
+        u.lang = selected.lang || lang;
+      }
+
+      const approxMs = Math.max(2000, (item.sanitized.length / 10) * 1000 + 2000);
+      watchdogTimer = setTimeout(() => {
+        safeResolve("timeout");
+      }, approxMs);
+
+      u.onstart = () => {
+        this.mode = "tts";
+        this.started = performance.now();
+        this.boundaryAt = this.started;
+        this.onSpeakingChange(true);
+        this.setStatus("Explaining...");
+      };
+
+      u.onboundary = (e) => {
+        this.charIndex = e.charIndex;
+        this.boundaryAt = performance.now();
+        this.onBoundary(e.charIndex);
+      };
+
+      u.onend = () => safeResolve("ended");
+      u.onerror = (e) => {
+        console.warn("[VoiceServer] SpeechSynthesis error:", e?.error || e);
+        safeResolve("error");
+      };
+
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+      window.speechSynthesis.speak(u);
+    });
+  }
+
+  /**
+   * Speak full text: split into sentences and stream through FIFO queue.
+   */
   async speak(
     text,
-    { voice = null, lang = "en-US", rate = 0.95, pitch = 1.15 } = {}
+    { voice = null, lang = "en-US", rate = 0.95, pitch = 1.15, turnId = null } = {}
   ) {
     await this.ready;
     text = String(text || "").trim();
     if (!text) return;
 
-    this.stop();
-    this._arrived = true;
-    if (this.model && this.model.position.x < -2.0 && !this.flyingEntrance) {
-      this.model.position.x = 0;
-    }
-    const token = this.generation;
-    this.text = text;
+    this.startTurn(turnId || ("speak_" + Date.now()));
 
-    // 1. Primary: EdgeTTS Ana Neural Voice from voice server (http://localhost:4000/api/tts)
-    try {
-      const ttsAbort = new AbortController();
-      const ttsTimeout = setTimeout(() => ttsAbort.abort(), 4500); // Allow EdgeTTS sufficient time to generate high-quality voice
-      const res = await fetch(`http://localhost:4000/api/tts?text=${encodeURIComponent(text)}`, {
-        signal: ttsAbort.signal,
-      });
-      clearTimeout(ttsTimeout);
-      if (token !== this.generation) return;
-      if (res.ok) {
-        const blob = await res.blob();
-        if (token !== this.generation) return;
-        const url = URL.createObjectURL(blob);
-        if (token !== this.generation) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-
-        const audio = new Audio(url);
-        this.audio = audio;
-        this.mode = "audio";
-        this.onSpeakingChange(true);
-        this.setStatus("Explaining...");
-
-        this.detachLipSync = attachLipSync(audio);
-
-        const cleanupAudio = () => {
-          if (this.detachLipSync) {
-            try {
-              this.detachLipSync();
-            } catch (_) {}
-            this.detachLipSync = null;
-          }
-          resetLipSync();
-          URL.revokeObjectURL(url);
-          if (token === this.generation) {
-            this.mode = "idle";
-            this.setMouth();
-            this.onSpeakingChange(false);
-            this.setStatus("Listening...");
-          }
-        };
-
-        audio.onended = cleanupAudio;
-        audio.onerror = cleanupAudio;
-
-        try {
-          await audio.play();
-        } catch (playErr) {
-          if (playErr?.name === "AbortError") {
-            // Audio was paused or superseded by newer utterance
-            cleanupAudio();
-            return;
-          }
-          throw playErr;
-        }
-        return;
-      }
-    } catch (e) {
-      if (e?.name === "AbortError") return;
-      console.warn("[Avatar] EdgeTTS Ana unavailable, falling back to Web Speech:", e?.message);
-    }
-
-    // 2. Fallback: Browser Web Speech API
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      this.setStatus("Speech synthesis not supported.");
+    const sanitized = sanitizeTtsText(text);
+    if (!sanitized) {
+      console.log(`[Avatar] Dropping text after sanitization (reason: empty_sanitized, original: "${text.slice(0, 40)}")`);
       return;
     }
 
-    this.charIndex = 0;
-    this.boundaryAt = 0;
-    this.rate = rate;
-
-    const u = new SpeechSynthesisUtterance(text);
-    this.utterance = u;
-    u.lang = lang;
-    u.rate = rate;
-    u.pitch = pitch;
-
-    // Load preferred voice
-    const loadVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      const selected = voice || preferredVoice(voices, lang);
-      if (selected) {
-        u.voice = selected;
-        u.lang = selected.lang || lang || "en-IN";
-      }
-    };
-    loadVoices();
-    if (window.speechSynthesis.getVoices().length === 0) {
-      window.speechSynthesis.onvoiceschanged = () => {
-        loadVoices();
-        window.speechSynthesis.onvoiceschanged = null;
-      };
+    const sentences = splitIntoSentences(sanitized);
+    for (const sentence of sentences) {
+      this.enqueueSentence(sentence, { voice, lang, rate, pitch, turnId });
     }
-
-    let finished = false;
-    const safeEnd = () => {
-      if (finished) return;
-      finished = true;
-      if (this._watchdogTimer) {
-        clearTimeout(this._watchdogTimer);
-        this._watchdogTimer = null;
-      }
-      if (token !== this.generation) return;
-      this.mode = "idle";
-      this.setMouth();
-      this.onSpeakingChange(false);
-      this.setStatus("Listening...");
-    };
-
-    u.onstart = () => {
-      if (token !== this.generation) return;
-      this.mode = "tts";
-      this.started = performance.now();
-      this.boundaryAt = this.started;
-      this.onSpeakingChange(true);
-      this.setStatus("Explaining...");
-
-      // Safety watchdog: estimated duration based on text length + 1500ms buffer
-      const approxDurationMs = Math.max(1800, (text.length / 12) * 1000 + 1500);
-      clearTimeout(this._watchdogTimer);
-      this._watchdogTimer = setTimeout(() => {
-        if (!finished && token === this.generation) {
-          console.warn("[Avatar] SpeechSynthesis watchdog timer fired: unblocking speaking state");
-          safeEnd();
-        }
-      }, approxDurationMs);
-    };
-
-    u.onboundary = (e) => {
-      if (token !== this.generation) return;
-      this.charIndex = e.charIndex;
-      this.boundaryAt = performance.now();
-      this.onBoundary(e.charIndex);
-    };
-
-    u.onend = safeEnd;
-    u.onerror = safeEnd;
-
-    this.mode = "tts";
-    this.setStatus("Explaining...");
-    
-    // Resume audio stream and speak utterance
-    setTimeout(() => {
-      if (token === this.generation && typeof window !== "undefined") {
-        if (window.speechSynthesis.paused) {
-          window.speechSynthesis.resume();
-        }
-        window.speechSynthesis.speak(u);
-      }
-    }, 25);
   }
+
+
 
   async playSpeech(audioUrl, cues = []) {
     await this.ready;
