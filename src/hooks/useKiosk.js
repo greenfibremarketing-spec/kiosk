@@ -36,13 +36,17 @@ import { kioskWS } from "@/lib/kioskWebSocket";
 import KioskStepCache, { KIOSK_STEPS } from "@/lib/kioskStepCache";
 import { usePresenceDetection } from "@/lib/presence/usePresenceDetection";
 import { usePresence } from "@/hooks/usePresence";
+import { useFaceGuard } from "@/hooks/useFaceGuard";
 import {
   PRESENCE_CONFIG,
   ABSENT_SHORT_MS,
   ABSENT_LONG_MS,
   CONFIRMATION_TIMEOUT_MS,
   RESET_DEBOUNCE_MS,
+  FACE_ID_ENABLED,
+  FACE_ID_DEBUG,
 } from "@/lib/presenceConfig";
+import { enrollFace, clearFace, hasEnrolled } from "@/lib/presence/faceIdentity";
 import { useUserSignals } from "@/hooks/useUserSignals";
 import { useMic } from "@/hooks/useMic";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
@@ -168,6 +172,7 @@ export function useKiosk() {
   const lastVoiceAtRef     = useRef(Date.now());
   const lastInputAtRef     = useRef(Date.now());
   const warningDeadlineRef = useRef(null);
+  const lastEvidenceLogRef = useRef(0);
 
   const [sessionTimeoutWarning, setSessionTimeoutWarning] = useState({
     active: false,
@@ -175,6 +180,8 @@ export function useKiosk() {
   });
   const sessionTimeoutWarningRef = useRef(sessionTimeoutWarning);
   sessionTimeoutWarningRef.current = sessionTimeoutWarning;
+  const [identityMasked, setIdentityMasked] = useState(false);
+  const [faceEnrolled, setFaceEnrolled] = useState(false);
 
   // ── Abort controller for SSE/AI fetch ────────────────────────────────────
   const abortRef = useRef(null);
@@ -194,25 +201,110 @@ export function useKiosk() {
   const identityTimerRef = useRef(null);
   const identityIntervalRef = useRef(null);
 
-  // ── Presence State Machine (usePresence fed by FaceLandmarker) ────────────
-  const presenceTracker = usePresence({
-    getName: useCallback(() => nameRef.current || KioskStepCache.getCustomerName(), []),
-    onShortGapReturn: useCallback(({ elapsed, name: returningName }) => {
-      console.log(`[Presence] Short gap return (${elapsed}ms) with name="${returningName}". Initiating verification prompt.`);
+  // ── Mode State (IDLE | ENGAGED) ───────────────────────────────────────────
+  const [kioskMode, setKioskMode] = useState("IDLE");
+  const kioskModeRef = useRef("IDLE");
+  kioskModeRef.current = kioskMode;
+
+  const isEngaged = kioskMode === "ENGAGED";
+
+  const enterEngaged = useCallback((reason = "unknown") => {
+    if (kioskModeRef.current === "ENGAGED") return;
+    console.log(`[Kiosk] Entering ENGAGED mode (reason=${reason})`);
+    kioskModeRef.current = "ENGAGED";
+    setKioskMode("ENGAGED");
+
+    // Fresh session ID created upon customer arrival
+    const newSession = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+    sessionIdRef.current = newSession;
+    KioskStepCache.setSessionId(newSession);
+
+    // Warm up speech and audio context
+    warmupSpeech();
+
+    // Reset greeting flags for new customer session
+    greetingDoneRef.current = false;
+    nameDoneRef.current = false;
+    introPlayedRef.current = false;
+    nameSubmittedRef.current = false;
+
+    // Connect WebSocket with auto_greet = 1
+    kioskWS.connect(newSession, true);
+
+    if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
+      window.kiosk.sendPresenceState("ENGAGED");
+    }
+  }, []);
+
+  // ── Camera & Hardware Presence Hook ───────────────────────────────────────
+  const cameraPresence = usePresenceDetection({
+    onEnterEngaged: useCallback(() => {
+      lastFaceAtRef.current = Date.now();
+      enterEngaged("face_in_range_stable");
+      if (convStateRef.current === S.IDLE) {
+        setConv(S.ATTENTIVE);
+      }
+    }, [enterEngaged, setConv]),
+    onExitToIdle: useCallback(() => {
+      if (kioskModeRef.current === "ENGAGED") {
+        latestRef.current.resetSession?.("presence_detector_exit");
+      }
+    }, []),
+  });
+
+  const handleTouchEngagement = useCallback((source = "screen_touch") => {
+    lastInputAtRef.current = Date.now();
+    cameraPresence.triggerTouchEngaged();
+    if (kioskModeRef.current === "IDLE") {
+      enterEngaged(source);
+    }
+  }, [cameraPresence, enterEngaged]);
+
+  // ── Verification voice prompt helper ("Welcome back! Are you still <name>?") ─
+  const triggerIdentityVoiceCheck = useCallback((returningName) => {
+    const currentName = returningName || nameRef.current;
+    if (!currentName) return;
+    console.log(`[Presence] Initiating verification prompt for name="${currentName}".`);
+    if (!speechController.isSpeaking()) {
+      const stage = stageRef.current || latestRef.current._stageRef?.current;
+      stage?.speak?.(`Welcome back! Are you still ${currentName}?`);
+      setCaption(`Welcome back! Are you still ${currentName}?`);
+    }
+
+    clearTimeout(identityTimerRef.current);
+    clearInterval(identityIntervalRef.current);
+
+    let secLeft = 8;
+    setIdentityPrompt({
+      active: true,
+      name: currentName,
+      promptCount: 1,
+      secondsRemaining: 8,
+    });
+
+    identityIntervalRef.current = setInterval(() => {
+      secLeft -= 1;
+      setIdentityPrompt((prev) => ({
+        ...prev,
+        secondsRemaining: Math.max(0, secLeft),
+      }));
+    }, 1000);
+
+    identityTimerRef.current = setTimeout(() => {
+      // Attempt 1 expired after 8s: ask again once
+      clearInterval(identityIntervalRef.current);
+      console.log(`[Presence] Verification prompt 1 unanswered after 8s. Repeating prompt once.`);
       if (!speechController.isSpeaking()) {
-        const stage = stageRef.current || latestRef.current._stageRef?.current;
-        stage?.speak?.(`Welcome back! Are you still ${returningName}?`);
-        setCaption(`Welcome back! Are you still ${returningName}?`);
+        const st = stageRef.current || latestRef.current._stageRef?.current;
+        st?.speak?.(`Are you still ${currentName}?`);
+        setCaption(`Are you still ${currentName}?`);
       }
 
-      clearTimeout(identityTimerRef.current);
-      clearInterval(identityIntervalRef.current);
-
-      let secLeft = 8;
+      secLeft = 8;
       setIdentityPrompt({
         active: true,
-        name: returningName,
-        promptCount: 1,
+        name: currentName,
+        promptCount: 2,
         secondsRemaining: 8,
       });
 
@@ -225,40 +317,26 @@ export function useKiosk() {
       }, 1000);
 
       identityTimerRef.current = setTimeout(() => {
-        // Attempt 1 expired after 8s: ask again once
+        // Attempt 2 expired after another 8s: reset session
         clearInterval(identityIntervalRef.current);
-        console.log(`[Presence] Verification prompt 1 unanswered after 8s. Repeating prompt once.`);
-        if (!speechController.isSpeaking()) {
-          const st = stageRef.current || latestRef.current._stageRef?.current;
-          st?.speak?.(`Are you still ${returningName}?`);
-          setCaption(`Are you still ${returningName}?`);
-        }
-
-        secLeft = 8;
-        setIdentityPrompt({
-          active: true,
-          name: returningName,
-          promptCount: 2,
-          secondsRemaining: 8,
-        });
-
-        identityIntervalRef.current = setInterval(() => {
-          secLeft -= 1;
-          setIdentityPrompt((prev) => ({
-            ...prev,
-            secondsRemaining: Math.max(0, secLeft),
-          }));
-        }, 1000);
-
-        identityTimerRef.current = setTimeout(() => {
-          // Attempt 2 expired after another 8s: reset session
-          clearInterval(identityIntervalRef.current);
-          console.log(`[Presence] Verification prompt 2 unanswered after 8s. Resetting session.`);
-          setIdentityPrompt({ active: false, name: "", promptCount: 1, secondsRemaining: 8 });
-          latestRef.current.resetSession?.("timeout_unanswered");
-        }, 8000);
+        console.log(`[Presence] Verification prompt 2 unanswered after 8s. Resetting session.`);
+        setIdentityPrompt({ active: false, name: "", promptCount: 1, secondsRemaining: 8 });
+        latestRef.current.resetSession?.("timeout_unanswered");
       }, 8000);
-    }, []),
+    }, 8000);
+  }, []);
+
+  // ── Presence State Machine (usePresence fed by FaceLandmarker) ────────────
+  const presenceTracker = usePresence({
+    getName: useCallback(() => nameRef.current || KioskStepCache.getCustomerName(), []),
+    onShortGapReturn: useCallback(({ elapsed, name: returningName }) => {
+      console.log(`[Presence] Short gap return (${elapsed}ms) with name="${returningName}".`);
+      if (hasEnrolled()) {
+        // Handled by useFaceGuard; skip speaking here to prevent double-speaking
+        return;
+      }
+      triggerIdentityVoiceCheck(returningName);
+    }, [triggerIdentityVoiceCheck]),
     onLongGapAbsent: useCallback(({ elapsed }) => {
       console.log(`[Presence] Long gap absence (${elapsed}ms >= 10s). Resetting session.`);
       clearTimeout(identityTimerRef.current);
@@ -268,41 +346,20 @@ export function useKiosk() {
     }, []),
   });
 
-  // ── Camera & Hardware Presence Hook ───────────────────────────────────────
-  const cameraPresence = usePresenceDetection({
-    onEnterEngaged: useCallback(() => {
-      lastFaceAtRef.current = Date.now();
-      if (convStateRef.current === S.IDLE) {
-        setConv(S.ATTENTIVE);
-      }
-    }, [setConv]),
-    onExitToIdle: useCallback(() => {
-      if (convStateRef.current === S.ATTENTIVE) {
-        setConv(S.IDLE);
-      }
-    }, [setConv]),
-  });
-
   // Unified presence object: full backward-compatible props + presenceTracker state
   const presence = {
     ...cameraPresence,
     ...presenceTracker,
-    state:
-      presenceTracker.presenceState === "present" ||
-      presenceTracker.presenceState === "confirming" ||
-      cameraPresence.state === "ENGAGED"
-        ? "ENGAGED"
-        : "IDLE",
+    state: kioskMode,
+    triggerTouchEngaged: handleTouchEngagement,
   };
-
-  const isEngaged = presence.state === "ENGAGED" || onboardingOpen;
 
   // Sync engagement presence state with Electron main process
   useEffect(() => {
     if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
-      window.kiosk.sendPresenceState(isEngaged ? "ENGAGED" : "IDLE");
+      window.kiosk.sendPresenceState(kioskMode);
     }
-  }, [isEngaged]);
+  }, [kioskMode]);
 
   // ── Face signals (jaw-open VAD in useUserSignals) fed continuously ─────────
   const signals = useUserSignals({
@@ -320,6 +377,53 @@ export function useKiosk() {
     lookingAtScreen: signals.attention === "screen",
     faceSizeRatio:  (presence.debugStatsRef?.current?.facePx ?? presence.debugStats?.facePx ?? 0) / 640,
   };
+
+  // ── Face Identity Enrollment (1.5s stable looking at screen after name/greeting) ─
+  const isEnrollingRef = useRef(false);
+  useEffect(() => {
+    if (!FACE_ID_ENABLED || hasEnrolled() || isEnrollingRef.current) {
+      return;
+    }
+
+    const canEnroll = nameSubmittedRef.current || greetingDoneRef.current;
+    const isGoodConditions =
+      canEnroll &&
+      signals.present &&
+      signals.attention === "screen" &&
+      !presenceTracker.multipleFaces;
+
+    if (!isGoodConditions) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const stillGood =
+        !hasEnrolled() &&
+        !isEnrollingRef.current &&
+        signals.present &&
+        signals.attention === "screen" &&
+        !presenceTracker.multipleFaces;
+
+      if (stillGood && cameraPresence.videoRef?.current) {
+        isEnrollingRef.current = true;
+        enrollFace(cameraPresence.videoRef.current)
+          .then((enrolled) => {
+            if (enrolled) setFaceEnrolled(true);
+          })
+          .finally(() => {
+            isEnrollingRef.current = false;
+          });
+      }
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [
+    signals.present,
+    signals.attention,
+    presenceTracker.multipleFaces,
+    cameraPresence.videoRef,
+    onboardingStep,
+  ]);
 
   // ── Mic + single AudioWorklet PCM stream ──────────────────────────────────
   const mic = useMic({ isEngaged });
@@ -443,11 +547,13 @@ export function useKiosk() {
   ) {
     lastFaceAtRef.current = Date.now();
   }
-  if (signals.attention === "screen") {
+  if (signals.present && signals.attention === "screen") {
     lastAttentionAtRef.current = Date.now();
   }
+  const faceSeenRecently = Date.now() - lastFaceAtRef.current < 5000;
   const isHumanVoice =
-    userSpeaking || (vadSpeech && audioLevel > BARGE_MIN_LEVEL && !getGate().blocked);
+    faceSeenRecently &&
+    (userSpeaking || (vadSpeech && audioLevel > BARGE_MIN_LEVEL && !getGate().blocked));
   if (isHumanVoice) {
     lastVoiceAtRef.current = Date.now();
   }
@@ -482,6 +588,7 @@ export function useKiosk() {
 
   // ── Say something ────────────────────────────────────────────────────────
   const say = useCallback((text) => {
+    if (kioskModeRef.current === "IDLE") return;
     if (!text || typeof text !== "string" || !text.trim()) return;
     const clean = text.trim();
     setCaption(clean);
@@ -579,6 +686,9 @@ export function useKiosk() {
         }
       } catch (_) {}
     }
+    clearFace();
+    setFaceEnrolled(false);
+    setIdentityMasked(false);
     presenceTracker.forceResetPresence();
 
     setName("");
@@ -587,13 +697,13 @@ export function useKiosk() {
     setProductId(backendCatalog[0]?.id || null);
     setCaption("");
 
-    // Warm up the AudioContext and Deepgram connection after each reset
-    warmupSpeech();
-
-    // Connect new WebSocket session with auto_greet=1
-    KioskStepCache.setSessionId(newSession);
-    sessionIdRef.current = newSession;
-    kioskWS.connect(newSession, true);
+    // Close WebSocket and transition back to IDLE mode (do NOT reconnect with auto_greet!)
+    kioskWS.disconnect();
+    setKioskMode("IDLE");
+    kioskModeRef.current = "IDLE";
+    if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
+      window.kiosk.sendPresenceState("IDLE");
+    }
     resetBackendSession(oldSession);
 
     setBackendAction(null);
@@ -662,11 +772,37 @@ export function useKiosk() {
       .replace(new RegExp(`\\b${escaped}\\b`, "gi"), "you");
   }, [presenceTracker.multipleFaces]);
 
+  // ── Privacy Mask & Face Guard System ──────────────────────────────────────
+  useFaceGuard({
+    videoRef: cameraPresence.videoRef,
+    active: FACE_ID_ENABLED && faceEnrolled,
+    faceVisible: Boolean(signals.present),
+    getFaceBox: () => latestRef.current.faceBox || null,
+    onSuspect: (reason) => {
+      console.log(`[FaceGuard] Suspicious event (${reason}) - masking identity and pausing speech`);
+      setIdentityMasked(true);
+      speechController.cancelAll("identity_check");
+    },
+    onSame: (reason, gap) => {
+      console.log(`[FaceGuard] Verified same customer (${reason}, gap=${gap}ms) - unmasking identity`);
+      setIdentityMasked(false);
+    },
+    onDifferent: (reason, gap) => {
+      console.log(`[FaceGuard] Different customer detected (${reason}, gap=${gap}ms). Resetting session immediately.`);
+      setIdentityMasked(false);
+      latestRef.current.resetSession?.("different_person_swap");
+    },
+    onUnsure: (reason, gap) => {
+      console.log(`[FaceGuard] Face check unsure (${reason}, gap=${gap}ms).`);
+      setIdentityMasked(false);
+      if (gap > 0 && nameRef.current) {
+        triggerIdentityVoiceCheck(nameRef.current);
+      }
+    },
+  });
 
-  // Connect WebSocket on mount for current session with auto_greet
-  useEffect(() => {
-    kioskWS.connect(sessionIdRef.current, true);
-  }, []);
+
+
 
   // ── Single Fused Human Evidence & Inactivity Interval (250 ms) ────────────
   useEffect(() => {
@@ -682,6 +818,38 @@ export function useKiosk() {
       const hasCameraError = Boolean(presence.cameraError);
       const noEvidenceThreshold = hasCameraError ? 45000 : 15000;
       const elapsed = now - lastEvidence;
+
+      // Diagnostic: shows which signal is keeping the session alive
+      if (now - lastEvidenceLogRef.current > 5000) {
+        lastEvidenceLogRef.current = now;
+        console.log(
+          `[Evidence] face=${Math.round((now - lastFaceAtRef.current) / 1000)}s ` +
+          `attn=${Math.round((now - lastAttentionAtRef.current) / 1000)}s ` +
+          `voice=${Math.round((now - lastVoiceAtRef.current) / 1000)}s ` +
+          `input=${Math.round((now - lastInputAtRef.current) / 1000)}s ` +
+          `presence=${latestRef.current.presence?.presenceState}`
+        );
+      }
+
+      // HARD RULE: no face and no touch for a while means the customer left. Voice is ignored.
+      const faceAbsentMs = now - lastFaceAtRef.current;
+      const touchIdleMs = now - lastInputAtRef.current;
+      const hasSession =
+        Boolean(nameRef.current) ||
+        latestRef.current.onboardingStep >= 2 ||
+        latestRef.current.showDetail;
+      if (
+        !hasCameraError &&
+        hasSession &&
+        faceAbsentMs > ABSENT_LONG_MS + 2000 &&
+        touchIdleMs > ABSENT_LONG_MS + 2000
+      ) {
+        console.log(`[Kiosk] Face absent ${Math.round(faceAbsentMs / 1000)}s with an active session. Hard reset.`);
+        warningDeadlineRef.current = null;
+        setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
+        latestRef.current.reset?.("face_absent_hard_timeout");
+        return;
+      }
 
       if (elapsed < noEvidenceThreshold) {
         // Any human evidence immediately cancels active warning/countdown
@@ -804,6 +972,11 @@ export function useKiosk() {
   const handleServerAction = useCallback((action, salesStage) => {
     if (!action && !salesStage) return;
 
+    if (kioskModeRef.current === "IDLE") {
+      console.log("[Kiosk] Dropping server action in IDLE mode:", action?.action || action?.type || salesStage);
+      return;
+    }
+
     // Stale action protection: drop actions from different session or out-of-order sequence
     if (action?.session_id && action.session_id !== sessionIdRef.current) {
       console.log("[Kiosk] Dropping action from different session:", action.session_id);
@@ -867,6 +1040,14 @@ export function useKiosk() {
 
     switch (actionType) {
       case "SHOW_GREETING": {
+        if (kioskModeRef.current === "IDLE") {
+          console.log("[Kiosk] Dropping SHOW_GREETING in IDLE mode");
+          break;
+        }
+        if (greetingDoneRef.current) {
+          console.log("[Kiosk] Skipping duplicate SHOW_GREETING for this session.");
+          break;
+        }
         // Welcome Screen: Avatar speaks greeting, await SPEECH_DONE
         const snapshot = {
           greetingDone: greetingDoneRef.current,
@@ -883,7 +1064,6 @@ export function useKiosk() {
         }
         greetingDoneRef.current = true;
         introPlayedRef.current = true;
-        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingOpen(false);
         setShowDetail(false);
         setCartModalOpen(false);
@@ -902,6 +1082,10 @@ export function useKiosk() {
       }
 
       case "ASK_NAME": {
+        if (kioskModeRef.current === "IDLE") {
+          console.log("[Kiosk] Dropping ASK_NAME in IDLE mode");
+          break;
+        }
         // Name Input Modal / Tab
         const snapshot = {
           isPassedName,
@@ -923,7 +1107,6 @@ export function useKiosk() {
           break;
         }
         nameDoneRef.current = true;
-        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingStep(1);
         setOnboardingOpen(true);
         setShowDetail(false);
@@ -948,7 +1131,6 @@ export function useKiosk() {
       case "SHOW_CATEGORIES": {
         clearTimeout(categoriesFallbackTimerRef.current);
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
-        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingStep(2);
         setOnboardingOpen(true);
         setShowDetail(false);
@@ -979,7 +1161,6 @@ export function useKiosk() {
 
       case "SHOW_PRODUCTS": {
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
-        latestRef.current.presence?.triggerTouchEngaged?.();
         // Server actions must not close categories screen if user is currently selecting categories
         if (latestRef.current.onboardingStep !== 2) {
           setOnboardingOpen(false);
@@ -1026,7 +1207,6 @@ export function useKiosk() {
       case "SHOW_PRODUCT_CARD":
       case "SHOW_PRODUCT": {
         KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
-        latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingOpen(false);
         setShowDetail(true);
         setCartModalOpen(false);
@@ -1074,7 +1254,6 @@ export function useKiosk() {
       }
 
       case "CONFIRM_BUY": {
-        latestRef.current.presence?.triggerTouchEngaged?.();
         setCartModalOpen(true);
         const currentCatalog = latestRef.current.backendCatalog || [];
         const target =
@@ -1103,7 +1282,6 @@ export function useKiosk() {
       }
 
       case "CHECKOUT_HANDOFF": {
-        latestRef.current.presence?.triggerTouchEngaged?.();
         setCartModalOpen(false);
         setQrModalOpen(true);
         const currentCatalog = latestRef.current.backendCatalog || [];
@@ -1133,7 +1311,6 @@ export function useKiosk() {
       }
 
       case "GOODBYE": {
-        latestRef.current.presence?.triggerTouchEngaged?.();
         setCartModalOpen(false);
         setQrModalOpen(false);
         setGoodbyeOpen(true);
@@ -1211,6 +1388,10 @@ export function useKiosk() {
 
     // Streamed sentence listener: start TTS immediately for each completed sentence
     const unsubSentence = kioskWS.on("sentence", (sentence, turnId) => {
+      if (kioskModeRef.current === "IDLE") {
+        console.log("[Kiosk] Dropping sentence in IDLE mode");
+        return;
+      }
       const activeTurnKey = activeActionReplyIdRef.current || turnId || kioskWS.currentTurnId || "turn_default";
       turnsWithSentencesRef.current.add(activeTurnKey);
       console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${activeTurnKey} text="${sentence.slice(0, 50)}"`);
@@ -1220,6 +1401,10 @@ export function useKiosk() {
     });
 
     const unsubDone = kioskWS.on("done", (doneData) => {
+      if (kioskModeRef.current === "IDLE") {
+        console.log("[Kiosk] Dropping done in IDLE mode");
+        return;
+      }
       console.log(`[Renderer] DONE received ts=${new Date().toISOString()} reply="${(doneData?.reply || "").slice(0, 60)}"`);
       if (doneData?.action || doneData?.salesStage) {
         handleServerAction(doneData.action, doneData.salesStage);
@@ -1674,18 +1859,20 @@ export function useKiosk() {
   const showAll = useCallback(() => {
     stopSpeechForUserAction("user_tap_show_all");
     lastInputAtRef.current = Date.now();
+    presence.triggerTouchEngaged();
     setCategory("all");
     setShowDetail(false);
     setOnboardingOpen(false);
     kioskWS.sendWsAction({ action: "SHOW_ALL" });
-  }, [stopSpeechForUserAction]);
+  }, [presence, stopSpeechForUserAction]);
 
   const navigateBack = useCallback(() => {
     stopSpeechForUserAction("user_tap_back");
     lastInputAtRef.current = Date.now();
+    presence.triggerTouchEngaged();
     setShowDetail(false);
     kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
-  }, [stopSpeechForUserAction]);
+  }, [presence, stopSpeechForUserAction]);
 
   const restartSession = useCallback(() => {
     lastInputAtRef.current = Date.now();
@@ -1773,12 +1960,27 @@ export function useKiosk() {
     );
   }, [backendCatalog, productId, products]);
 
+  const maxFaceBox = presenceTracker.largestFace?.box;
+  const currentFaceBox = maxFaceBox
+    ? {
+        cx: (maxFaceBox.minX + maxFaceBox.maxX) / 2,
+        cy: (maxFaceBox.minY + maxFaceBox.maxY) / 2,
+        w: maxFaceBox.width,
+      }
+    : null;
+
   // Keep latestRef synchronized every render
   latestRef.current = {
     backendCatalog,
     product,
     productId,
     name,
+    identityMasked,
+    faceEnrolled,
+    faceBox: currentFaceBox,
+    kioskMode,
+    isEngaged,
+    enterEngaged,
     category,
     categories,
     selectCategory,
@@ -1805,13 +2007,19 @@ export function useKiosk() {
   };
 
   return {
+    kioskMode,
+    isEngaged,
+    enterEngaged,
     caption,
     speechId,
     category,
     categories,
     product,
     products,
-    name,
+    name: identityMasked ? "" : name,
+    rawName: name,
+    identityMasked,
+    faceEnrolled,
     convState,
     speaking,
     listening: deepgram.listening || listening,

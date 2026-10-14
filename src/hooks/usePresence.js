@@ -1,7 +1,8 @@
 "use client";
 // src/hooks/usePresence.js
-// Presence tracking state machine driven purely by MediaPipe FaceLandmarker.
-// Zero face recognition, zero embeddings, zero biometrics.
+// Presence tracking state machine driven by MediaPipe FaceLandmarker.
+// Provides presence state (present, absent_short, absent_long, confirming)
+// and passes continuous face bounding box telemetry to useFaceGuard.
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
@@ -10,7 +11,10 @@ import {
   ABSENT_LONG_MS,
   PRESENT_CONTINUOUS_MS,
   PRESENCE_FRAMES,
+  FACE_ID_ENABLED,
+  FACE_MAX_SAME_GAP_MS,
 } from "@/lib/presenceConfig";
+import { hasEnrolled } from "@/lib/presence/faceIdentity";
 
 /**
  * usePresence hook
@@ -131,6 +135,8 @@ export function usePresence({
           lastConfirmedPresentAtRef.current = now;
 
           const currState = stateRef.current;
+          const elapsed = previousConfirmedTime ? now - previousConfirmedTime : 0;
+
           if (currState === "absent_long") {
             transitionTo("present", {
               reason: "face_detected_after_long_absence",
@@ -139,9 +145,7 @@ export function usePresence({
             });
           } else if (currState === "absent_short") {
             // Face returned after 4s - 10s gap
-            const elapsed = previousConfirmedTime ? now - previousConfirmedTime : 0;
             const currentName = typeof getName === "function" ? getName() : "";
-
             if (currentName) {
               transitionTo("confirming", {
                 elapsed,
@@ -162,7 +166,6 @@ export function usePresence({
           }
         }
       } else {
-        // Face absent in this frame: reset consecutive confirmed frame count & continuous start
         consecutiveFaceFramesRef.current = 0;
         continuousFaceStartRef.current = 0;
       }
@@ -180,8 +183,11 @@ export function usePresence({
       const elapsed = now - lastPresent;
       const currState = stateRef.current;
 
-      // Long gap: absent >= 10,000 ms
-      if (elapsed >= ABSENT_LONG_MS) {
+      // Long gap threshold: if face is enrolled, allow return up to FACE_MAX_SAME_GAP_MS (30s)
+      const longGapThreshold =
+        FACE_ID_ENABLED && hasEnrolled() ? FACE_MAX_SAME_GAP_MS : ABSENT_LONG_MS;
+
+      if (elapsed >= longGapThreshold) {
         if (currState !== "absent_long") {
           transitionTo("absent_long", {
             elapsed,
@@ -190,7 +196,7 @@ export function usePresence({
           onLongGapAbsent?.({ elapsed });
         }
       } else if (elapsed >= ABSENT_SHORT_MS) {
-        // Short gap: absent >= 1,500 ms and < 10,000 ms
+        // Short gap: absent >= 4,000 ms
         if (currState === "present") {
           transitionTo("absent_short", {
             elapsed,

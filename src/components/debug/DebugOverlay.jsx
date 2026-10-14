@@ -75,6 +75,8 @@ export default function DebugOverlay({
         <span style={{ color: "#38bdf8", fontWeight: "bold" }}>{stats?.smoothCm || 0} cm</span>
         {" "}(Raw: {stats?.rawCm || 0} cm)
       </div>
+      <div><strong>Optics:</strong> faceWidth: <span style={{ color: "#facc15" }}>{stats?.facePx || 0}px</span> | focalPx: <span style={{ color: "#facc15" }}>{config?.focalPx || stats?.focalPx || 580}</span></div>
+      <div><strong>Thresholds:</strong> enter &le; {config?.enterCm || stats?.enterCm || 150}cm | exit &gt; {config?.exitCm || stats?.exitCm || 190}cm</div>
 
       {/* Audio / VAD */}
       <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed rgba(255,255,255,0.2)" }}>

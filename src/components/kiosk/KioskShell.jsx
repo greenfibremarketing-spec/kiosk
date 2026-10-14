@@ -14,7 +14,7 @@ import { useKiosk } from "@/hooks/useKiosk";
 
 export default function KioskShell() {
   const k = useKiosk();
-  const isEngaged = k.presence.state === "ENGAGED";
+  const isEngaged = k.kioskMode === "ENGAGED";
 
   return (
     <main
@@ -24,7 +24,7 @@ export default function KioskShell() {
     >
       {/* ── Identity Verification Modal (Step 3: Short Gap Return) ── */}
       <IdentityVerificationModal
-        isOpen={Boolean(k.identityPrompt?.active)}
+        isOpen={isEngaged && Boolean(k.identityPrompt?.active)}
         name={k.identityPrompt?.name || k.name}
         secondsRemaining={k.identityPrompt?.secondsRemaining ?? 8}
         promptCount={k.identityPrompt?.promptCount ?? 1}
@@ -34,14 +34,14 @@ export default function KioskShell() {
 
       {/* ── Top-Right Inactivity Warning Banner (15s not seeing -> 10s timer -> Reset to Step 1) ── */}
       <SessionTimeoutBanner
-        isOpen={k.sessionTimeoutWarning?.active}
+        isOpen={isEngaged && Boolean(k.sessionTimeoutWarning?.active)}
         secondsRemaining={k.sessionTimeoutWarning?.secondsRemaining}
         onContinue={k.continueSession}
         onExit={k.exitSession}
       />
 
       {/* ── Top Staff Assistance Notification (REQUEST_HUMAN) ── */}
-      {k.staffBanner && (
+      {isEngaged && k.staffBanner && (
         <StaffAssistanceBanner
           message={k.staffBanner}
           onDismiss={() => k.setStaffBanner(null)}
@@ -83,7 +83,7 @@ export default function KioskShell() {
       />
 
       {/* ── Help Tooltip / Suggestions (SHOW_HINT) ── */}
-      {k.hintBubble && (
+      {isEngaged && k.hintBubble && (
         <HintTooltip
           hint={k.hintBubble}
           onTapHint={(hint) => k.send(typeof hint === "string" ? hint : hint.text || hint.message)}
@@ -111,36 +111,38 @@ export default function KioskShell() {
         />
 
         {/* ── Right-Side Onboarding Flow (Step 1: Ask Name, Step 2: Categories) ── */}
-        <RightOnboardingFlow
-          isOpen={k.onboardingOpen}
-          step={k.onboardingStep}
-          backendAction={k.backendAction}
-          categories={k.categories}
-          products={k.products}
-          onClose={() => k.setOnboardingOpen(false)}
-          name={k.name}
-          liveTranscript={k.liveTranscript}
-          onSubmitName={(name) => {
-            k.submitName(name);
-          }}
-          onSkipName={() => {
-            k.skipName();
-          }}
-          onSelectCategory={(catId) => {
-            k.selectCategory(catId);
-          }}
-          onSelectProduct={(p) => {
-            k.selectProduct(p);
-          }}
-          onGoToAllProducts={() => {
-            k.showAll();
-          }}
-          onResetSession={k.resetSession}
-        />
+        {isEngaged && (
+          <RightOnboardingFlow
+            isOpen={k.onboardingOpen}
+            step={k.onboardingStep}
+            backendAction={k.backendAction}
+            categories={k.categories}
+            products={k.products}
+            onClose={() => k.setOnboardingOpen(false)}
+            name={k.name}
+            liveTranscript={k.liveTranscript}
+            onSubmitName={(name) => {
+              k.submitName(name);
+            }}
+            onSkipName={() => {
+              k.skipName();
+            }}
+            onSelectCategory={(catId) => {
+              k.selectCategory(catId);
+            }}
+            onSelectProduct={(p) => {
+              k.selectProduct(p);
+            }}
+            onGoToAllProducts={() => {
+              k.showAll();
+            }}
+            onResetSession={k.resetSession}
+          />
+        )}
 
         {/* ── Cart Confirmation Modal (CONFIRM_BUY) ── */}
         <CartConfirmationModal
-          isOpen={k.cartModalOpen}
+          isOpen={isEngaged && Boolean(k.cartModalOpen)}
           product={k.cartModalData?.product || k.product}
           sku={k.cartModalData?.sku || k.product?.sku}
           buttons={k.cartModalData?.buttons || k.actionButtons}
@@ -154,7 +156,7 @@ export default function KioskShell() {
 
         {/* ── Checkout & QR Screen (CHECKOUT_HANDOFF) ── */}
         <CheckoutQRModal
-          isOpen={k.qrModalOpen}
+          isOpen={isEngaged && Boolean(k.qrModalOpen)}
           sku={k.qrModalData?.sku || k.product?.sku}
           productUrl={k.qrModalData?.product_url}
           product={k.qrModalData?.product || k.product}
@@ -164,7 +166,7 @@ export default function KioskShell() {
 
         {/* ── Farewell / Thank You Screen (GOODBYE) ── */}
         <GoodbyeOverlay
-          isOpen={k.goodbyeOpen}
+          isOpen={isEngaged && Boolean(k.goodbyeOpen)}
           message={k.goodbyeData?.message}
           autoResetAfterMs={k.goodbyeData?.autoResetAfterMs || 4000}
           onReset={() => {

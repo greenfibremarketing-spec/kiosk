@@ -165,8 +165,23 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
           }
         }
 
-        // Feed presence tracking hook with raw face landmarks
-        onFaceResult?.(faceLandmarks, perfNow, { facesCount, largestFace });
+        // Calculate whether primary face is looking straight / frontal
+        let isFrontal = false;
+        const primaryLm = faceLandmarks[largestFace?.index ?? 0];
+        if (primaryLm) {
+          const nose = primaryLm[1];
+          const leftEye = primaryLm[33];
+          const rightEye = primaryLm[263];
+          if (nose && leftEye && rightEye) {
+            const midX = (leftEye.x + rightEye.x) / 2;
+            const eyeSpan = Math.abs(rightEye.x - leftEye.x);
+            const offset = Math.abs(nose.x - midX) / (eyeSpan || 0.001);
+            isFrontal = offset < 0.52;
+          }
+        }
+
+        // Feed presence tracking hook with raw face landmarks and orientation
+        onFaceResult?.(faceLandmarks, perfNow, { facesCount, largestFace, isFrontal });
 
         // If kiosk is not engaged, reset engagement metrics and skip emotion processing
         if (!isEngaged) {

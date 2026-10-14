@@ -1,12 +1,23 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  PRESENCE_CONFIG,
+  ENTER_DISTANCE_CM,
+  EXIT_DISTANCE_CM,
+  ENTER_STABLE_MS,
+  FOCAL_PX,
+  FACE_REAL_WIDTH_CM,
+  MIN_FACE_WIDTH_PX,
+} from "@/lib/presenceConfig";
 
 const DEFAULT_CONFIG = {
-  enterCm: 220,
-  exitCm: 260,
-  enterDwellMs: 150,
+  enterCm: ENTER_DISTANCE_CM,
+  exitCm: EXIT_DISTANCE_CM,
+  enterDwellMs: ENTER_STABLE_MS,
   exitGraceMs: 8000,
-  focalPx: 580,
+  focalPx: FOCAL_PX,
+  faceRealWidthCm: FACE_REAL_WIDTH_CM,
+  minFaceWidthPx: MIN_FACE_WIDTH_PX,
   fps: 8,
   cameraLabel: "",
   touchKeepEngagedMs: 60000,
@@ -34,7 +45,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
   const dwellStartRef = useRef(null);
   const graceStartRef = useRef(null);
   const touchExpiryRef = useRef(0);
-  const hasAutoEngagedRef = useRef(false);
+  const lastCalibrationLogRef = useRef(0);
   const lastTimestampRef = useRef(0);
   const cameraFailuresRef = useRef(0);
   const fpsCountRef = useRef({ frames: 0, lastCheck: Date.now(), currentFps: 0 });
@@ -120,19 +131,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [calibrate100Cm, debugOpen]);
 
-  // ── Auto-engage on mount ─────────────────────────────────────────────────
-  // Kiosk stays engaged with touchKeepEngagedMs duration upon startup
-  useEffect(() => {
-    if (hasAutoEngagedRef.current) return;
-    hasAutoEngagedRef.current = true;
-    const timer = setTimeout(() => {
-      touchExpiryRef.current = Date.now() + (config.touchKeepEngagedMs || 60000);
-      updateMainState("ENGAGED");
-      if (onEnterEngaged) onEnterEngaged();
-    }, 800);
-    return () => clearTimeout(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+
 
   // Initialize MediaPipe FaceDetector using local files
   useEffect(() => {
@@ -281,11 +280,15 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
 
         for (const face of detections) {
           const box = face.boundingBox;
-          if (!box || box.width < 20) continue; // Ignore tiny false positives
+          const minPx = config.minFaceWidthPx || MIN_FACE_WIDTH_PX;
+          if (!box || box.width < minPx) continue; // Ignore tiny false positives / faces too small
 
           const facePx = box.width;
-          const rawCm = Math.round((15 * (config.focalPx || 580)) / facePx);
-          if (rawCm > (config.exitCm || 260)) continue; // Ignore bystanders beyond exitCm
+          const focal = config.focalPx || FOCAL_PX;
+          const realWidth = config.faceRealWidthCm || FACE_REAL_WIDTH_CM;
+          const rawCm = Math.round((realWidth * focal) / facePx);
+          const exitLimit = config.exitCm || EXIT_DISTANCE_CM;
+          if (rawCm > exitLimit) continue; // Ignore bystanders beyond exitCm
 
           // Head orientation check (used for ATTENTION, NOT presence)
           let isFacingScreen = true;
@@ -316,6 +319,8 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         let currentSmooth = smoothDistanceRef.current;
         let isPresentClose = false;
 
+        const enterLimit = config.enterCm || ENTER_DISTANCE_CM;
+
         if (closest) {
           consecutiveMissesRef.current = 0;
           lastDetectionTimeRef.current = now;
@@ -324,7 +329,17 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
           currentSmooth = Math.round(0.4 * closest.rawCm + 0.6 * currentSmooth);
           smoothDistanceRef.current = currentSmooth;
 
-          if (currentSmooth <= (config.enterCm || 220)) {
+          // Calibration log: throttled to 1s so staff can stand at 150cm and tune focalPx
+          if (now - lastCalibrationLogRef.current >= 1000) {
+            lastCalibrationLogRef.current = now;
+            console.log(
+              `[Presence Calibration] Distance: ${closest.rawCm}cm (smooth: ${currentSmooth}cm) | ` +
+              `faceWidth: ${Math.round(closest.facePx)}px | focalPx: ${config.focalPx || FOCAL_PX} | ` +
+              `enterLimit: <=${enterLimit}cm | isClose: ${currentSmooth <= enterLimit}`
+            );
+          }
+
+          if (currentSmooth <= enterLimit) {
             isPresentClose = true;
           }
 
@@ -332,6 +347,9 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
             facePx: Math.round(closest.facePx),
             rawCm: closest.rawCm,
             smoothCm: currentSmooth,
+            focalPx: config.focalPx || FOCAL_PX,
+            enterCm: enterLimit,
+            exitCm: config.exitCm || EXIT_DISTANCE_CM,
             fps: fpsCountRef.current.currentFps,
             facesCount: detections.length,
             isFacing: closest.isFacing,
@@ -350,6 +368,9 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
               facePx: 0,
               rawCm: 0,
               smoothCm: 300,
+              focalPx: config.focalPx || FOCAL_PX,
+              enterCm: enterLimit,
+              exitCm: config.exitCm || EXIT_DISTANCE_CM,
               fps: fpsCountRef.current.currentFps,
               facesCount: 0,
               isFacing: false,
@@ -359,7 +380,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
             // Keep previous smooth distance during brief detection blip
             debugStatsRef.current.fps = fpsCountRef.current.currentFps;
             debugStatsRef.current.facesCount = 0;
-            if (currentSmooth <= (config.enterCm || 220)) {
+            if (currentSmooth <= enterLimit) {
               isPresentClose = true;
             }
           }
@@ -376,8 +397,8 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
           if (isPresentClose) {
             if (!dwellStartRef.current) {
               dwellStartRef.current = now;
-            } else if (now - dwellStartRef.current >= (config.enterDwellMs || 150)) {
-              // Person stood in front of kiosk -> Switch to ENGAGED
+            } else if (now - dwellStartRef.current >= (config.enterDwellMs || ENTER_STABLE_MS)) {
+              // Person stood in front of kiosk within enterCm for ENTER_STABLE_MS (500ms) -> Switch to ENGAGED
               dwellStartRef.current = null;
               updateMainState("ENGAGED");
               if (onEnterEngaged) onEnterEngaged();
@@ -386,7 +407,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
             dwellStartRef.current = null;
           }
         } else if (state === "ENGAGED") {
-          const isFarOrGone = currentSmooth > (config.exitCm || 260);
+          const isFarOrGone = currentSmooth > (config.exitCm || EXIT_DISTANCE_CM);
 
           if (isFarOrGone) {
             const isTouchActive = now < touchExpiryRef.current;

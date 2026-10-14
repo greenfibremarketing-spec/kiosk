@@ -282,29 +282,31 @@ export default function AvatarPanel({
         />
 
         {/* Unified Bottom Overlay for Subtitles & Voice HUD */}
-        <div className="greenie-bottom-overlay">
-          {/* Dynamic Subtitles / Captions (Positioned neatly above the VoiceHUD) */}
-          <Captions
-            text={caption}
-            activeChunkText={activeChunkText}
-            speaking={isAvatarSpeaking || speaking}
-            status={isAvatarSpeaking ? "Explaining..." : convState === "LISTENING" ? "Listening..." : "Ready to chat"}
-            charIndex={spokenCharIndex}
-          />
+        {isEngaged && (
+          <div className="greenie-bottom-overlay">
+            {/* Dynamic Subtitles / Captions (Positioned neatly above the VoiceHUD) */}
+            <Captions
+              text={caption}
+              activeChunkText={activeChunkText}
+              speaking={isAvatarSpeaking || speaking}
+              status={isAvatarSpeaking ? "Explaining..." : convState === "LISTENING" ? "Listening..." : "Ready to chat"}
+              charIndex={spokenCharIndex}
+            />
 
-          {/* Integrated Voice HUD / Microphone Bar */}
-          <VoiceHUD
-            listening={listening}
-            speaking={isAvatarSpeaking || speaking}
-            liveTranscript={liveTranscript}
-            userSpeaking={userSpeaking}
-            convState={convState}
-            onToggleMic={onToggleMic}
-            micError={micError}
-            audioLevel={audioLevel}
-            onQuickPick={onQuickPick}
-          />
-        </div>
+            {/* Integrated Voice HUD / Microphone Bar */}
+            <VoiceHUD
+              listening={listening}
+              speaking={isAvatarSpeaking || speaking}
+              liveTranscript={liveTranscript}
+              userSpeaking={userSpeaking}
+              convState={convState}
+              onToggleMic={onToggleMic}
+              micError={micError}
+              audioLevel={audioLevel}
+              onQuickPick={onQuickPick}
+            />
+          </div>
+        )}
       </div>
 
       {/* Debug Overlay (Ctrl+Shift+D) */}

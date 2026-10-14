@@ -11,6 +11,8 @@ class KioskWebSocketClient {
     this.reconnectTimer = null;
     this.pingInterval = null;
     this.turnCounter = 0;
+    this.explicitlyDisconnected = true;
+    this.isEngaged = false;
 
     // Streamed sentence buffer to emit sentences as tokens arrive
     this.sentenceStreamer = new SentenceTokenStreamer((sentence) => {
@@ -96,6 +98,9 @@ class KioskWebSocketClient {
       return;
     }
 
+    this.explicitlyDisconnected = false;
+    this.isEngaged = true;
+
     // Close previous session connection if session changed
     this.staleTurns.clear();
     this.inFlightTurnId = null;
@@ -153,17 +158,51 @@ class KioskWebSocketClient {
         }
         this.activeTurns.clear();
 
-        // Auto-reconnect after 2 seconds (with autoGreet=false so reconnect never re-greets)
+        // Auto-reconnect ONLY while ENGAGED and not explicitly disconnected
+        // Always with autoGreet=false so reconnect never re-greets
         clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = setTimeout(() => {
-          if (this.sessionId) {
-            this.connect(this.sessionId, false);
-          }
-        }, 2000);
+        if (this.isEngaged && !this.explicitlyDisconnected && this.sessionId) {
+          this.reconnectTimer = setTimeout(() => {
+            if (this.isEngaged && !this.explicitlyDisconnected && this.sessionId) {
+              console.log("[KioskWS] Auto-reconnecting while ENGAGED (autoGreet=false)...");
+              this.connect(this.sessionId, false);
+            }
+          }, 2000);
+        }
       };
     } catch (e) {
       console.warn("[KioskWS] WebSocket init error:", e);
     }
+  }
+
+  // ── Explicit Disconnect (Called on reset to return to IDLE) ──
+  disconnect() {
+    this.explicitlyDisconnected = true;
+    this.isEngaged = false;
+    this.connected = false;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.stopHeartbeat();
+    if (this.speechDoneTimer) {
+      clearTimeout(this.speechDoneTimer);
+      this.speechDoneTimer = null;
+    }
+    this.pendingSpeechId = null;
+    this.currentSpeechId = null;
+    this.activeTurns.clear();
+    this.staleTurns.clear();
+    this.inFlightTurnId = null;
+
+    if (this.ws) {
+      try {
+        this.ws.onclose = null; // Prevent onclose from triggering auto-reconnect
+        this.ws.close();
+      } catch (_) {}
+      this.ws = null;
+    }
+    this.sessionId = null;
+    this.emit("status", { connected: false, sessionId: null });
+    console.log("[KioskWS] Explicitly disconnected. Auto-reconnect disabled until next engagement.");
   }
 
   startHeartbeat() {
