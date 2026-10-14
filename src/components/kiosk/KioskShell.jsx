@@ -9,6 +9,7 @@ import GoodbyeOverlay from "@/components/modals/GoodbyeOverlay";
 import StaffAssistanceBanner from "@/components/kiosk/StaffAssistanceBanner";
 import HintTooltip from "@/components/kiosk/HintTooltip";
 import SessionTimeoutBanner from "@/components/kiosk/SessionTimeoutBanner";
+import IdentityVerificationModal from "@/components/modals/IdentityVerificationModal";
 import { useKiosk } from "@/hooks/useKiosk";
 
 export default function KioskShell() {
@@ -21,6 +22,16 @@ export default function KioskShell() {
       onClick={() => k.presence.triggerTouchEngaged()}
       onTouchStart={() => k.presence.triggerTouchEngaged()}
     >
+      {/* ── Identity Verification Modal (Step 3: Short Gap Return) ── */}
+      <IdentityVerificationModal
+        isOpen={Boolean(k.identityPrompt?.active)}
+        name={k.identityPrompt?.name || k.name}
+        secondsRemaining={k.identityPrompt?.secondsRemaining ?? 8}
+        promptCount={k.identityPrompt?.promptCount ?? 1}
+        onConfirm={k.confirmIdentity}
+        onReject={() => k.resetSession("different_person")}
+      />
+
       {/* ── Top-Right Inactivity Warning Banner (15s not seeing -> 10s timer -> Reset to Step 1) ── */}
       <SessionTimeoutBanner
         isOpen={k.sessionTimeoutWarning?.active}
@@ -95,6 +106,8 @@ export default function KioskShell() {
           onCloseDetail={() => k.setShowDetail(false)}
           actionButtons={k.actionButtons}
           onButtonClick={k.handleButtonClick}
+          name={k.name}
+          onResetSession={k.resetSession}
         />
 
         {/* ── Right-Side Onboarding Flow (Step 1: Ask Name, Step 2: Categories) ── */}
@@ -122,6 +135,7 @@ export default function KioskShell() {
           onGoToAllProducts={() => {
             k.showAll();
           }}
+          onResetSession={k.resetSession}
         />
 
         {/* ── Cart Confirmation Modal (CONFIRM_BUY) ── */}

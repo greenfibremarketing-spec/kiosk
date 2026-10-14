@@ -6,6 +6,8 @@ export default function RightNavbar({
   productCount = 0,
   onOpenMenu,
   onSelectCategory,
+  name = "",
+  onResetSession,
 }) {
   return (
     <nav className="right-navbar" aria-label="Catalog Navigation Bar">
@@ -54,6 +56,19 @@ export default function RightNavbar({
 
       {/* ── Center: Sustainability & Eco Highlights ── */}
       <div className="right-navbar__center">
+        {name ? (
+          <div className="navbar-user-chip">
+            <span className="navbar-user-name">👤 {name}</span>
+            <button
+              type="button"
+              className="navbar-not-me-btn"
+              onClick={() => onResetSession?.("user_tap")}
+              title={`Not ${name}? Tap to start fresh`}
+            >
+              Not {name}?
+            </button>
+          </div>
+        ) : null}
         <div className="navbar-eco-badge">
           <span className="eco-leaf-icon">🌾</span>
           <span>Zero Virgin Plastic</span>

@@ -17,6 +17,7 @@ export default function RightOnboardingFlow({
   onSelectCategory,
   onSelectProduct,
   onGoToAllProducts,
+  onResetSession,
 }) {
   // step: 1 = Ask Name, 2 = Show Categories & Recommendations
   const [step, setStep] = useState(controlledStep || 1);
@@ -230,7 +231,21 @@ export default function RightOnboardingFlow({
             <div className="right-step-eyebrow">
               <span className="step-num-badge step-num-badge--green">Step 2 of 2</span>
               <span className="step-badge-text">
-                {name || inputName ? `🌿 Curated for ${name || inputName}` : "🌿 Sustainable Collections"}
+                {name || inputName ? (
+                  <>
+                    <span>🌿 Curated for <strong>{name || inputName}</strong></span>
+                    <button
+                      type="button"
+                      className="flow-not-me-btn"
+                      onClick={() => onResetSession?.("user_tap")}
+                      title={`Not ${name || inputName}? Tap to start fresh`}
+                    >
+                      Not {name || inputName}?
+                    </button>
+                  </>
+                ) : (
+                  "🌿 Sustainable Collections"
+                )}
               </span>
             </div>
 

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from "re
 import { GreenieAvatar } from "@/lib/avatar/GreenieAvatar";
 
 const GreenieStage = forwardRef(function GreenieStage(
-  { onStatus, onSpeakingChange, onBoundary, isEngaged },
+  { onStatus, onSpeakingChange, onBoundary, onChunk, isEngaged },
   ref
 ) {
   const containerRef = useRef(null);
@@ -14,11 +14,13 @@ const GreenieStage = forwardRef(function GreenieStage(
   const onStatusRef = useRef(onStatus);
   const onSpeakingChangeRef = useRef(onSpeakingChange);
   const onBoundaryRef = useRef(onBoundary);
+  const onChunkRef = useRef(onChunk);
 
   useEffect(() => {
     onStatusRef.current = onStatus;
     onSpeakingChangeRef.current = onSpeakingChange;
     onBoundaryRef.current = onBoundary;
+    onChunkRef.current = onChunk;
   });
 
   useEffect(() => {
@@ -37,6 +39,9 @@ const GreenieStage = forwardRef(function GreenieStage(
         },
         onBoundary: (charIndex) => {
           onBoundaryRef.current?.(charIndex);
+        },
+        onChunk: (chunkText) => {
+          onChunkRef.current?.(chunkText);
         },
       });
 

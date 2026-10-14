@@ -81,14 +81,13 @@ export function splitIntoSentences(text) {
 }
 
 /**
- * Splits text into optimal TTS chunks (~25 to 80 chars) for low-latency synthesis.
+ * Splits text into natural sentence TTS chunks for smooth, low-latency synthesis.
  *
  * Rules:
- *  1. Isolate name-personalised intros ("Nice to meet you, <name>!", "<name>,", "Great choice, <name>!")
- *     so the remainder of the sentence matches the pre-warmed static disk cache.
- *  2. Split at sentence endings (. ? !).
- *  3. Split long sentences (> 80 chars) at commas, semicolons, colons, or " and " into chunks of ~25-80 chars.
- *  4. Fall back to word boundaries if a segment still exceeds 80 chars.
+ *  1. Split on sentence end (. ? !) only.
+ *  2. Never split on commas unless a sentence exceeds ~140 chars; then split at the comma nearest the middle.
+ *  3. Merge any piece shorter than ~30 chars into the next one (or previous one if last).
+ *  4. Single unified chunker and sanitizer shared across live playback, fallback, and prewarm.
  *
  * @param {string} text
  * @returns {string[]} array of sanitized, non-empty chunks
@@ -99,103 +98,83 @@ export function splitIntoTtsChunks(text) {
   const raw = text.trim();
   if (!raw) return [];
 
-  const chunks = [];
-
-  // 1. Isolate name-personalised prefix if present
-  // Matches e.g. "Nice to meet you, David!", "Hello David!", "David,", "Great choice, Sarah!"
-  const namePrefixRegex = /^(?:(?:Nice to meet you|Pleased to meet you|Welcome|Hello|Hi|Hey|Great choice|Nice pick|Wonderful choice),\s*[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)?[!.,?]|(?:[A-Z][a-zA-Z]*,))\s*/i;
-  let remainingText = raw;
-  const nameMatch = raw.match(namePrefixRegex);
-  if (nameMatch) {
-    const nameChunk = nameMatch[0].trim();
-    if (nameChunk) {
-      chunks.push(nameChunk);
-    }
-    remainingText = raw.slice(nameMatch[0].length).trim();
-  }
-
-  if (!remainingText) {
-    return chunks.map(sanitizeTtsText).filter(Boolean);
-  }
-
-  // 2. Split on sentence boundaries (. ? !)
-  const rawSentences = remainingText.split(/(?<=[.?!])\s+/);
+  // Split on sentence boundaries (. ? !)
+  const rawSentences = raw.split(/(?<=[.?!])\s+/);
+  const pieces = [];
 
   for (const sentence of rawSentences) {
-    const trimmed = sentence.trim();
-    if (!trimmed) continue;
+    const s = sentence.trim();
+    if (!s) continue;
 
-    // If within ideal chunk length, keep intact
-    if (trimmed.length <= 80) {
-      chunks.push(trimmed);
-      continue;
-    }
+    if (s.length <= 140) {
+      pieces.push(s);
+    } else {
+      // Sentence exceeds ~140 chars: find comma nearest the middle
+      const mid = Math.floor(s.length / 2);
+      let bestCommaIdx = -1;
+      let minDistance = Infinity;
 
-    // 3. For long sentences (> 80 chars), split at commas, semicolons, colons, or " and " / " but "
-    // Look for comma/semicolon/colon followed by space, or " and ", " but ", " or "
-    const pauseSplitRegex = /(?:,\s*|;\s*|:\s*|\s+(?:and|but|or)\s+)/gi;
-    let match;
-    let lastIndex = 0;
-    let currentChunk = "";
-
-    const segments = [];
-    // Manual sub-split preserving readable phrasing
-    const parts = trimmed.split(/(?<=[,;:])\s+|\s+(?=and\b|\bbut\b|\bor\b)/i);
-
-    for (const part of parts) {
-      const p = part.trim();
-      if (!p) continue;
-
-      if (!currentChunk) {
-        currentChunk = p;
-      } else if ((currentChunk + " " + p).length <= 80) {
-        currentChunk += " " + p;
-      } else {
-        if (currentChunk.length >= 20) {
-          segments.push(currentChunk.trim());
-          currentChunk = p;
-        } else {
-          // If currentChunk is too small (<20 chars), combine anyway or push
-          currentChunk += " " + p;
-          if (currentChunk.length > 80) {
-            segments.push(currentChunk.trim());
-            currentChunk = "";
+      for (let i = 0; i < s.length; i++) {
+        if (s[i] === ",") {
+          const dist = Math.abs(i - mid);
+          if (dist < minDistance) {
+            minDistance = dist;
+            bestCommaIdx = i;
           }
         }
       }
-    }
-    if (currentChunk.trim()) {
-      segments.push(currentChunk.trim());
-    }
 
-    // 4. Fallback: if any segment is still > 80 chars, break at word boundary
-    for (const seg of segments) {
-      if (seg.length <= 80) {
-        chunks.push(seg);
+      if (bestCommaIdx !== -1 && bestCommaIdx > 25 && bestCommaIdx < s.length - 25) {
+        const p1 = s.slice(0, bestCommaIdx + 1).trim();
+        const p2 = s.slice(bestCommaIdx + 1).trim();
+        if (p1) pieces.push(p1);
+        if (p2) pieces.push(p2);
       } else {
-        const words = seg.split(/\s+/);
-        let wordChunk = "";
-        for (const w of words) {
-          if (wordChunk && (wordChunk + " " + w).length > 80) {
-            chunks.push(wordChunk.trim());
-            wordChunk = w;
-          } else {
-            wordChunk = wordChunk ? wordChunk + " " + w : w;
+        // No suitable comma: split at word boundary nearest the middle
+        let bestSpaceIdx = -1;
+        let minSpaceDist = Infinity;
+        for (let i = 0; i < s.length; i++) {
+          if (s[i] === " ") {
+            const dist = Math.abs(i - mid);
+            if (dist < minSpaceDist) {
+              minSpaceDist = dist;
+              bestSpaceIdx = i;
+            }
           }
         }
-        if (wordChunk.trim()) {
-          chunks.push(wordChunk.trim());
+        if (bestSpaceIdx !== -1 && bestSpaceIdx > 25 && bestSpaceIdx < s.length - 25) {
+          const p1 = s.slice(0, bestSpaceIdx).trim();
+          const p2 = s.slice(bestSpaceIdx + 1).trim();
+          if (p1) pieces.push(p1);
+          if (p2) pieces.push(p2);
+        } else {
+          pieces.push(s);
         }
       }
     }
   }
 
-  return chunks.map(sanitizeTtsText).filter(Boolean);
+  // Merge any piece shorter than ~30 chars into the next one (or previous if last)
+  const merged = [];
+  for (let i = 0; i < pieces.length; i++) {
+    let current = pieces[i].trim();
+    if (!current) continue;
+
+    if (current.length < 30 && i + 1 < pieces.length) {
+      pieces[i + 1] = current + " " + pieces[i + 1].trim();
+    } else if (current.length < 30 && merged.length > 0) {
+      merged[merged.length - 1] = merged[merged.length - 1] + " " + current;
+    } else {
+      merged.push(current);
+    }
+  }
+
+  return merged.map(sanitizeTtsText).filter(Boolean);
 }
 
 /**
- * Buffers streamed tokens and emits chunks as soon as completed.
- * Splits on punctuation (. ? !) or after ~60-80 characters at natural break points.
+ * Buffers streamed tokens and emits completed sentences.
+ * Follows the exact sentence boundaries (. ? !) without fragmenting on commas.
  */
 export class SentenceTokenStreamer {
   constructor(onSentence) {
@@ -215,7 +194,6 @@ export class SentenceTokenStreamer {
         const advanceBy = match[0].length;
         this.buffer = this.buffer.slice(advanceBy);
         if (sentence && this.onSentence) {
-          // Emit sub-chunks if sentence is long
           const chunks = splitIntoTtsChunks(sentence);
           for (const c of chunks) {
             this.onSentence(c);
@@ -224,18 +202,29 @@ export class SentenceTokenStreamer {
         continue;
       }
 
-      // If buffer has grown beyond 75 chars without ending punctuation, break at comma or word boundary
-      if (this.buffer.length >= 75) {
-        const slice = this.buffer.slice(0, 85);
-        const commaIdx = slice.lastIndexOf(",");
-        const spaceIdx = slice.lastIndexOf(" ");
-        const splitIdx = commaIdx > 25 ? commaIdx + 1 : (spaceIdx > 35 ? spaceIdx : -1);
+      // If buffer has grown beyond 140 chars without ending punctuation, split at comma near middle
+      if (this.buffer.length >= 140) {
+        const mid = Math.floor(this.buffer.length / 2);
+        let bestComma = -1;
+        let minD = Infinity;
+        for (let i = 0; i < this.buffer.length; i++) {
+          if (this.buffer[i] === ",") {
+            const d = Math.abs(i - mid);
+            if (d < minD) {
+              minD = d;
+              bestComma = i;
+            }
+          }
+        }
 
-        if (splitIdx > 25) {
-          const chunk = this.buffer.slice(0, splitIdx).trim();
-          this.buffer = this.buffer.slice(splitIdx).trimStart();
+        if (bestComma > 30) {
+          const chunk = this.buffer.slice(0, bestComma + 1).trim();
+          this.buffer = this.buffer.slice(bestComma + 1).trimStart();
           if (chunk && this.onSentence) {
-            this.onSentence(chunk);
+            const chunks = splitIntoTtsChunks(chunk);
+            for (const c of chunks) {
+              this.onSentence(c);
+            }
           }
           continue;
         }

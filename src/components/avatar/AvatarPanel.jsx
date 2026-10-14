@@ -121,71 +121,28 @@ export default function AvatarPanel({
     prevEngagedRef.current = isEngaged;
   }, [isEngaged]);
 
-  // ── Caption / speechId change → speak ────────────────────────────────────
-  const prevSpeechIdRef = useRef(speechId);
-  const prevCaptionRef  = useRef(caption);
-  const currentSpokenRef = useRef({ speechId: null, caption: null });
+  // ── Caption / speechId change: updates subtitle text ONLY (never plays audio) ──
+  const [activeChunkText, setActiveChunkText] = useState("");
+  const prevSpeechIdRef = useRef(null);
+  const prevCaptionRef  = useRef(null);
+
+  // Reset refs on fresh session or reset (speechId <= 1)
+  useEffect(() => {
+    if (speechId <= 1) {
+      prevSpeechIdRef.current = null;
+      prevCaptionRef.current = null;
+      setActiveChunkText("");
+    }
+  }, [speechId]);
 
   useEffect(() => {
     const changed = speechId !== prevSpeechIdRef.current || caption !== prevCaptionRef.current;
-    if (!changed) {
-      return;
-    }
+    if (!changed) return;
 
-    if (!caption || typeof caption !== "string" || !caption.trim()) {
-      console.log(`[AvatarPanel] Skipping speak: reason="empty_caption"`);
-      prevSpeechIdRef.current = speechId;
-      prevCaptionRef.current  = caption;
-      return;
-    }
-
-    if (!isEngaged) {
-      console.log(`[AvatarPanel] Skipping speak: reason="not_engaged" (caption="${caption.slice(0, 30)}")`);
-      prevSpeechIdRef.current = speechId;
-      prevCaptionRef.current  = caption;
-      return;
-    }
-
-    if (userSpeaking) {
-      console.log(`[AvatarPanel] Skipping speak: reason="user_speaking" (caption="${caption.slice(0, 30)}")`);
-      prevSpeechIdRef.current = speechId;
-      prevCaptionRef.current  = caption;
-      return;
-    }
-
-    // Only skip if it is the SAME speech_id/caption already being spoken (log "duplicate")
-    if (
-      currentSpokenRef.current.speechId === speechId &&
-      currentSpokenRef.current.caption === caption
-    ) {
-      console.log(`[AvatarPanel] Skipping speak: reason="duplicate" (already speaking speech_id=${speechId})`);
-      prevSpeechIdRef.current = speechId;
-      prevCaptionRef.current  = caption;
-      return;
-    }
-
-    // LATEST REPLY WINS:
-    // If a non-greeting reply, clear any previous speech and speak new reply immediately.
-    // Greeting -> ASK_NAME sequence appends without clearing.
-    const isGreetingSeq =
-      (caption.includes("Welcome to Green") || caption.includes("What's your name") || caption.includes("May I know your name")) &&
-      speechId <= 2;
-
-    if (!isGreetingSeq) {
-      stageRef.current?.clearQueue?.("superseded_by_new_reply");
-    }
-
-    currentSpokenRef.current = { speechId, caption };
     prevSpeechIdRef.current = speechId;
     prevCaptionRef.current  = caption;
-
-    stageRef.current?.speak(caption, {
-      voice: customVoice,
-      pitch: CUSTOM_VOICE_OPTIONS.pitch,
-      rate: CUSTOM_VOICE_OPTIONS.rate,
-      lang: customVoice?.lang || "en-IN",
-    });
-  }, [caption, speechId, customVoice, userSpeaking, isEngaged]);
+    // Note: Caption effect only updates subtitles, never triggers audio speak()
+  }, [caption, speechId]);
 
 
   // ── Drive avatar expressions from convState ────────────────────────────────
@@ -237,6 +194,9 @@ export default function AvatarPanel({
 
   const handleSpeakingChange = useCallback((s) => {
     setIsAvatarSpeaking(s);
+    if (!s) {
+      setActiveChunkText("");
+    }
     onSpeakingChange?.(s);
   }, [onSpeakingChange]);
 
@@ -253,6 +213,12 @@ export default function AvatarPanel({
         }}
         width={320} height={240}
       />
+
+      {/* Subtle Camera Privacy Notice (Step 8) */}
+      <div className="camera-privacy-badge" aria-label="Privacy Notice">
+        <span className="privacy-camera-icon">📷</span>
+        <span>Camera is used only to detect presence. No faces are stored.</span>
+      </div>
 
       {/* ── ATTRACT SCREEN ── */}
       <div
@@ -312,6 +278,7 @@ export default function AvatarPanel({
           onStatus={() => {}}
           onSpeakingChange={handleSpeakingChange}
           onBoundary={setSpokenCharIndex}
+          onChunk={setActiveChunkText}
         />
 
         {/* Unified Bottom Overlay for Subtitles & Voice HUD */}
@@ -319,6 +286,7 @@ export default function AvatarPanel({
           {/* Dynamic Subtitles / Captions (Positioned neatly above the VoiceHUD) */}
           <Captions
             text={caption}
+            activeChunkText={activeChunkText}
             speaking={isAvatarSpeaking || speaking}
             status={isAvatarSpeaking ? "Explaining..." : convState === "LISTENING" ? "Listening..." : "Ready to chat"}
             charIndex={spokenCharIndex}

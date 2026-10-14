@@ -18,6 +18,8 @@ export default function ProductShowcase({
   onCloseDetail,
   actionButtons = [],
   onButtonClick,
+  name = "",
+  onResetSession,
 }) {
   const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success"
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -88,6 +90,8 @@ export default function ProductShowcase({
         productCount={products?.length || 0}
         onOpenMenu={() => setIsSidebarOpen(true)}
         onSelectCategory={handleSidebarCategory}
+        name={name}
+        onResetSession={onResetSession}
       />
 
       {/* ── Premium Sidebar Drawer ── */}

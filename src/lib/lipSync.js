@@ -8,8 +8,21 @@ let ctx = null,
 const LEAD_S = 0.07; // sound is delayed 70 ms, mouth reads it live
 const S = { open: 0, wide: 0, round: 0, hiss: 0, emph: 0, peak: 0.06, prevLevel: 0 };
 
-export function attachLipSync(audioEl) {
-  if (typeof window === "undefined" || !audioEl) return () => {};
+export function getAudioContext() {
+  if (typeof window === "undefined") return null;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    ctx ??= new AC();
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    return ctx;
+  } catch (_) {
+    return null;
+  }
+}
+
+export function attachLipSync(audioTarget) {
+  if (typeof window === "undefined" || !audioTarget) return () => {};
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return () => {};
@@ -27,13 +40,23 @@ export function attachLipSync(audioEl) {
       delay.connect(ctx.destination); // what you hear (delayed)
     }
 
-    const src = ctx.createMediaElementSource(audioEl);
+    // Support AudioNode (e.g. AudioBufferSourceNode) or HTMLMediaElement
+    let src = null;
+    if (audioTarget instanceof AudioNode) {
+      src = audioTarget;
+    } else {
+      src = ctx.createMediaElementSource(audioTarget);
+    }
+
     src.connect(analyser); // what the mouth reads (live)
     src.connect(delay);
     S.peak = 0.06;
     return () => {
       try {
-        src.disconnect();
+        src.disconnect(analyser);
+      } catch (_) {}
+      try {
+        src.disconnect(delay);
       } catch (_) {}
     };
   } catch (err) {

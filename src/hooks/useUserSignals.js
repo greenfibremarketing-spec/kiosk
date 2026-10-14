@@ -5,6 +5,7 @@
 // Attention (Screen vs Away), and Voice Activity (Jaw movement).
 
 import { useEffect, useRef, useCallback, useState } from "react";
+import { MAX_FACES } from "@/lib/presenceConfig";
 
 const SIGNAL_INTERVAL_MS = 150; // ~7 FPS
 const LOG_INTERVAL_MS = 1200;   // Log update interval
@@ -24,7 +25,7 @@ const DEFAULT_SIGNALS = {
   dwellMs: 0,
 };
 
-export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd } = {}) {
+export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd, onFaceResult } = {}) {
   const [signals, setSignals] = useState(DEFAULT_SIGNALS);
   const landmarkerRef = useRef(null);
   const timerRef = useRef(null);
@@ -36,6 +37,7 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
   const lastTimestampRef = useRef(0);
   const lastLogTimeRef = useRef(0);
   const lastLoggedMoodRef = useRef("");
+  const lastMultiLogRef = useRef(0);
 
   // --- Initialise MediaPipe FaceLandmarker ---
   useEffect(() => {
@@ -58,7 +60,7 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
             },
             runningMode: "VIDEO",
             outputFaceBlendshapes: true,
-            numFaces: 1,
+            numFaces: MAX_FACES || 4,
           });
         } catch (gpuErr) {
           console.warn("GPU delegate unavailable for FaceLandmarker, switching to CPU:", gpuErr);
@@ -69,7 +71,7 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
             },
             runningMode: "VIDEO",
             outputFaceBlendshapes: true,
-            numFaces: 1,
+            numFaces: MAX_FACES || 4,
           });
         }
 
@@ -100,16 +102,6 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
   useEffect(() => {
     clearInterval(timerRef.current);
 
-    if (!isEngaged) {
-      engagedSinceRef.current = null;
-      silenceSecRef.current = 0;
-      isSpeakingRef.current = false;
-      setSignals(DEFAULT_SIGNALS);
-      return;
-    }
-
-    if (!engagedSinceRef.current) engagedSinceRef.current = Date.now();
-
     timerRef.current = setInterval(() => {
       const video = videoRef?.current;
       const lm = landmarkerRef.current;
@@ -118,13 +110,15 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
 
       // Guard: video must be ready and displaying frames
       if (!video || video.readyState < 2 || !lm || video.paused) {
-        const dwell = now - (engagedSinceRef.current || now);
-        silenceSecRef.current += SIGNAL_INTERVAL_MS / 1000;
-        setSignals((prev) => ({
-          ...prev,
-          dwellMs: dwell,
-          silenceSec: Math.round(silenceSecRef.current),
-        }));
+        if (isEngaged) {
+          const dwell = now - (engagedSinceRef.current || now);
+          silenceSecRef.current += SIGNAL_INTERVAL_MS / 1000;
+          setSignals((prev) => ({
+            ...prev,
+            dwellMs: dwell,
+            silenceSec: Math.round(silenceSecRef.current),
+          }));
+        }
         return;
       }
 
@@ -136,7 +130,58 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
 
       try {
         const result = lm.detectForVideo(video, perfNow);
-        const bs = result.faceBlendshapes?.[0]?.categories ?? [];
+        const faceLandmarks = result.faceLandmarks || [];
+        const facesCount = faceLandmarks.length;
+
+        // Calculate largest face by 2D bounding box
+        let largestFace = null;
+        let maxArea = -1;
+        if (facesCount > 0) {
+          for (let i = 0; i < facesCount; i++) {
+            const lmPoints = faceLandmarks[i];
+            if (!lmPoints || lmPoints.length === 0) continue;
+            let minX = 1, maxX = 0, minY = 1, maxY = 0;
+            for (const pt of lmPoints) {
+              if (pt.x < minX) minX = pt.x;
+              if (pt.x > maxX) maxX = pt.x;
+              if (pt.y < minY) minY = pt.y;
+              if (pt.y > maxY) maxY = pt.y;
+            }
+            const width = Math.max(0, maxX - minX);
+            const height = Math.max(0, maxY - minY);
+            const area = width * height;
+            if (area > maxArea) {
+              maxArea = area;
+              largestFace = { index: i, box: { minX, maxX, minY, maxY, width, height }, area };
+            }
+          }
+        }
+
+        // Log multiple faces if detected (throttled)
+        if (facesCount > 1) {
+          if (now - lastMultiLogRef.current > 3000) {
+            lastMultiLogRef.current = now;
+            console.log(`[Presence] multiple faces (${facesCount})`);
+          }
+        }
+
+        // Feed presence tracking hook with raw face landmarks
+        onFaceResult?.(faceLandmarks, perfNow, { facesCount, largestFace });
+
+        // If kiosk is not engaged, reset engagement metrics and skip emotion processing
+        if (!isEngaged) {
+          engagedSinceRef.current = null;
+          silenceSecRef.current = 0;
+          isSpeakingRef.current = false;
+          setSignals(DEFAULT_SIGNALS);
+          return;
+        }
+
+        if (!engagedSinceRef.current) engagedSinceRef.current = Date.now();
+
+        // Extract blendshapes for the primary (largest) face
+        const primaryFaceIdx = largestFace?.index ?? 0;
+        const bs = result.faceBlendshapes?.[primaryFaceIdx]?.categories ?? [];
         const present = bs.length > 0;
 
         if (!present) {
@@ -298,7 +343,7 @@ export function useUserSignals({ videoRef, isEngaged, onSpeechStart, onSpeechEnd
     }, SIGNAL_INTERVAL_MS);
 
     return () => clearInterval(timerRef.current);
-  }, [isEngaged, videoRef, score, onSpeechStart, onSpeechEnd]);
+  }, [isEngaged, videoRef, score, onSpeechStart, onSpeechEnd, onFaceResult]);
 
   return signals;
 }

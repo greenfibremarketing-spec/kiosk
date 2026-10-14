@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 
 /**
  * Splits a long text paragraph into clean 5-8 word subtitle cards.
@@ -58,14 +58,37 @@ function splitIntoSubtitles(fullText, wordsPerChunk = 6) {
   });
 }
 
-export default function Captions({ text, speaking, status, charIndex = 0 }) {
+export default function Captions({ text, speaking, status, charIndex = 0, activeChunkText = "" }) {
   const [chunkIndex, setChunkIndex] = useState(0);
+  const [holdingText, setHoldingText] = useState("");
   const chunks = useMemo(() => splitIntoSubtitles(text, 6), [text]);
+  const lastSpokenTextRef = useRef("");
 
   // Reset to first chunk on new text
   useEffect(() => {
     setChunkIndex(0);
+    setHoldingText("");
+    lastSpokenTextRef.current = "";
   }, [text]);
+
+  // Track the most recent spoken line and hold 2.5s after speech ends
+  useEffect(() => {
+    if (speaking) {
+      const active = activeChunkText || chunks[chunkIndex]?.text || "";
+      if (active) {
+        lastSpokenTextRef.current = active;
+      }
+      setHoldingText("");
+    } else if (lastSpokenTextRef.current) {
+      const textToHold = lastSpokenTextRef.current;
+      setHoldingText(textToHold);
+      const timer = setTimeout(() => {
+        setHoldingText((prev) => (prev === textToHold ? "" : prev));
+        lastSpokenTextRef.current = "";
+      }, 2500);
+      return () => clearTimeout(timer);
+    }
+  }, [speaking, activeChunkText, chunkIndex, chunks]);
 
   // Real-time synchronization with speech boundary charIndex
   useEffect(() => {
@@ -99,13 +122,24 @@ export default function Captions({ text, speaking, status, charIndex = 0 }) {
   }, [speaking, chunkIndex, chunks, charIndex]);
 
   const activeChunk = chunks[Math.min(chunkIndex, chunks.length - 1)];
-  const displayText = speaking ? (activeChunk?.text || status) : (text || "");
+
+  // Never show the full text while speaking is false. Show the status ("Preparing...") or nothing.
+  // Show each chunk's text when its audio actually starts playing (the audio "playing" event).
+  // Hold the last line 2.5s after speech ends.
+  let displayText = "";
+  if (speaking) {
+    displayText = activeChunkText || activeChunk?.text || status || "";
+  } else if (holdingText) {
+    displayText = holdingText;
+  } else {
+    displayText = status === "Preparing..." ? status : "";
+  }
 
   if (!displayText) return null;
 
   return (
     <div
-      className={`subs-bar ${speaking ? "subs-bar--speaking" : "subs-bar--idle"}`}
+      className={`subs-bar ${(speaking || holdingText) ? "subs-bar--speaking" : "subs-bar--idle"}`}
       aria-live="polite"
       role="region"
       aria-label="Speech Subtitles"

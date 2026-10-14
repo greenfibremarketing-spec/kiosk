@@ -35,12 +35,21 @@ import {
 import { kioskWS } from "@/lib/kioskWebSocket";
 import KioskStepCache, { KIOSK_STEPS } from "@/lib/kioskStepCache";
 import { usePresenceDetection } from "@/lib/presence/usePresenceDetection";
+import { usePresence } from "@/hooks/usePresence";
+import {
+  PRESENCE_CONFIG,
+  ABSENT_SHORT_MS,
+  ABSENT_LONG_MS,
+  CONFIRMATION_TIMEOUT_MS,
+  RESET_DEBOUNCE_MS,
+} from "@/lib/presenceConfig";
 import { useUserSignals } from "@/hooks/useUserSignals";
 import { useMic } from "@/hooks/useMic";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
 import { useSpeech } from "@/hooks/useSpeech";
 import speechConfig from "@/lib/speechConfig";
-import { prefetchAudio } from "@/lib/avatar/GreenieAvatar";
+import { prefetchAudio, prewarmVoiceCache } from "@/lib/avatar/GreenieAvatar";
+import { speechController, warmupSpeech } from "@/lib/avatar/SpeechController";
 
 // Conversation states
 const S = {
@@ -56,11 +65,12 @@ export function useKiosk() {
   const [name, setName]           = useState(() => KioskStepCache.getCustomerName());
   const [category, setCategory]   = useState("all");
   const [productId, setProductId] = useState(null);
-  const [caption, setCaption]     = useState(GREETING);
+  const [caption, setCaption]     = useState("");
   const [speechId, setSpeechId]   = useState(1);
   const sessionIdRef = useRef(KioskStepCache.getOrCreateSessionId());
   const pendingSpeechAckRef = useRef(null);
   const speechAckTimerRef = useRef(null);
+  const activeActionReplyIdRef = useRef(null);
   const [backendAction, setBackendAction] = useState(null);
   const [backendCatalog, setBackendCatalog] = useState([]);
   const [liveTurnProducts, setLiveTurnProducts] = useState([]);
@@ -78,6 +88,10 @@ export function useKiosk() {
   const [hintBubble, setHintBubble] = useState(null);
 
   // Guards & references
+  const greetingDoneRef = useRef(false);
+  const nameDoneRef = useRef(false);
+  const introPlayedRef = useRef(false);
+  const turnsWithSentencesRef = useRef(new Set());
   const nameSubmittedRef = useRef(false);
   const categoriesFallbackTimerRef = useRef(null);
   const catalogRetryCountRef = useRef(0);
@@ -87,7 +101,7 @@ export function useKiosk() {
   const nameRef = useRef(name);
   nameRef.current = name;
 
-  // Preload catalog with retry backoff
+  // Preload catalog with retry backoff & pre-warm voice server cache
   useEffect(() => {
     let active = true;
     async function loadCatalog() {
@@ -101,6 +115,7 @@ export function useKiosk() {
             if (mapped[0]?.id) {
               setProductId((curr) => curr || mapped[0].id);
             }
+            prewarmVoiceCache(mapped);
             return;
           }
         } catch (_) {}
@@ -112,9 +127,20 @@ export function useKiosk() {
     return () => { active = false; };
   }, []);
 
-  // Prefetch initial greeting audio on mount
+  // Pre-warm static voice cache and warm up speech engine on mount
   useEffect(() => {
-    prefetchAudio(GREETING);
+    warmupSpeech();
+    prewarmVoiceCache();
+  }, []);
+
+  // Wire speechController SPEECH_DONE callback
+  useEffect(() => {
+    speechController.onSpeechDone = (speechId) => {
+      console.log(`[Kiosk] SPEECH_DONE emitted by speechController for speech_id: ${speechId}`);
+      pendingSpeechAckRef.current = null;
+      clearTimeout(speechAckTimerRef.current);
+      kioskWS.sendSpeechDone(speechId);
+    };
   }, []);
 
   // ── Conversation state machine ────────────────────────────────────────────
@@ -155,8 +181,94 @@ export function useKiosk() {
   // ── Latest Ref Pattern for zero stale closures across async handlers ───────
   const latestRef = useRef({});
 
-  // ── Presence Hook ────────────────────────────────────────────────────────
-  const presence = usePresenceDetection({
+  // ── Short Gap Identity Verification State ──
+  const [identityPrompt, setIdentityPrompt] = useState({
+    active: false,
+    name: "",
+    promptCount: 1,
+    secondsRemaining: 8,
+  });
+  const identityPromptRef = useRef(identityPrompt);
+  identityPromptRef.current = identityPrompt;
+  const identityTimerRef = useRef(null);
+  const identityIntervalRef = useRef(null);
+
+  // ── Presence State Machine (usePresence fed by FaceLandmarker) ────────────
+  const presenceTracker = usePresence({
+    getName: useCallback(() => nameRef.current || KioskStepCache.getCustomerName(), []),
+    onShortGapReturn: useCallback(({ elapsed, name: returningName }) => {
+      console.log(`[Presence] Short gap return (${elapsed}ms) with name="${returningName}". Initiating verification prompt.`);
+      if (!speechController.isSpeaking()) {
+        const stage = stageRef.current || latestRef.current._stageRef?.current;
+        stage?.speak?.(`Welcome back! Are you still ${returningName}?`);
+        setCaption(`Welcome back! Are you still ${returningName}?`);
+      }
+
+      clearTimeout(identityTimerRef.current);
+      clearInterval(identityIntervalRef.current);
+
+      let secLeft = 8;
+      setIdentityPrompt({
+        active: true,
+        name: returningName,
+        promptCount: 1,
+        secondsRemaining: 8,
+      });
+
+      identityIntervalRef.current = setInterval(() => {
+        secLeft -= 1;
+        setIdentityPrompt((prev) => ({
+          ...prev,
+          secondsRemaining: Math.max(0, secLeft),
+        }));
+      }, 1000);
+
+      identityTimerRef.current = setTimeout(() => {
+        // Attempt 1 expired after 8s: ask again once
+        clearInterval(identityIntervalRef.current);
+        console.log(`[Presence] Verification prompt 1 unanswered after 8s. Repeating prompt once.`);
+        if (!speechController.isSpeaking()) {
+          const st = stageRef.current || latestRef.current._stageRef?.current;
+          st?.speak?.(`Are you still ${returningName}?`);
+          setCaption(`Are you still ${returningName}?`);
+        }
+
+        secLeft = 8;
+        setIdentityPrompt({
+          active: true,
+          name: returningName,
+          promptCount: 2,
+          secondsRemaining: 8,
+        });
+
+        identityIntervalRef.current = setInterval(() => {
+          secLeft -= 1;
+          setIdentityPrompt((prev) => ({
+            ...prev,
+            secondsRemaining: Math.max(0, secLeft),
+          }));
+        }, 1000);
+
+        identityTimerRef.current = setTimeout(() => {
+          // Attempt 2 expired after another 8s: reset session
+          clearInterval(identityIntervalRef.current);
+          console.log(`[Presence] Verification prompt 2 unanswered after 8s. Resetting session.`);
+          setIdentityPrompt({ active: false, name: "", promptCount: 1, secondsRemaining: 8 });
+          latestRef.current.resetSession?.("timeout_unanswered");
+        }, 8000);
+      }, 8000);
+    }, []),
+    onLongGapAbsent: useCallback(({ elapsed }) => {
+      console.log(`[Presence] Long gap absence (${elapsed}ms >= 10s). Resetting session.`);
+      clearTimeout(identityTimerRef.current);
+      clearInterval(identityIntervalRef.current);
+      setIdentityPrompt({ active: false, name: "", promptCount: 1, secondsRemaining: 8 });
+      latestRef.current.resetSession?.("absent_long");
+    }, []),
+  });
+
+  // ── Camera & Hardware Presence Hook ───────────────────────────────────────
+  const cameraPresence = usePresenceDetection({
     onEnterEngaged: useCallback(() => {
       lastFaceAtRef.current = Date.now();
       if (convStateRef.current === S.IDLE) {
@@ -164,12 +276,23 @@ export function useKiosk() {
       }
     }, [setConv]),
     onExitToIdle: useCallback(() => {
-      // The presence hook only reports face movement; fused tracker is single reset authority
       if (convStateRef.current === S.ATTENTIVE) {
         setConv(S.IDLE);
       }
     }, [setConv]),
   });
+
+  // Unified presence object: full backward-compatible props + presenceTracker state
+  const presence = {
+    ...cameraPresence,
+    ...presenceTracker,
+    state:
+      presenceTracker.presenceState === "present" ||
+      presenceTracker.presenceState === "confirming" ||
+      cameraPresence.state === "ENGAGED"
+        ? "ENGAGED"
+        : "IDLE",
+  };
 
   const isEngaged = presence.state === "ENGAGED" || onboardingOpen;
 
@@ -180,12 +303,13 @@ export function useKiosk() {
     }
   }, [isEngaged]);
 
-  // ── Face signals (jaw-open VAD in useUserSignals) ─────────────────────────
+  // ── Face signals (jaw-open VAD in useUserSignals) fed continuously ─────────
   const signals = useUserSignals({
-    videoRef: presence.videoRef,
+    videoRef: cameraPresence.videoRef,
     isEngaged,
     onSpeechStart: useCallback(() => {}, []),
     onSpeechEnd:   useCallback(() => {}, []),
+    onFaceResult:  presenceTracker.handleFaceLandmarks,
   });
 
   // Build the face object expected by useUserSpeechState (reads facePx from ref to avoid re-renders)
@@ -338,36 +462,76 @@ export function useKiosk() {
 
   // ── Say something ────────────────────────────────────────────────────────
   const say = useCallback((text) => {
-    if (!text || typeof text !== "string") return;
-    setCaption(text);
+    if (!text || typeof text !== "string" || !text.trim()) return;
+    const clean = text.trim();
+    setCaption(clean);
     setSpeechId((p) => p + 1);
+    const replyId = `say_${Date.now()}`;
+    speechController.beginReply(replyId, { source: "say" });
+    speechController.appendSentence(replyId, clean, { turnId: replyId });
+    speechController.endReply(replyId);
   }, []);
 
-  // ── Reset session to Step 1 ──────────────────────────────────────────────
-  const reset = useCallback(() => {
+  const lastResetAtRef = useRef(0);
+
+  // ── Reset session to Step 1 (presence-based or manual) ───────────────────
+  const resetSession = useCallback((reason = "unknown") => {
+    const now = Date.now();
+    if (now - lastResetAtRef.current < RESET_DEBOUNCE_MS) {
+      console.log(`[Session] reset debounced (<${RESET_DEBOUNCE_MS}ms since last reset, reason=${reason})`);
+      return;
+    }
+    lastResetAtRef.current = now;
+
+    const oldSession = sessionIdRef.current;
+    const newSession = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
+
+    // Pre-reset flags snapshot log (JSON.stringify)
+    const preSnapshot = {
+      greetingDone: greetingDoneRef.current,
+      nameDone: nameDoneRef.current,
+      introPlayed: introPlayedRef.current,
+      nameSubmitted: nameSubmittedRef.current,
+      pendingSpeechAck: pendingSpeechAckRef.current,
+      cacheStep: KioskStepCache.getCurrentStep(),
+      onboardingStep: latestRef.current.onboardingStep,
+    };
+    console.log(`[Session] reset reason=${reason} oldSession=${oldSession} newSession=${newSession} snapshot=${JSON.stringify(preSnapshot)}`);
+
+    // Clear verification prompt & intervals
+    clearTimeout(identityTimerRef.current);
+    clearInterval(identityIntervalRef.current);
+    setIdentityPrompt({ active: false, name: "", promptCount: 1, secondsRemaining: 8 });
+
     warningDeadlineRef.current = null;
     setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
-    const now = Date.now();
     lastFaceAtRef.current = now;
     lastAttentionAtRef.current = now;
     lastVoiceAtRef.current = now;
     lastInputAtRef.current = now;
 
+    // Reset flags & tracking BEFORE speech or new WS connection
+    greetingDoneRef.current = false;
+    nameDoneRef.current = false;
+    introPlayedRef.current = false;
     nameSubmittedRef.current = false;
+    turnsWithSentencesRef.current.clear();
     clearTimeout(categoriesFallbackTimerRef.current);
-    KioskStepCache.clearCache();
-    setName("");
-    setCategory("all");
-    setProductId(backendCatalog[0]?.id || null);
-    setCaption(GREETING);
 
-    const oldSession = sessionIdRef.current;
-    const newSession = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
-    KioskStepCache.setSessionId(newSession);
-    sessionIdRef.current = newSession;
-    kioskWS.connect(newSession, true);
-    resetBackendSession(oldSession);
+    // Stop speech and clear audio queue immediately via single speechController
+    speechController.cancelAll("session_reset");
+    const stage = stageRef.current || latestRef.current._stageRef?.current;
+    stage?.stop?.("session_reset");
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (typeof window !== "undefined") {
+      try { window.speechSynthesis?.cancel(); } catch (_) {}
+    }
+    setSpeaking(false);
+    convStateRef.current = S.IDLE;
+    setConv(S.IDLE);
 
+    // Drop pending speech acknowledgments & timers
     pendingSpeechAckRef.current = null;
     clearTimeout(speechAckTimerRef.current);
     if (kioskWS.speechDoneTimer) {
@@ -375,9 +539,42 @@ export function useKiosk() {
       kioskWS.speechDoneTimer = null;
     }
     kioskWS.pendingSpeechId = null;
+    kioskWS.currentSpeechId = null;
 
-    // Stop any in-flight TTS so stale replies from old turn never play
-    stageRef.current?.stop();
+    // Remove ONLY this app's storage keys (no sessionStorage.clear()/localStorage.clear())
+    KioskStepCache.clearCache();
+    if (typeof window !== "undefined") {
+      try {
+        for (let i = sessionStorage.length - 1; i >= 0; i--) {
+          const k = sessionStorage.key(i);
+          if (k && (k.startsWith("greenie_") || k.startsWith("kiosk_") || k.includes("session"))) {
+            sessionStorage.removeItem(k);
+          }
+        }
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && (k.startsWith("greenie_") || k.startsWith("kiosk_") || k.includes("session"))) {
+            localStorage.removeItem(k);
+          }
+        }
+      } catch (_) {}
+    }
+    presenceTracker.forceResetPresence();
+
+    setName("");
+    nameRef.current = "";
+    setCategory("all");
+    setProductId(backendCatalog[0]?.id || null);
+    setCaption("");
+
+    // Warm up the AudioContext and Deepgram connection after each reset
+    warmupSpeech();
+
+    // Connect new WebSocket session with auto_greet=1
+    KioskStepCache.setSessionId(newSession);
+    sessionIdRef.current = newSession;
+    kioskWS.connect(newSession, true);
+    resetBackendSession(oldSession);
 
     setBackendAction(null);
     setActionButtons([]);
@@ -392,14 +589,58 @@ export function useKiosk() {
     setShowDetail(false);
     setOnboardingOpen(false);
     setOnboardingStep(1);
-    setSpeechId((p) => p + 1);
-    setConv(S.IDLE);
+    latestRef.current.onboardingStep = 1;
+    setSpeechId(1);
     pendingTranscriptRef.current = "";
     setLastUserSpeech("");
     setLiveTranscript("");
     failureCountRef.current = 0;
     setShowPTT(false);
-  }, [backendCatalog, setConv]);
+
+    // Post-reset flags snapshot log (JSON.stringify)
+    const postSnapshot = {
+      greetingDone: greetingDoneRef.current,
+      nameDone: nameDoneRef.current,
+      introPlayed: introPlayedRef.current,
+      nameSubmitted: nameSubmittedRef.current,
+      cacheStep: KioskStepCache.getCurrentStep(),
+      onboardingStep: 1,
+      speechId: 1,
+      caption: "",
+      appStorageCleared: true,
+    };
+    console.log(`[Session] reset completed. Post-reset flags snapshot: ${JSON.stringify(postSnapshot)}`);
+  }, [backendCatalog, setConv, presenceTracker]);
+
+  const reset = useCallback((reason) => {
+    resetSession(reason || "manual_reset");
+  }, [resetSession]);
+
+  // ── Affirmative identity confirmation (same person returned) ─────────────
+  const confirmIdentity = useCallback(() => {
+    clearTimeout(identityTimerRef.current);
+    clearInterval(identityIntervalRef.current);
+    setIdentityPrompt({ active: false, name: "", promptCount: 1, secondsRemaining: 8 });
+    presenceTracker.confirmSamePerson();
+
+    const stage = stageRef.current || latestRef.current._stageRef?.current;
+    stage?.clearQueue?.("identity_confirmed");
+    const currentName = nameRef.current;
+    const msg = `Great to have you back${currentName ? `, ${currentName}` : ""}! What can I help you with?`;
+    stage?.speak?.(msg);
+    setCaption(msg);
+  }, [presenceTracker]);
+
+  // ── Multiple Faces speech sanitizer ──────────────────────────────────────
+  const sanitizeForMultipleFaces = useCallback((text) => {
+    if (!text || !presenceTracker.multipleFaces) return text;
+    const currentName = nameRef.current || KioskStepCache.getCustomerName();
+    if (!currentName) return text;
+    const escaped = currentName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return text
+      .replace(new RegExp(`\\b(?:Hey|Hi|Hello)\\s+${escaped}[,!.]?`, "gi"), "Hello there,")
+      .replace(new RegExp(`\\b${escaped}\\b`, "gi"), "you");
+  }, [presenceTracker.multipleFaces]);
 
 
   // Connect WebSocket on mount for current session with auto_greet
@@ -468,27 +709,20 @@ export function useKiosk() {
     latestRef.current.reset?.();
   }, []);
 
-  // ── Interrupt avatar speech ────────────────────────────────────────────────
+  // ── Interrupt avatar speech (User Barge-in) ────────────────────────────────
   const interruptAvatar = useCallback(async () => {
+    speechController.cancelAll("user_barge_in");
     abortRef.current?.abort();
     if (typeof window !== "undefined") {
       try { window.speechSynthesis?.cancel(); } catch (_) {}
     }
-    stageRef.current?.stop();
+    const stage = stageRef.current || latestRef.current._stageRef?.current;
+    stage?.stop?.("user_barge_in");
     setSpeaking(false);
     setConv(S.LISTENING);
 
-    const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
-    if (sid) {
-      pendingSpeechAckRef.current = null;
-      clearTimeout(speechAckTimerRef.current);
-      try {
-        const ackRes = await sendSpeechDone(sid, sessionIdRef.current);
-        if (ackRes?.action) {
-          latestRef.current.handleServerAction?.(ackRes.action, ackRes.sales_stage);
-        }
-      } catch (_) {}
-    }
+    pendingSpeechAckRef.current = null;
+    clearTimeout(speechAckTimerRef.current);
   }, [setConv]);
 
   // ── Monotonic Onboarding Navigation: submitName & skipName ─────────────────
@@ -570,17 +804,22 @@ export function useKiosk() {
       setBackendAction(action);
     }
 
+    const actionTurnId = action?.turn_id || kioskWS.currentTurnId || `action_${Date.now()}`;
+    activeActionReplyIdRef.current = actionTurnId;
+
     if (action?.speech_id && action?.awaiting_speech_done) {
+      speechController.beginReply(actionTurnId, { source: "action", speechId: action.speech_id });
       pendingSpeechAckRef.current = action.speech_id;
       clearTimeout(speechAckTimerRef.current);
+      // Safety watchdog: 15s last resort
       speechAckTimerRef.current = setTimeout(() => {
         if (pendingSpeechAckRef.current === action.speech_id) {
-          console.log("[Kiosk] Auto-acknowledging speech_id safety watchdog:", action.speech_id);
+          console.log("[Kiosk] Safety watchdog fallback for speech_id:", action.speech_id);
           const sid = action.speech_id;
           pendingSpeechAckRef.current = null;
           kioskWS.sendSpeechDone(sid);
         }
-      }, 8000);
+      }, 15000);
     }
 
     const isPassedName =
@@ -591,31 +830,50 @@ export function useKiosk() {
     switch (actionType) {
       case "SHOW_GREETING": {
         // Welcome Screen: Avatar speaks greeting, await SPEECH_DONE
-        if (KioskStepCache.hasPassedStep(KIOSK_STEPS.GREETED) || isPassedName) {
-          console.log("[Kiosk] SHOW_GREETING received but greeting or name already completed. Skipping replay.");
-          if (action?.speech_id) {
-            kioskWS.flushSpeechDone(action.speech_id);
-          }
+        const snapshot = {
+          greetingDone: greetingDoneRef.current,
+          nameDone: nameDoneRef.current,
+          introPlayed: introPlayedRef.current,
+          isPassedName,
+          cacheStep: KioskStepCache.getCurrentStep(),
+          onboardingStep: latestRef.current.onboardingStep,
+        };
+        // SHOW_GREETING must never be skipped right after reset. If a skip is ever legitimate, do NOT send SPEECH_DONE from the skip branch.
+        if (greetingDoneRef.current && (KioskStepCache.hasPassedStep(KIOSK_STEPS.GREETED) && isPassedName)) {
+          console.log("[Kiosk] Skipping SHOW_GREETING: greeting or name already completed.", JSON.stringify(snapshot));
           break;
         }
+        greetingDoneRef.current = true;
+        introPlayedRef.current = true;
         latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingOpen(false);
         setShowDetail(false);
         setCartModalOpen(false);
         setQrModalOpen(false);
         setGoodbyeOpen(false);
-        if (action?.speech_id) {
-          kioskWS.currentSpeechId = action.speech_id;
-        }
-        const greetingText = action?.message || action?.prompt || action?.text || GREETING;
-        say(greetingText);
+        const speechId = action?.speech_id || 1;
+        kioskWS.currentSpeechId = speechId;
+        const greetingText = action?.message || action?.prompt || action?.text || "Hi! I'm Greeny. Welcome to Green Fibre.";
+        setCaption(greetingText);
+
+        const replyId = `greeting_${Date.now()}`;
+        speechController.beginReply(replyId, { source: "SHOW_GREETING", speechId });
+        speechController.appendSentence(replyId, greetingText, { speechId, turnId: replyId });
+        speechController.endReply(replyId);
         break;
       }
 
       case "ASK_NAME": {
         // Name Input Modal / Tab
+        const snapshot = {
+          isPassedName,
+          nameDone: nameDoneRef.current,
+          cacheStep: KioskStepCache.getCurrentStep(),
+          cachedName: KioskStepCache.getCustomerName(),
+          onboardingStep: latestRef.current.onboardingStep,
+        };
         if (isPassedName) {
-          console.log("[Kiosk] ASK_NAME received but name step already completed. Bypassing prompt.");
+          console.log("[Kiosk] Skipping ASK_NAME: name step already completed. Bypassing prompt.", JSON.stringify(snapshot));
           const cachedName = KioskStepCache.getCustomerName() || latestRef.current.name;
           if (cachedName) {
             kioskWS.sendSetName(cachedName);
@@ -626,6 +884,7 @@ export function useKiosk() {
           setOnboardingOpen(true);
           break;
         }
+        nameDoneRef.current = true;
         latestRef.current.presence?.triggerTouchEngaged?.();
         setOnboardingStep(1);
         setOnboardingOpen(true);
@@ -637,7 +896,13 @@ export function useKiosk() {
         }
         const promptText = action?.prompt || action?.message || action?.text;
         if (promptText && typeof promptText === "string" && promptText.trim().length > 0) {
-          say(promptText.trim());
+          const cleanPrompt = promptText.trim();
+          setCaption(cleanPrompt);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "ask_name";
+          if (speechController.getEnqueuedCount(activeTid) === 0) {
+            speechController.appendSentence(activeTid, cleanPrompt, { turnId: activeTid, speechId: action?.speech_id });
+            speechController.endReply(activeTid);
+          }
         }
         break;
       }
@@ -656,8 +921,13 @@ export function useKiosk() {
         }
         const msg = action?.message || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
-          stageRef.current?.clearQueue?.("superseded_by_new_reply");
-          say(msg.trim());
+          const cleanMsg = msg.trim();
+          setCaption(cleanMsg);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_categories";
+          if (speechController.getEnqueuedCount(activeTid) === 0) {
+            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+            speechController.endReply(activeTid);
+          }
         }
         break;
       }
@@ -704,8 +974,13 @@ export function useKiosk() {
 
         const msg = action?.message || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
-          stageRef.current?.clearQueue?.("superseded_by_new_reply");
-          say(msg.trim());
+          const cleanMsg = msg.trim();
+          setCaption(cleanMsg);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_products";
+          if (speechController.getEnqueuedCount(activeTid) === 0) {
+            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+            speechController.endReply(activeTid);
+          }
         }
         break;
       }
@@ -749,8 +1024,13 @@ export function useKiosk() {
 
         const msg = action?.message || action?.blurb || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
-          stageRef.current?.clearQueue?.("superseded_by_new_reply");
-          say(msg.trim());
+          const cleanMsg = msg.trim();
+          setCaption(cleanMsg);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_product";
+          if (speechController.getEnqueuedCount(activeTid) === 0) {
+            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+            speechController.endReply(activeTid);
+          }
         }
         break;
       }
@@ -773,8 +1053,13 @@ export function useKiosk() {
         });
         const msg = action?.message;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
-          stageRef.current?.clearQueue?.("superseded_by_new_reply");
-          say(msg.trim());
+          const cleanMsg = msg.trim();
+          setCaption(cleanMsg);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "confirm_buy";
+          if (speechController.getEnqueuedCount(activeTid) === 0) {
+            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+            speechController.endReply(activeTid);
+          }
         }
         break;
       }
@@ -798,8 +1083,13 @@ export function useKiosk() {
         });
         const msg = action?.message;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
-          stageRef.current?.clearQueue?.("superseded_by_new_reply");
-          say(msg.trim());
+          const cleanMsg = msg.trim();
+          setCaption(cleanMsg);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "checkout_handoff";
+          if (speechController.getEnqueuedCount(activeTid) === 0) {
+            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+            speechController.endReply(activeTid);
+          }
         }
         break;
       }
@@ -814,16 +1104,26 @@ export function useKiosk() {
           autoResetAfterMs: action?.auto_reset_after_ms || 4000,
         });
         const msg = action?.message || "Thank you, have a great day!";
-        stageRef.current?.clearQueue?.("superseded_by_new_reply");
-        say(msg);
+        const cleanMsg = msg.trim();
+        setCaption(cleanMsg);
+        const activeTid = actionTurnId || kioskWS.currentTurnId || "goodbye";
+        if (speechController.getEnqueuedCount(activeTid) === 0) {
+          speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+          speechController.endReply(activeTid);
+        }
         break;
       }
 
       case "REQUEST_HUMAN": {
-        setStaffBanner(action?.message || "A store associate is on the way.");
         const msg = action?.message || "A store associate is on the way.";
-        stageRef.current?.clearQueue?.("superseded_by_new_reply");
-        say(msg);
+        const cleanMsg = msg.trim();
+        setStaffBanner(cleanMsg);
+        setCaption(cleanMsg);
+        const activeTid = actionTurnId || kioskWS.currentTurnId || "request_human";
+        if (speechController.getEnqueuedCount(activeTid) === 0) {
+          speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+          speechController.endReply(activeTid);
+        }
         break;
       }
 
@@ -873,14 +1173,12 @@ export function useKiosk() {
 
     // Streamed sentence listener: start TTS immediately for each completed sentence
     const unsubSentence = kioskWS.on("sentence", (sentence, turnId) => {
-      console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${turnId || "N/A"} text="${sentence.slice(0, 50)}"`);
+      const activeTurnKey = activeActionReplyIdRef.current || turnId || kioskWS.currentTurnId || "turn_default";
+      turnsWithSentencesRef.current.add(activeTurnKey);
+      console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${activeTurnKey} text="${sentence.slice(0, 50)}"`);
       setConv(S.SPEAKING);
-      const stage = stageRef.current || latestRef.current._stageRef?.current;
-      if (stage && typeof stage.enqueueSentence === "function") {
-        stage.enqueueSentence(sentence, { turnId });
-      } else {
-        console.warn(`[Kiosk] Dropping sentence: stage not ready (sentence="${sentence.slice(0, 30)}")`);
-      }
+      const textToSpeak = sanitizeForMultipleFaces(sentence);
+      speechController.appendSentence(activeTurnKey, textToSpeak, { turnId: activeTurnKey });
     });
 
     const unsubDone = kioskWS.on("done", (doneData) => {
@@ -888,24 +1186,20 @@ export function useKiosk() {
       if (doneData?.action || doneData?.salesStage) {
         handleServerAction(doneData.action, doneData.salesStage);
       }
+      const turnId = activeActionReplyIdRef.current || doneData?.turnId || doneData?.meta?.turn_id || kioskWS.currentTurnId || "turn_default";
+      speechController.endReply(turnId);
+
       if (doneData?.reply && typeof doneData.reply === "string" && doneData.reply.trim().length > 0) {
-        const turnId = doneData?.turnId || doneData?.meta?.turn_id;
-        const replyText = doneData.reply.trim();
+        const replyText = sanitizeForMultipleFaces(doneData.reply.trim());
         setCaption(replyText);
 
-        const stage = stageRef.current || latestRef.current._stageRef?.current;
-        if (stage) {
-          const avatar = stage.getInstance?.();
-          // If sentences were already streamed or are currently queued/playing, just signal stream finish
-          if (avatar && (avatar.isSpeaking?.() || avatar.speechQueue?.length > 0)) {
-            stage.finishTurn?.(turnId);
-          } else {
-            // Unstreamed turn (single full reply): speak through queue
-            lastSpokenTurnIdRef.current = turnId;
-            stage.speak(replyText, { turnId });
-          }
+        const enqueuedCount = speechController.getEnqueuedCount(turnId);
+        if (enqueuedCount === 0) {
+          console.log(`[Kiosk] Fallback: No sentence enqueued for turn=${turnId}. Calling speechController.appendSentence.`);
+          speechController.appendSentence(turnId, replyText, { turnId });
+          speechController.endReply(turnId);
         } else {
-          say(replyText);
+          console.log(`[Kiosk] Streamed sentences already enqueued (${enqueuedCount}) for turn=${turnId}. Skipping fallback.`);
         }
       }
     });
@@ -916,7 +1210,7 @@ export function useKiosk() {
 
     const unsubAutoReset = kioskWS.on("auto_reset", (msg) => {
       if (!isEngaged && !onboardingOpen && !nameRef.current && !KioskStepCache.getCustomerName()) {
-        latestRef.current.reset?.();
+        latestRef.current.resetSession?.("auto_reset");
       }
     });
 
@@ -977,9 +1271,29 @@ export function useKiosk() {
       }
     }
 
-    // ── Spoken restart intent ──
-    if (/^(?:restart|start over|reset|new session)$/i.test(trimmed)) {
-      latestRef.current.restartSession?.();
+    // ── Spoken answers during identity verification (Step 3) ──
+    if (latestRef.current.identityPrompt?.active) {
+      if (/^(?:yes|yeah|yep|correct|that's me|i am|right|sure|it is|it's me)\b/i.test(trimmed)) {
+        console.log("[Presence] Voice affirmative verification received:", trimmed);
+        latestRef.current.confirmIdentity?.();
+        return;
+      }
+      if (/^(?:no|nope|nah|not me|i am not|i'm not|someone new|different person|new customer|new)\b/i.test(trimmed)) {
+        console.log("[Presence] Voice rejection / different person received:", trimmed);
+        latestRef.current.resetSession?.("different_person");
+        return;
+      }
+    }
+
+    // ── Spoken restart / identity override intent (Step 7) ──
+    const activeName = latestRef.current.name || KioskStepCache.getCustomerName() || "";
+    const escapedName = activeName ? activeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
+    const notNamePattern = escapedName ? `(?:i am not|i'm not|not)\\s+${escapedName}|` : "";
+    const isOverrideIntent = new RegExp(`^(?:${notNamePattern}i am someone else|i'm someone else|someone else|someone new|different person|new customer|start over|restart|reset|that's not me|not me)$`, "i").test(trimmed);
+
+    if (isOverrideIntent) {
+      console.log("[Kiosk] Spoken identity override detected:", trimmed);
+      latestRef.current.resetSession?.("user_speech");
       return;
     }
 
@@ -999,9 +1313,10 @@ export function useKiosk() {
     stage?.startTurn?.("turn_" + Date.now());
 
     try {
+      const effectiveName = latestRef.current.multipleFaces ? "" : String(nameRef.current ?? "");
       const data = await replyAsync({
         text: String(text ?? ""),
-        name: String(nameRef.current ?? ""),
+        name: effectiveName,
         sessionId: sessionIdRef.current,
         signals: signalsSnap,
         signal: abortRef.current.signal,
@@ -1231,35 +1546,12 @@ export function useKiosk() {
     };
   }, [isEngaged, setConv]);
 
-  // ── Avatar speaking → update conv state + acknowledge speech done ────────
+  // ── Avatar speaking → update conv state ──────────────────────────────────
   const handleSpeakingChange = useCallback((isSpeaking) => {
     setSpeaking(isSpeaking);
     if (!isSpeaking) {
       if (convStateRef.current === S.SPEAKING) {
         setConv(S.ATTENTIVE);
-      }
-
-      const stage = latestRef.current._stageRef?.current;
-      const isQueueEmpty = !stage || (typeof stage.isQueueEmpty === "function" ? stage.isQueueEmpty() : true);
-
-      if (isQueueEmpty) {
-        const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
-        if (sid) {
-          console.log(`[Kiosk] All queued sentences finished playing. Sending SPEECH_DONE for sid: ${sid}`);
-          pendingSpeechAckRef.current = null;
-          clearTimeout(speechAckTimerRef.current);
-          kioskWS.sendSpeechDone(sid);
-        }
-      } else if (stage && typeof stage.onQueueEmpty === "function") {
-        stage.onQueueEmpty(() => {
-          const sid = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
-          if (sid) {
-            console.log(`[Kiosk] All queued sentences finished playing (onQueueEmpty). Sending SPEECH_DONE for sid: ${sid}`);
-            pendingSpeechAckRef.current = null;
-            clearTimeout(speechAckTimerRef.current);
-            kioskWS.sendSpeechDone(sid);
-          }
-        });
       }
     }
   }, [setConv]);
@@ -1308,7 +1600,6 @@ export function useKiosk() {
   const selectCategory = useCallback((cat) => {
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
-    stageRef.current?.clearQueue?.("superseded_by_new_reply");
     const rawId = typeof cat === "string" ? cat : (cat?.id || "all");
     const cleanId = normalizeCategory(rawId);
     const catObj = categories.find((c) => c.id === cleanId || c.id === rawId);
@@ -1331,7 +1622,6 @@ export function useKiosk() {
   const selectProduct = useCallback((p) => {
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
-    stageRef.current?.clearQueue?.("superseded_by_new_reply");
     setProductId(p.id);
     setShowDetail(true);
     setOnboardingOpen(false);
@@ -1341,7 +1631,6 @@ export function useKiosk() {
 
   const showAll = useCallback(() => {
     lastInputAtRef.current = Date.now();
-    stageRef.current?.clearQueue?.("superseded_by_new_reply");
     setCategory("all");
     setShowDetail(false);
     setOnboardingOpen(false);
@@ -1453,6 +1742,11 @@ export function useKiosk() {
     sessionId: sessionIdRef.current,
     say,
     reset,
+    resetSession,
+    identityPrompt,
+    confirmIdentity,
+    multipleFaces: presence.multipleFaces,
+    setCaption,
     submitName,
     skipName,
     showAll,
@@ -1498,6 +1792,9 @@ export function useKiosk() {
     setShowDetail,
     enquire,
     reset,
+    resetSession,
+    identityPrompt,
+    confirmIdentity,
     handleButtonClick,
     cartModalOpen,
     setCartModalOpen,

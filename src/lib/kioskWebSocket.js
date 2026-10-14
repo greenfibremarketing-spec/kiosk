@@ -105,15 +105,15 @@ class KioskWebSocketClient {
     this.sessionId = resolvedSessionId;
     KioskStepCache.setSessionId(resolvedSessionId);
 
-    // If already greeted in this session, do not request auto_greet again!
-    const isAlreadyGreeted = KioskStepCache.hasPassedStep(KIOSK_STEPS.GREETED);
-    const shouldAutoGreet = autoGreet && !isAlreadyGreeted;
+    // shouldAutoGreet = Boolean(autoGreet) when the caller explicitly requests it
+    const shouldAutoGreet = Boolean(autoGreet);
 
     const wsUrl = getWsUrl(this.sessionId, KIOSK_ID, shouldAutoGreet);
 
     try {
       console.log(`[FRONTEND >> WS CONNECT] Connecting (${CURRENT_ENV}) to:`, wsUrl, `[autoGreet=${shouldAutoGreet}, step=${KioskStepCache.getCurrentStep()}]`);
       this.ws = new WebSocket(wsUrl);
+      this.ws.sessionId = resolvedSessionId;
 
       this.ws.onopen = () => {
         this.connected = true;
@@ -182,9 +182,22 @@ class KioskWebSocketClient {
 
   // ── Incoming Frame Parser ──
   handleMessage(event) {
+    // Guard: ignore messages from old/closed sockets
+    if (event.target && event.target !== this.ws) {
+      console.log(`[KioskWS] Dropping late frame from closed socket (sockSession=${event.target?.sessionId}, currentSession=${this.sessionId})`);
+      return;
+    }
+
     try {
       const payload = JSON.parse(event.data);
       const { type, data, meta, metadata } = payload;
+
+      // Check session ID if present in payload or meta to drop stale messages from previous session
+      const incomingSession = payload.session_id || payload.sessionId || meta?.session_id;
+      if (incomingSession && incomingSession !== this.sessionId) {
+        console.log(`[KioskWS] Dropping late frame for session mismatch (msgSession=${incomingSession}, currentSession=${this.sessionId})`);
+        return;
+      }
 
       // Extract action data whether structured as type="action" or top-level action payload
       const actionData = (type === "action" || payload.action || data?.action)
