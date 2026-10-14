@@ -85,6 +85,7 @@ export function useKiosk() {
   const activeActionReplyIdRef = useRef(null);
   const [backendAction, setBackendAction] = useState(null);
   const [backendCatalog, setBackendCatalog] = useState([]);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
   const [liveTurnProducts, setLiveTurnProducts] = useState([]);
   const [showDetail, setShowDetail]       = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -118,6 +119,7 @@ export function useKiosk() {
   useEffect(() => {
     let active = true;
     async function loadCatalog() {
+      setIsLoadingCatalog(true);
       for (let attempt = 0; attempt <= 2; attempt++) {
         try {
           const data = await fetchBackendProducts();
@@ -129,11 +131,15 @@ export function useKiosk() {
               setProductId((curr) => curr || mapped[0].id);
             }
             prewarmVoiceCache(mapped);
+            setIsLoadingCatalog(false);
             return;
           }
         } catch (_) {}
         if (!active) return;
         await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+      }
+      if (active) {
+        setIsLoadingCatalog(false);
       }
     }
     loadCatalog();
@@ -2484,6 +2490,9 @@ export function useKiosk() {
     categories,
     product,
     products,
+    catalog: backendCatalog,
+    isLoadingCatalog,
+    isLoading: isLoadingCatalog,
     name: identityMasked ? "" : name,
     rawName: name,
     identityMasked,

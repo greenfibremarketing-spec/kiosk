@@ -3,6 +3,7 @@ import React, { useState, useEffect } from "react";
 import CategoryTabs from "./CategoryTabs";
 import ProductCard from "./ProductCard";
 import ProductDetailPage from "./ProductDetailPage";
+import ProductSkeletonGrid from "./ProductSkeletonGrid";
 import CheckoutPage from "../checkout/CheckoutPage";
 import OrderSuccessPage from "../checkout/OrderSuccessPage";
 import RightNavbar from "@/components/navigation/RightNavbar";
@@ -12,6 +13,8 @@ export default function ProductShowcase({
   categories = [],
   product,
   products = [],
+  catalog = [],
+  isLoading = false,
   onCategory,
   onSelect,
   showDetail = false,
@@ -116,8 +119,8 @@ export default function ProductShowcase({
               </p>
             </div>
             <div className="showcase__counter-badge">
-              <span className={products?.length > 0 ? "dot-green" : "dot-gray"} />
-              <span>{products?.length || 0} Products</span>
+              <span className={isLoading ? "dot-pulsing" : (products?.length > 0 ? "dot-green" : "dot-gray")} />
+              <span>{isLoading ? "Loading collection..." : `${products?.length || 0} Products`}</span>
             </div>
           </header>
 
@@ -126,12 +129,14 @@ export default function ProductShowcase({
             active={category}
             onSelect={onCategory}
             categories={activeCats}
-            products={products}
+            products={catalog?.length ? catalog : products}
           />
 
           {/* Main Product Listing Grid */}
           <div className="products-grid-wrapper">
-            {products && products.length > 0 ? (
+            {isLoading ? (
+              <ProductSkeletonGrid count={8} />
+            ) : products && products.length > 0 ? (
               <div className="products-grid">
                 {products.map((p) => (
                   <ProductCard

@@ -1,3 +1,19 @@
+"use client";
+import React from "react";
+
+const CATEGORY_ICONS = {
+  all: "✨",
+  bottle: "🍶",
+  drinkware: "☕",
+  "kitchen & dining": "🍽️",
+  "kitchen-dining": "🍽️",
+  planter: "🪴",
+  tableware: "🥢",
+  storage: "📦",
+  "gift boxes & hampers": "🎁",
+  "gift-boxes": "🎁",
+};
+
 export default function CategoryTabs({
   active,
   onSelect,
@@ -17,12 +33,21 @@ export default function CategoryTabs({
     }).length;
   };
 
+  const getIcon = (cat) => {
+    if (!cat) return null;
+    const idKey = String(cat.id || "").toLowerCase().trim();
+    const nameKey = String(cat.label || cat.name || "").toLowerCase().trim();
+    return CATEGORY_ICONS[idKey] || CATEGORY_ICONS[nameKey] || cat.icon || null;
+  };
+
   return (
     <div className="category-tabs-container">
       <div className="chips category-chips" role="tablist" aria-label="Product Categories">
         {categories.map((c) => {
-          const isSelected = c.id === active;
+          const isSelected = String(c.id).toLowerCase() === String(active || "").toLowerCase();
           const count = getCount(c.id);
+          const icon = getIcon(c);
+
           return (
             <button
               key={c.id}
@@ -32,8 +57,11 @@ export default function CategoryTabs({
               className={`chip chip--dark ${isSelected ? "chip--active" : ""}`}
               onClick={() => onSelect(c)}
             >
+              {icon && <span className="tab-icon" aria-hidden="true">{icon}</span>}
               <span className="tab-label">{c.label || c.name}</span>
-              <span className="tab-count">{count}</span>
+              <span className={`tab-count ${count === 0 ? "tab-count--zero" : ""}`}>
+                {count}
+              </span>
             </button>
           );
         })}

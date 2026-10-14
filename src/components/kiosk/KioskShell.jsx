@@ -98,6 +98,8 @@ export default function KioskShell() {
           categories={k.categories}
           product={k.product}
           products={k.products}
+          catalog={k.catalog}
+          isLoading={k.isLoadingCatalog}
           onCategory={k.selectCategory}
           onSelect={k.selectProduct}
           onEnquire={k.enquire}

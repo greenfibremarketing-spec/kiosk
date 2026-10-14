@@ -74,17 +74,47 @@
   background: #94a3b8;
 }
 
-/* Category Tabs */
+.dot-pulsing {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #00A63E;
+  animation: dot-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes dot-pulse {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* Category Tabs (Luxury Boutique Horizontal Filter Bar) */
 .category-tabs-container {
   display: flex;
+  align-items: center;
+  width: 100%;
   overflow-x: auto;
-  padding-bottom: 4px;
+  overflow-y: hidden;
+  padding: 4px 2px 10px 2px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.category-tabs-container::-webkit-scrollbar {
+  display: none;
 }
 
 .category-chips {
-  display: flex;
+  display: inline-flex;
   flex-wrap: nowrap;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
 }
 
 /* Main Products Grid */
@@ -139,6 +169,86 @@
 .luxury-card--active {
   border-color: #00A63E;
   box-shadow: 0 0 0 2px rgba(0, 166, 62, 0.28), 0 10px 24px rgba(0, 166, 62, 0.12);
+}
+
+/* ==============================================================================
+   PRODUCT CARD SKELETON LOADER
+   ============================================================================== */
+.luxury-card--skeleton {
+  pointer-events: none;
+  cursor: default;
+  border-color: #eee7db;
+  box-shadow: 0 2px 8px rgba(25, 45, 32, 0.03);
+  position: relative;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.skeleton-media {
+  background: #f7f3ea;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.skeleton-placeholder-circle {
+  width: 52%;
+  height: 52%;
+  border-radius: 50%;
+  background: #ede6d6;
+  opacity: 0.6;
+}
+
+.skeleton-line {
+  background: #ede7d9;
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-title {
+  height: 15px;
+  width: 84%;
+  margin-bottom: 8px;
+}
+
+.skeleton-title-sub {
+  height: 12px;
+  width: 48%;
+  margin-bottom: 12px;
+}
+
+.skeleton-price {
+  height: 22px;
+  width: 42%;
+  border-radius: 999px;
+  background: #e2f0e6;
+}
+
+.skeleton-shimmer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.65) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: skeleton-shimmer-wave 1.6s infinite ease-in-out;
+}
+
+@keyframes skeleton-shimmer-wave {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 /* Media Box */
