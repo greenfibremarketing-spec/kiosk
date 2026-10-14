@@ -102,6 +102,16 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     }
   }, [config.touchKeepEngagedMs, onEnterEngaged, state, updateMainState]);
 
+  // Force reset state to IDLE on session reset
+  const forceResetToIdle = useCallback(() => {
+    touchExpiryRef.current = 0;
+    dwellStartRef.current = null;
+    graceStartRef.current = null;
+    smoothDistanceRef.current = 150;
+    consecutiveMissesRef.current = 0;
+    updateMainState("IDLE");
+  }, [updateMainState]);
+
   // Calibration helper: when C is pressed in debug mode
   const calibrate100Cm = useCallback(async () => {
     const currentPx = debugStatsRef.current.facePx;
@@ -448,6 +458,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     debugStats,
     cameraError,
     triggerTouchEngaged,
+    forceResetToIdle,
     setDebugOpen,
     calibrate100Cm,
     lastFaceAtRef,

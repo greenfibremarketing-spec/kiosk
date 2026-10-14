@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import { compareBurst, hasEnrolled } from "@/lib/presence/faceIdentity";
 
 const BASELINE_EVERY_MS = 1000;
-const JUMP_RATIO = 0.35; // face center/size changed by 35% between ticks = suspicious
+const JUMP_RATIO = 0.6; // face center/size changed by 60% between ticks = suspicious
 const MAX_UNSURE_RETRIES = 2;
 
 export function useFaceGuard({
@@ -45,6 +45,16 @@ export function useFaceGuard({
       st.checking = false;
     }
   }
+
+  // Reset guard state whenever active changes (e.g. across resets or after enrollment)
+  useEffect(() => {
+    const st = s.current;
+    st.lostAt = 0;
+    st.visible = true;
+    st.strikes = 0;
+    st.lastBox = null;
+    st.checking = false;
+  }, [active]);
 
   // Trigger A: face lost -> face back (any gap length)
   useEffect(() => {

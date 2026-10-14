@@ -46,12 +46,13 @@ async function getHuman() {
         backend: "webgl",
         debug: false,
         cacheModels: false,
+        skipAllowed: false,
         face: {
           enabled: true,
           detector: { rotation: false, maxDetected: 1, minConfidence: 0.5 },
           mesh: { enabled: true },
           iris: { enabled: false },
-          description: { enabled: true },
+          description: { enabled: true, skipFrames: 0, skipTime: 0 },
           emotion: { enabled: false },
           antispoof: { enabled: false },
           liveness: { enabled: false },
@@ -143,6 +144,29 @@ export function clearFace() {
 }
 
 /**
+ * Capture a copy of the current in-memory gallery before clearing.
+ * RAM only.
+ */
+export function snapshotFace() {
+  return gallery && gallery.length > 0 ? [...gallery] : null;
+}
+
+/**
+ * Restore in-memory gallery from a previously saved snapshot.
+ */
+export function restoreGallery(savedGallery) {
+  if (Array.isArray(savedGallery) && savedGallery.length > 0) {
+    gallery = [...savedGallery];
+    if (FACE_ID_DEBUG) {
+      console.log(`[FaceID] Face gallery restored (${gallery.length} embeddings)`);
+    }
+    return true;
+  }
+  gallery = [];
+  return false;
+}
+
+/**
  * Enroll face by capturing up to 6 good samples across 12 attempts
  * spread over time (~200ms) to capture different natural head poses.
  */
@@ -165,15 +189,20 @@ export async function enrollFace(video) {
 }
 
 /**
- * One reading: best match against the whole gallery of head poses.
+ * Match a single reading against a specific gallery.
  */
-async function compareOnce(video) {
+async function compareOnceWithGallery(video, targetGallery) {
   const h = await getHuman();
-  if (!h) return { status: "unsure", similarity: null, faceCount: 0 };
+  if (!h || !targetGallery || !targetGallery.length) {
+    return { status: "unsure", similarity: null, faceCount: 0 };
+  }
   const { face, count, notFrontal } = await readFace(video);
-  if (!face) return { status: notFrontal ? "unsure" : "no_face", similarity: null, faceCount: count };
+  if (!face) {
+    return { status: notFrontal ? "unsure" : "no_face", similarity: null, faceCount: count };
+  }
 
-  const similarity = Math.max(...gallery.map((g) => h.match.similarity(g, face.embedding)));
+  const similarity = Math.max(...targetGallery.map((g) => h.match.similarity(g, face.embedding)));
+  console.log(`[FaceID] sim=${similarity.toFixed(3)}`);
   let status = "unsure";
   if (similarity >= FACE_SAME_MIN) status = "same";
   else if (similarity <= FACE_DIFFERENT_MAX) status = "different";
@@ -181,28 +210,57 @@ async function compareOnce(video) {
 }
 
 /**
- * 3 quick readings, majority vote. Far more reliable than a single frame.
+ * One reading against the active session gallery.
  */
-export async function compareBurst(video, n = 3, gapMs = 120) {
-  if (!gallery.length) return { status: "unsure", votes: {} };
+async function compareOnce(video) {
+  return compareOnceWithGallery(video, gallery);
+}
+
+/**
+ * Compare face against a target gallery with n-frame burst and majority voting.
+ * Used for both returning customer recognition (without changing active gallery)
+ * and active session face guard.
+ */
+export async function compareToGallery(video, targetGallery, n = 3, gapMs = 80) {
+  if (!targetGallery || !targetGallery.length) return { status: "unsure", votes: {} };
   const votes = { same: 0, different: 0, other: 0 };
   let last = null;
   for (let i = 0; i < n; i++) {
     try {
-      last = await compareOnce(video);
+      last = await compareOnceWithGallery(video, targetGallery);
       if (last.status === "same") votes.same++;
       else if (last.status === "different") votes.different++;
       else votes.other++;
     } catch {
       votes.other++;
     }
-    await new Promise((r) => setTimeout(r, gapMs));
+
+    // Return EARLY as soon as the first 2 readings agree
+    if (votes.same >= 2) {
+      console.log(`[FaceID] compareToGallery early same ${JSON.stringify(votes)} lastSim=${last?.similarity?.toFixed(2)}`);
+      return { status: "same", votes, similarity: last?.similarity ?? null };
+    }
+    if (votes.different >= 2) {
+      console.log(`[FaceID] compareToGallery early different ${JSON.stringify(votes)} lastSim=${last?.similarity?.toFixed(2)}`);
+      return { status: "different", votes, similarity: last?.similarity ?? null };
+    }
+
+    if (i < n - 1) {
+      await new Promise((r) => setTimeout(r, gapMs));
+    }
   }
   let status = "unsure";
   if (votes.different >= 2 && votes.same === 0) status = "different";
   else if (votes.same >= 2 && votes.different === 0) status = "same";
-  console.log(`[FaceID] burst ${JSON.stringify(votes)} lastSim=${last?.similarity?.toFixed(2)} -> ${status}`);
+  console.log(`[FaceID] compareToGallery burst ${JSON.stringify(votes)} lastSim=${last?.similarity?.toFixed(2)} -> ${status}`);
   return { status, votes, similarity: last?.similarity ?? null };
+}
+
+/**
+ * 3 quick readings, majority vote against active gallery.
+ */
+export async function compareBurst(video, n = 3, gapMs = 120) {
+  return compareToGallery(video, gallery, n, gapMs);
 }
 
 /**

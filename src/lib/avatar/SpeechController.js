@@ -216,7 +216,10 @@ export class SpeechController {
       const nowTs = Date.now();
       this.recentEnqueued = this.recentEnqueued.filter((e) => nowTs - e.t < 15000);
       const recentText = this.recentEnqueued.map((e) => e.norm).join(" ");
-      if (flatNorm.length >= 6 && recentText.includes(flatNorm)) {
+      const isShortEcho =
+        flatNorm.length < 6 &&
+        this.recentEnqueued.some((e) => e.norm.startsWith(flatNorm + " "));
+      if ((flatNorm.length >= 6 && recentText.includes(flatNorm)) || isShortEcho) {
         console.log(`[SpeechController] Skipping repeated line: "${chunk.slice(0, 40)}" (replyId=${rid})`);
         continue;
       }

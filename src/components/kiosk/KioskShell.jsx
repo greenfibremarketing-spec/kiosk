@@ -57,7 +57,7 @@ export default function KioskShell() {
         presenceState={k.presence.state}
         convState={k.convState}
         userSpeaking={k.userSpeaking}
-        onTap={k.presence.triggerTouchEngaged}
+        onTap={() => k.presence.triggerTouchEngaged("screen_touch")}
         videoRef={k.presence.videoRef}
         debugOpen={k.presence.debugOpen}
         debugStats={k.presence.debugStats}

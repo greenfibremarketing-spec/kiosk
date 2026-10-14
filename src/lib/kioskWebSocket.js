@@ -86,6 +86,10 @@ class KioskWebSocketClient {
   connect(sessionId = null, autoGreet = true) {
     if (typeof window === "undefined") return;
 
+    // Clear "manually disconnected / no auto-reconnect" flag every time connect is called
+    this.explicitlyDisconnected = false;
+    this.isEngaged = true;
+
     const resolvedSessionId = sessionId || KioskStepCache.getOrCreateSessionId();
 
     // If already connected to the requested session, skip reconnecting
@@ -97,9 +101,6 @@ class KioskWebSocketClient {
     ) {
       return;
     }
-
-    this.explicitlyDisconnected = false;
-    this.isEngaged = true;
 
     // Close previous session connection if session changed
     this.staleTurns.clear();
@@ -203,6 +204,82 @@ class KioskWebSocketClient {
     this.sessionId = null;
     this.emit("status", { connected: false, sessionId: null });
     console.log("[KioskWS] Explicitly disconnected. Auto-reconnect disabled until next engagement.");
+  }
+
+  // ── Wait for WebSocket to reach readyState === OPEN ──
+  async waitForOpen(timeoutMs = 3000) {
+    const start = Date.now();
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const elapsed = Date.now() - start;
+      console.log(`[KioskWS] open after ${elapsed}ms`);
+      return true;
+    }
+
+    return new Promise((resolve) => {
+      let timer = null;
+      let checkInterval = null;
+      let unsub = null;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (checkInterval) {
+          clearInterval(checkInterval);
+          checkInterval = null;
+        }
+        if (unsub) {
+          unsub();
+          unsub = null;
+        }
+      };
+
+      timer = setTimeout(() => {
+        cleanup();
+        console.warn(`[KioskWS] waitForOpen timed out after ${timeoutMs}ms`);
+        resolve(false);
+      }, timeoutMs);
+
+      const check = () => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          const elapsed = Date.now() - start;
+          cleanup();
+          console.log(`[KioskWS] open after ${elapsed}ms`);
+          resolve(true);
+        }
+      };
+
+      unsub = this.on("status", (s) => {
+        if (s?.connected) {
+          check();
+        }
+      });
+
+      checkInterval = setInterval(check, 25);
+      check();
+    });
+  }
+
+  // ── Wait for next "done" event (used for sequential stage replay during restore) ──
+  waitForDone(timeoutMs = 4000) {
+    return new Promise((resolve) => {
+      let finished = false;
+      let offDone = () => {};
+      let offErr = () => {};
+      let timer = null;
+      const finish = (ok) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        offDone();
+        offErr();
+        resolve(ok);
+      };
+      offDone = this.on("done", () => finish(true));
+      offErr = this.on("error", () => finish(false));
+      timer = setTimeout(() => finish(false), timeoutMs);
+    });
   }
 
   startHeartbeat() {
@@ -681,7 +758,7 @@ class KioskWebSocketClient {
 
   // Every user-initiated frame (tap / typed message) goes through here
   _dispatchUserFrame(frame, turnId, label) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || (this.ws.readyState !== WebSocket.OPEN && this.ws.readyState !== WebSocket.CONNECTING)) {
       console.warn(`[KioskWS] WebSocket not open when sending ${label}:`, frame);
       return;
     }
@@ -703,6 +780,14 @@ class KioskWebSocketClient {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         console.log(`[KioskWS] Sending ${label} frame:`, frame);
         this.ws.send(JSON.stringify(frame));
+      } else if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+        console.log(`[KioskWS] Queueing ${label} frame until WebSocket opens:`, frame);
+        const onOpenHandler = () => {
+          this.ws?.removeEventListener?.("open", onOpenHandler);
+          console.log(`[KioskWS] Sending queued ${label} frame:`, frame);
+          this.ws?.send?.(JSON.stringify(frame));
+        };
+        this.ws.addEventListener("open", onOpenHandler);
       }
     };
     delayMs ? setTimeout(send, delayMs) : send();

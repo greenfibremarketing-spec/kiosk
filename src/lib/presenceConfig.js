@@ -43,6 +43,9 @@ export const PRESENCE_CONFIG = {
 
   // Maximum absence gap (30s): If customer is absent longer than this, treat as new customer even if face matches
   FACE_MAX_SAME_GAP_MS: 30000,
+
+  // Returning Customer Memory Window (2 minutes / 120,000 ms; after this the old customer is forgotten)
+  RETURN_MEMORY_MS: 120000,
 };
 
 export const ENTER_DISTANCE_CM = PRESENCE_CONFIG.ENTER_DISTANCE_CM;
@@ -65,5 +68,6 @@ export const FACE_ID_DEBUG = PRESENCE_CONFIG.FACE_ID_DEBUG;
 export const FACE_SAME_MIN_SIMILARITY = PRESENCE_CONFIG.FACE_SAME_MIN_SIMILARITY;
 export const FACE_DIFFERENT_MAX_SIMILARITY = PRESENCE_CONFIG.FACE_DIFFERENT_MAX_SIMILARITY;
 export const FACE_MAX_SAME_GAP_MS = PRESENCE_CONFIG.FACE_MAX_SAME_GAP_MS;
+export const RETURN_MEMORY_MS = PRESENCE_CONFIG.RETURN_MEMORY_MS;
 
 export default PRESENCE_CONFIG;

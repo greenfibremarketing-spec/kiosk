@@ -45,8 +45,16 @@ import {
   RESET_DEBOUNCE_MS,
   FACE_ID_ENABLED,
   FACE_ID_DEBUG,
+  RETURN_MEMORY_MS,
 } from "@/lib/presenceConfig";
-import { enrollFace, clearFace, hasEnrolled } from "@/lib/presence/faceIdentity";
+import {
+  enrollFace,
+  clearFace,
+  hasEnrolled,
+  snapshotFace,
+  restoreGallery,
+  compareToGallery,
+} from "@/lib/presence/faceIdentity";
 import { useUserSignals } from "@/hooks/useUserSignals";
 import { useMic } from "@/hooks/useMic";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
@@ -181,6 +189,7 @@ export function useKiosk() {
   const sessionTimeoutWarningRef = useRef(sessionTimeoutWarning);
   sessionTimeoutWarningRef.current = sessionTimeoutWarning;
   const [identityMasked, setIdentityMasked] = useState(false);
+  const identityCutSpeechRef = useRef(false);
   const [faceEnrolled, setFaceEnrolled] = useState(false);
 
   // ── Abort controller for SSE/AI fetch ────────────────────────────────────
@@ -208,57 +217,444 @@ export function useKiosk() {
 
   const isEngaged = kioskMode === "ENGAGED";
 
-  const enterEngaged = useCallback((reason = "unknown") => {
+  const say = useCallback((text) => {
+    if (kioskModeRef.current === "IDLE") return;
+    if (!text || typeof text !== "string" || !text.trim()) return;
+    const clean = text.trim();
+    setCaption(clean);
+    setSpeechId((p) => p + 1);
+    const replyId = `say_${Date.now()}`;
+    speechController.beginReply(replyId, { source: "say" });
+    speechController.appendSentence(replyId, clean, { turnId: replyId });
+    speechController.endReply(replyId);
+  }, []);
+
+  const lastCustomerRef = useRef(null);
+  const returnMemoryTimerRef = useRef(null);
+  const engagingRef = useRef(false);
+  const cameraPresenceRef = useRef(null);
+  const presenceTrackerRef = useRef(null);
+  const signalsRef = useRef(null);
+  const lastComparedCustomerRef = useRef(null);
+  const pendingTappedProductRef = useRef(null);
+  const replayingRef = useRef(false);
+
+  // Clear returning customer RAM snapshot on window beforeunload
+  useEffect(() => {
+    const handleUnload = () => {
+      lastCustomerRef.current = null;
+      if (returnMemoryTimerRef.current) {
+        clearTimeout(returnMemoryTimerRef.current);
+      }
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleUnload);
+      if (returnMemoryTimerRef.current) {
+        clearTimeout(returnMemoryTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleLateRestore = useCallback(async () => {
+    const saved = lastComparedCustomerRef.current;
+    if (!saved) return;
+    if (kioskModeRef.current !== "ENGAGED") return;
+
+    console.log(`[Restore] Applying late restore for customer: "${saved.name}"`);
+    const isOpen = await kioskWS.waitForOpen(3000);
+    if (!isOpen) return;
+
+    const runReplayStep = async (send) => {
+      const p = kioskWS.waitForDone(4000);
+      send();
+      return p;
+    };
+
+    replayingRef.current = true;
+    let ok = false;
+    let failedStep = "";
+    try {
+      ok = await runReplayStep(() => kioskWS.sendSetName(saved.name));
+      if (!ok) {
+        failedStep = "SET_NAME";
+      } else if (saved.category && saved.category !== "all") {
+        ok = await runReplayStep(() =>
+          kioskWS.sendSelectCategory({ category_id: saved.category, category_name: saved.category })
+        );
+        if (!ok) failedStep = "SELECT_CATEGORY";
+      }
+      const savedProd =
+        saved.product ||
+        backendCatalog.find((p) => p.id === saved.productId) ||
+        (saved.productId ? { id: saved.productId } : null);
+      if (ok && saved.showDetail && savedProd) {
+        ok = await runReplayStep(() => kioskWS.sendSelectProduct(savedProd));
+        if (!ok) failedStep = "SELECT_PRODUCT";
+      }
+    } finally {
+      replayingRef.current = false;
+    }
+
+    if (!ok) {
+      console.log(`[Restore] late replay failed at ${failedStep || "unknown"}`);
+      return;
+    }
+
+    console.log("[Restore] replay ok");
+    const restoredName = saved.name || "";
+    setName(restoredName);
+    nameRef.current = restoredName;
+    KioskStepCache.setCustomerName(restoredName);
+    KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
+
+    if (saved.productId) {
+      setProductId(saved.productId);
+    }
+    if (saved.category) {
+      setCategory(saved.category);
+    }
+    setShowDetail(Boolean(saved.showDetail));
+    setOnboardingOpen(false);
+    setOnboardingStep(2);
+
+    if (saved.gallery) {
+      restoreGallery(saved.gallery);
+      setFaceEnrolled(true);
+    }
+
+    console.log(`[Restore] kioskMode=${kioskModeRef.current}`);
+    say(`Welcome back${restoredName ? ", " + restoredName : ""}!`);
+  }, [backendCatalog, say]);
+
+  const compareReturningCustomerWithTimeout = useCallback((targetGallery, timeoutMs = 3500) => {
+    const t0 = Date.now();
+    const video = cameraPresenceRef.current?.videoRef?.current;
+    if (!video || video.readyState < 2) {
+      const elapsed = Date.now() - t0;
+      console.log(`[Restore] compare status=no_video_frame ms=${elapsed}`);
+      return Promise.resolve({ status: "no_video_frame", elapsed });
+    }
+
+    let timedOut = false;
+    let timeoutId;
+
+    const compPromise = compareToGallery(video, targetGallery, 3, 80)
+      .then((res) => {
+        const elapsed = Date.now() - t0;
+        if (timedOut) {
+          console.log(`[Restore] late result status=${res.status} ms=${elapsed}`);
+          if (res.status === "same") {
+            handleLateRestore();
+          }
+        } else {
+          console.log(`[Restore] compare status=${res.status} ms=${elapsed}`);
+        }
+        return { ...res, elapsed };
+      })
+      .catch((err) => {
+        const elapsed = Date.now() - t0;
+        console.warn(`[Restore] compare status=error ms=${elapsed}`, err);
+        return { status: "error", elapsed };
+      });
+
+    const timeoutPromise = new Promise((resolve) => {
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        const elapsed = Date.now() - t0;
+        console.log(`[Restore] compare status=timeout ms=${elapsed}`);
+        resolve({ status: "timeout", elapsed });
+      }, timeoutMs);
+    });
+
+    return Promise.race([compPromise, timeoutPromise]).finally(() => {
+      clearTimeout(timeoutId);
+    });
+  }, [handleLateRestore]);
+
+  const engage = useCallback(async (reasonString = "unknown", { restoreFrom } = {}) => {
+    const reason = typeof reasonString === "string" ? reasonString : "unknown";
+
     if (kioskModeRef.current === "ENGAGED") return;
     console.log(`[Kiosk] Entering ENGAGED mode (reason=${reason})`);
+
+    // a. set kioskModeRef.current = "ENGAGED" synchronously (and state) BEFORE connecting
     kioskModeRef.current = "ENGAGED";
     setKioskMode("ENGAGED");
 
-    // Fresh session ID created upon customer arrival
     const newSession = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
     sessionIdRef.current = newSession;
     KioskStepCache.setSessionId(newSession);
 
-    // Warm up speech and audio context
     warmupSpeech();
 
-    // Reset greeting flags for new customer session
-    greetingDoneRef.current = false;
-    nameDoneRef.current = false;
-    introPlayedRef.current = false;
-    nameSubmittedRef.current = false;
+    const runFreshEngage = (sessId) => {
+      // Normal (non-restore) engage: Clean state completely so ASK_NAME is never bypassed
+      KioskStepCache.clearCache();
+      KioskStepCache.setCurrentStep(0);
+      setName("");
+      nameRef.current = "";
+      nameSubmittedRef.current = false;
+      greetingDoneRef.current = false;
+      nameDoneRef.current = false;
+      introPlayedRef.current = false;
 
-    // Connect WebSocket with auto_greet = 1
-    kioskWS.connect(newSession, true);
+      // Connect WebSocket with auto_greet = 1
+      kioskWS.connect(sessId, true);
 
-    if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
-      window.kiosk.sendPresenceState("ENGAGED");
+      if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
+        window.kiosk.sendPresenceState("ENGAGED");
+      }
+
+      // Check if a tapped product started this session
+      if (pendingTappedProductRef.current) {
+        const tapped = pendingTappedProductRef.current;
+        pendingTappedProductRef.current = null;
+        setProductId(tapped.id);
+        setShowDetail(true);
+        setOnboardingOpen(false);
+        KioskStepCache.setSelectedProduct(tapped);
+        kioskWS.sendSelectProduct(tapped);
+      }
+    };
+
+    if (restoreFrom) {
+      kioskWS.connect(newSession, false);
+
+      const isOpen = await kioskWS.waitForOpen(3000);
+      if (!isOpen) {
+        console.warn("[Restore] socket failed, falling back");
+        kioskWS.disconnect();
+        runFreshEngage(newSession);
+        return;
+      }
+
+      console.log(`[Restore] kioskMode=${kioskModeRef.current}`);
+
+      const runReplayStep = async (send) => {
+        const p = kioskWS.waitForDone(4000);
+        send();
+        return p;
+      };
+
+      const s = restoreFrom || lastCustomerRef.current;
+      replayingRef.current = true;
+      let ok = false;
+      let failedStep = "";
+      try {
+        ok = await runReplayStep(() => kioskWS.sendSetName(s.name));
+        if (!ok) {
+          failedStep = "SET_NAME";
+        } else if (s.category && s.category !== "all") {
+          ok = await runReplayStep(() =>
+            kioskWS.sendSelectCategory({ category_id: s.category, category_name: s.category })
+          );
+          if (!ok) failedStep = "SELECT_CATEGORY";
+        }
+        const savedProd =
+          s.product ||
+          backendCatalog.find((p) => p.id === s.productId) ||
+          (s.productId ? { id: s.productId } : null);
+        if (ok && s.showDetail && savedProd) {
+          ok = await runReplayStep(() => kioskWS.sendSelectProduct(savedProd));
+          if (!ok) failedStep = "SELECT_PRODUCT";
+        }
+      } finally {
+        replayingRef.current = false;
+      }
+
+      if (!ok) {
+        console.log(`[Restore] replay failed at ${failedStep || "unknown"}`);
+        kioskWS.disconnect();
+        runFreshEngage(newSession);
+        return;
+      }
+
+      console.log("[Restore] replay ok");
+
+      // Set UI and cache from snapshot only after replay succeeds
+      greetingDoneRef.current = true;
+      nameDoneRef.current = true;
+      introPlayedRef.current = true;
+      nameSubmittedRef.current = true;
+
+      const restoredName = s.name || "";
+      setName(restoredName);
+      nameRef.current = restoredName;
+      KioskStepCache.setCustomerName(restoredName);
+      KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
+
+      if (s.productId) {
+        setProductId(s.productId);
+      }
+      if (s.category) {
+        setCategory(s.category);
+      }
+      setShowDetail(Boolean(s.showDetail));
+      setOnboardingOpen(false);
+      setOnboardingStep(2);
+
+      // Restore face gallery so real-time face guard continues
+      if (s.gallery) {
+        restoreGallery(s.gallery);
+        setFaceEnrolled(true);
+      }
+
+      if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
+        window.kiosk.sendPresenceState("ENGAGED");
+      }
+
+      // Check if a tapped product started this session
+      if (pendingTappedProductRef.current) {
+        const tapped = pendingTappedProductRef.current;
+        pendingTappedProductRef.current = null;
+        setProductId(tapped.id);
+        setShowDetail(true);
+        setOnboardingOpen(false);
+        KioskStepCache.setSelectedProduct(tapped);
+        kioskWS.sendSelectProduct(tapped);
+      }
+
+      say(`Welcome back${restoredName ? ", " + restoredName : ""}!`);
+    } else {
+      runFreshEngage(newSession);
     }
-  }, []);
+  }, [backendCatalog, say]);
+
+  const enterEngaged = useCallback((reason = "unknown") => {
+    const reasonStr = typeof reason === "string" ? reason : "unknown";
+    engage(reasonStr);
+  }, [engage]);
 
   // ── Camera & Hardware Presence Hook ───────────────────────────────────────
   const cameraPresence = usePresenceDetection({
-    onEnterEngaged: useCallback(() => {
+    onEnterEngaged: useCallback(async () => {
       lastFaceAtRef.current = Date.now();
-      enterEngaged("face_in_range_stable");
-      if (convStateRef.current === S.IDLE) {
-        setConv(S.ATTENTIVE);
+
+      if (kioskModeRef.current === "ENGAGED" || engagingRef.current) return;
+      engagingRef.current = true;
+
+      try {
+        const faceVisible = true;
+        const hasLastCustomer = Boolean(lastCustomerRef.current);
+        console.log(
+          `[Restore] engage trigger=face faceVisible=${faceVisible} lastCustomer=${hasLastCustomer ? "yes" : "null"}`
+        );
+
+        const savedCustomer = lastCustomerRef.current;
+        const isSnapshotFresh = savedCustomer && (Date.now() - savedCustomer.savedAt < RETURN_MEMORY_MS);
+        let restoreCandidate = null;
+
+        if (isSnapshotFresh) {
+          if (presenceTrackerRef.current?.multipleFaces) {
+            console.log("[Restore] discarded reason=multiple_faces");
+            lastCustomerRef.current = null;
+            clearTimeout(returnMemoryTimerRef.current);
+          } else {
+            lastComparedCustomerRef.current = savedCustomer;
+            lastCustomerRef.current = null;
+            clearTimeout(returnMemoryTimerRef.current);
+
+            try {
+              const comp = await compareReturningCustomerWithTimeout(savedCustomer.gallery, 3500);
+              if (comp.status === "same") {
+                restoreCandidate = savedCustomer;
+              }
+            } catch (err) {
+              console.warn("[Restore] compare exception:", err);
+            }
+          }
+        }
+
+        // Whatever happens (same, different, unsure, timeout, error) the kiosk MUST engage right after
+        engage("face_in_range_stable", { restoreFrom: restoreCandidate });
+
+        if (convStateRef.current === S.IDLE) {
+          setConv(S.ATTENTIVE);
+        }
+      } finally {
+        if (kioskModeRef.current !== "ENGAGED") {
+          engagingRef.current = false;
+        }
       }
-    }, [enterEngaged, setConv]),
+    }, [compareReturningCustomerWithTimeout, engage, setConv]),
     onExitToIdle: useCallback(() => {
       if (kioskModeRef.current === "ENGAGED") {
         latestRef.current.resetSession?.("presence_detector_exit");
       }
     }, []),
   });
+  cameraPresenceRef.current = cameraPresence;
 
-  const handleTouchEngagement = useCallback((source = "screen_touch") => {
+  const handleTouchEngagement = useCallback(async (source = "screen_touch") => {
     lastInputAtRef.current = Date.now();
     cameraPresence.triggerTouchEngaged();
-    if (kioskModeRef.current === "IDLE") {
-      enterEngaged(source);
+
+    const reasonStr = typeof source === "string" ? source : "screen_touch";
+
+    if (kioskModeRef.current === "ENGAGED" || engagingRef.current) return;
+    engagingRef.current = true;
+
+    try {
+      const now = Date.now();
+      const faceSeenRecently = (now - lastFaceAtRef.current) <= 1500;
+      const faceVisible = Boolean(
+        signalsRef.current?.present ||
+        cameraPresenceRef.current?.state === "ENGAGED" ||
+        faceSeenRecently
+      );
+      const hasLastCustomer = Boolean(lastCustomerRef.current);
+
+      console.log(
+        `[Restore] engage trigger=touch faceVisible=${faceVisible} lastCustomer=${hasLastCustomer ? "yes" : "null"}`
+      );
+
+      let restoreCandidate = null;
+
+      if (hasLastCustomer) {
+        if (!faceVisible) {
+          // Only discard with "touch_without_face" if no face has been seen for more than 1.5s
+          console.log("[Restore] discarded reason=touch_without_face");
+          lastCustomerRef.current = null;
+          clearTimeout(returnMemoryTimerRef.current);
+        } else {
+          // Face is currently visible AND lastCustomerRef exists: run compare first (max 3500ms), then engage
+          const savedCustomer = lastCustomerRef.current;
+          const isSnapshotFresh = savedCustomer && (now - savedCustomer.savedAt < RETURN_MEMORY_MS);
+
+          if (isSnapshotFresh) {
+            if (presenceTrackerRef.current?.multipleFaces) {
+              console.log("[Restore] discarded reason=multiple_faces");
+              lastCustomerRef.current = null;
+              clearTimeout(returnMemoryTimerRef.current);
+            } else {
+              lastComparedCustomerRef.current = savedCustomer;
+              lastCustomerRef.current = null;
+              clearTimeout(returnMemoryTimerRef.current);
+
+              try {
+                const comp = await compareReturningCustomerWithTimeout(savedCustomer.gallery, 3500);
+                if (comp.status === "same") {
+                  restoreCandidate = savedCustomer;
+                }
+              } catch (err) {
+                console.warn("[Restore] compare exception:", err);
+              }
+            }
+          } else {
+            lastCustomerRef.current = null;
+            clearTimeout(returnMemoryTimerRef.current);
+          }
+        }
+      }
+
+      engage(reasonStr, { restoreFrom: restoreCandidate });
+    } finally {
+      if (kioskModeRef.current !== "ENGAGED") {
+        engagingRef.current = false;
+      }
     }
-  }, [cameraPresence, enterEngaged]);
+  }, [cameraPresence, compareReturningCustomerWithTimeout, engage]);
 
   // ── Verification voice prompt helper ("Welcome back! Are you still <name>?") ─
   const triggerIdentityVoiceCheck = useCallback((returningName) => {
@@ -345,6 +741,7 @@ export function useKiosk() {
       latestRef.current.resetSession?.("absent_long");
     }, []),
   });
+  presenceTrackerRef.current = presenceTracker;
 
   // Unified presence object: full backward-compatible props + presenceTracker state
   const presence = {
@@ -369,6 +766,7 @@ export function useKiosk() {
     onSpeechEnd:   useCallback(() => {}, []),
     onFaceResult:  presenceTracker.handleFaceLandmarks,
   });
+  signalsRef.current = signals;
 
   // Build the face object expected by useUserSpeechState (reads facePx from ref to avoid re-renders)
   const face = {
@@ -586,19 +984,6 @@ export function useKiosk() {
     if (convStateRef.current === S.SPEAKING) setConv(S.ATTENTIVE);
   }, [setConv]);
 
-  // ── Say something ────────────────────────────────────────────────────────
-  const say = useCallback((text) => {
-    if (kioskModeRef.current === "IDLE") return;
-    if (!text || typeof text !== "string" || !text.trim()) return;
-    const clean = text.trim();
-    setCaption(clean);
-    setSpeechId((p) => p + 1);
-    const replyId = `say_${Date.now()}`;
-    speechController.beginReply(replyId, { source: "say" });
-    speechController.appendSentence(replyId, clean, { turnId: replyId });
-    speechController.endReply(replyId);
-  }, []);
-
   const lastResetAtRef = useRef(0);
 
   // ── Reset session to Step 1 (presence-based or manual) ───────────────────
@@ -686,10 +1071,63 @@ export function useKiosk() {
         }
       } catch (_) {}
     }
+
+    const absenceReasons = [
+      "absent_long",
+      "face_absent_hard_timeout",
+      "timeout_unanswered",
+      "auto_reset",
+      "user_exit",
+      "presence_detector_exit",
+    ];
+    const canSave =
+      absenceReasons.includes(reason) &&
+      faceEnrolled &&
+      !presenceTracker.multipleFaces;
+    if (canSave) {
+      const savedProd =
+        KioskStepCache.getSelectedProduct() ||
+        backendCatalog.find((p) => p.id === productId) ||
+        (productId ? { id: productId } : null);
+      lastCustomerRef.current = {
+        gallery: snapshotFace(),
+        name: nameRef.current || "",
+        category,
+        productId,
+        product: savedProd,
+        showDetail,
+        savedAt: Date.now(),
+      };
+      console.log(`[Restore] saved reason=${reason} name="${nameRef.current}" product=${productId}`);
+      clearTimeout(returnMemoryTimerRef.current);
+      returnMemoryTimerRef.current = setTimeout(() => {
+        if (lastCustomerRef.current) {
+          console.log("[Restore] discarded reason=memory_expired");
+          lastCustomerRef.current = null;
+        }
+      }, RETURN_MEMORY_MS);
+    } else {
+      console.log(
+        `[Restore] skipped reason=${reason} faceEnrolled=${faceEnrolled} ` +
+        `hasName=${Boolean(nameRef.current)} hasProduct=${Boolean(productId)} ` +
+        `multipleFaces=${presenceTracker.multipleFaces}`
+      );
+      if (!absenceReasons.includes(reason)) {
+        lastCustomerRef.current = null;
+        clearTimeout(returnMemoryTimerRef.current);
+      }
+    }
+
     clearFace();
     setFaceEnrolled(false);
     setIdentityMasked(false);
+    identityCutSpeechRef.current = false;
+    engagingRef.current = false;
+    replayingRef.current = false;
     presenceTracker.forceResetPresence();
+    cameraPresenceRef.current?.forceResetToIdle?.();
+    pendingTappedProductRef.current = null;
+    lastComparedCustomerRef.current = null;
 
     setName("");
     nameRef.current = "";
@@ -701,6 +1139,7 @@ export function useKiosk() {
     kioskWS.disconnect();
     setKioskMode("IDLE");
     kioskModeRef.current = "IDLE";
+    engagingRef.current = false;
     if (typeof window !== "undefined" && window.kiosk?.sendPresenceState) {
       window.kiosk.sendPresenceState("IDLE");
     }
@@ -779,25 +1218,28 @@ export function useKiosk() {
     faceVisible: Boolean(signals.present),
     getFaceBox: () => latestRef.current.faceBox || null,
     onSuspect: (reason) => {
-      console.log(`[FaceGuard] Suspicious event (${reason}) - masking identity and pausing speech`);
       setIdentityMasked(true);
-      speechController.cancelAll("identity_check");
+      if (reason === "return" && speechController.isSpeaking()) {
+        identityCutSpeechRef.current = true;
+        speechController.cancelAll("identity_check");
+      }
     },
-    onSame: (reason, gap) => {
-      console.log(`[FaceGuard] Verified same customer (${reason}, gap=${gap}ms) - unmasking identity`);
+    onSame: () => {
       setIdentityMasked(false);
+      if (identityCutSpeechRef.current) {
+        identityCutSpeechRef.current = false;
+        const n = nameRef.current;
+        say(`Welcome back${n ? ", " + n : ""}!`);
+      }
     },
     onDifferent: (reason, gap) => {
-      console.log(`[FaceGuard] Different customer detected (${reason}, gap=${gap}ms). Resetting session immediately.`);
+      identityCutSpeechRef.current = false;
       setIdentityMasked(false);
-      latestRef.current.resetSession?.("different_person_swap");
+      resetSession("different_person_swap");
     },
-    onUnsure: (reason, gap) => {
-      console.log(`[FaceGuard] Face check unsure (${reason}, gap=${gap}ms).`);
+    onUnsure: () => {
+      identityCutSpeechRef.current = false;
       setIdentityMasked(false);
-      if (gap > 0 && nameRef.current) {
-        triggerIdentityVoiceCheck(nameRef.current);
-      }
     },
   });
 
@@ -970,6 +1412,10 @@ export function useKiosk() {
 
   // ── AI Screen Director: Handle structured server actions ────────────────
   const handleServerAction = useCallback((action, salesStage) => {
+    if (replayingRef.current) {
+      console.log("[Restore] replay: ignored action");
+      return;
+    }
     if (!action && !salesStage) return;
 
     if (kioskModeRef.current === "IDLE") {
@@ -1379,17 +1825,30 @@ export function useKiosk() {
 
   useEffect(() => {
     const unsubAction = kioskWS.on("action", (actionData) => {
+      if (replayingRef.current) {
+        console.log("[Restore] replay: ignored action");
+        return;
+      }
+      if (kioskModeRef.current === "IDLE") {
+        console.log("[Kiosk] Dropping action in IDLE mode");
+        return;
+      }
       handleServerAction(actionData);
     });
 
     const unsubHint = kioskWS.on("hint", (hintData) => {
+      if (replayingRef.current) return;
       setHintBubble(hintData);
     });
 
     // Streamed sentence listener: start TTS immediately for each completed sentence
     const unsubSentence = kioskWS.on("sentence", (sentence, turnId) => {
+      if (replayingRef.current) {
+        console.log("[Restore] replay: ignored sentence");
+        return;
+      }
       if (kioskModeRef.current === "IDLE") {
-        console.log("[Kiosk] Dropping sentence in IDLE mode");
+        console.log("[Kiosk] dropped sentence in IDLE");
         return;
       }
       const activeTurnKey = activeActionReplyIdRef.current || turnId || kioskWS.currentTurnId || "turn_default";
@@ -1401,6 +1860,10 @@ export function useKiosk() {
     });
 
     const unsubDone = kioskWS.on("done", (doneData) => {
+      if (replayingRef.current) {
+        console.log("[Restore] replay: ignored done");
+        return;
+      }
       if (kioskModeRef.current === "IDLE") {
         console.log("[Kiosk] Dropping done in IDLE mode");
         return;
@@ -1432,7 +1895,7 @@ export function useKiosk() {
     });
 
     const unsubAutoReset = kioskWS.on("auto_reset", (msg) => {
-      if (!isEngaged && !onboardingOpen && !nameRef.current && !KioskStepCache.getCustomerName()) {
+      if (kioskModeRef.current === "IDLE" && !onboardingOpen && !nameRef.current && !KioskStepCache.getCustomerName()) {
         latestRef.current.resetSession?.("auto_reset");
       }
     });
@@ -1445,7 +1908,7 @@ export function useKiosk() {
       unsubPingSilence();
       unsubAutoReset();
     };
-  }, [handleServerAction, say, isEngaged, onboardingOpen]);
+  }, [handleServerAction, say, onboardingOpen]);
 
 
   // ── Core: Send transcript to AI backend ───────────────────────────────────
@@ -1848,6 +2311,9 @@ export function useKiosk() {
   const selectProduct = useCallback((p) => {
     stopSpeechForUserAction("user_tap_product");
     lastInputAtRef.current = Date.now();
+    if (kioskModeRef.current === "IDLE") {
+      pendingTappedProductRef.current = p;
+    }
     presence.triggerTouchEngaged();
     setProductId(p.id);
     setShowDetail(true);
@@ -1981,6 +2447,7 @@ export function useKiosk() {
     kioskMode,
     isEngaged,
     enterEngaged,
+    engage,
     category,
     categories,
     selectCategory,
@@ -2010,6 +2477,7 @@ export function useKiosk() {
     kioskMode,
     isEngaged,
     enterEngaged,
+    engage,
     caption,
     speechId,
     category,
