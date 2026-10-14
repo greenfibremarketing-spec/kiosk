@@ -1,7 +1,146 @@
 "use client";
-import React, { useState } from "react";
-import ProductArt from "./ProductArt";
-import PriceTag from "./PriceTag";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Star,
+  ShoppingBag,
+  Minus,
+  Plus,
+  ArrowLeft,
+  Leaf,
+  Sprout,
+  ShieldCheck,
+  Ban,
+  Truck,
+  Check,
+} from "lucide-react";
+
+/**
+ * Natural organic colour mapping matching Green Fibre data & earthy eco finishes.
+ */
+const COLOR_HEX_MAP = {
+  "parrot green": "#4a7c59",
+  "sage green": "#789781",
+  "olive": "#556b2f",
+  "natural olive": "#4a6741",
+  "orange": "#e26d36",
+  "terracotta": "#b4654a",
+  "earthy terracotta": "#b4654a",
+  "cream": "#e2d7c0",
+  "raw husk cream": "#e2d7c0",
+  "husk": "#d8cbb5",
+  "beige": "#d9cbba",
+  "brown": "#8b5a2b",
+  "black": "#282828",
+  "charcoal": "#3a3a3a",
+  "slate": "#64748b",
+  "white": "#f8f8f4",
+  "teal": "#2a7b7b",
+  "blue": "#3b6e8c",
+  "navy": "#1e3a5f",
+  "yellow": "#e5a93c",
+  "pink": "#d47a8a",
+  "rose": "#c45b71",
+  "red": "#b8423f",
+};
+
+function getHexForColor(name, fallbackIdx = 0) {
+  if (!name) return "#4a6741";
+  const clean = String(name).toLowerCase().trim();
+  if (COLOR_HEX_MAP[clean]) return COLOR_HEX_MAP[clean];
+  for (const [key, val] of Object.entries(COLOR_HEX_MAP)) {
+    if (clean.includes(key) || key.includes(clean)) return val;
+  }
+  const defaultPalette = ["#4a6741", "#e2d7c0", "#b4654a", "#22c55e", "#f97316"];
+  return defaultPalette[fallbackIdx % defaultPalette.length];
+}
+
+/**
+ * Map real backend fields to 4-5 high quality images for the selected colorway.
+ */
+function getImagesForProductAndVariant(product, selectedColorName) {
+  if (!product) return [];
+
+  const list = [];
+  const addImages = (sources) => {
+    if (!sources) return;
+    const arr = Array.isArray(sources) ? sources : [sources];
+    for (const item of arr) {
+      if (typeof item === "string" && item.trim() && !list.includes(item.trim())) {
+        list.push(item.trim());
+      } else if (item && typeof item === "object") {
+        const url = item.url || item.src || item.image;
+        if (url && typeof url === "string" && !list.includes(url.trim())) {
+          list.push(url.trim());
+        }
+      }
+    }
+  };
+
+  // 1. Variant matching the selected colorway
+  const matchingVariant = product.variants?.find((v) => {
+    const vName = (v.name || v.title || "").toLowerCase().trim();
+    const target = (selectedColorName || "").toLowerCase().trim();
+    return vName === target || vName.includes(target) || target.includes(vName);
+  });
+
+  if (matchingVariant) {
+    addImages(matchingVariant.images);
+    addImages(matchingVariant.image);
+  }
+
+  // 2. Top-level product images as baseline
+  addImages(product.images);
+  addImages(product.image);
+
+  // 3. Supplement with remaining variants if fewer than 4
+  if (list.length < 4 && Array.isArray(product.variants)) {
+    for (const v of product.variants) {
+      addImages(v.images);
+      addImages(v.image);
+      if (list.length >= 5) break;
+    }
+  }
+
+  return list.slice(0, 5);
+}
+
+/**
+ * Slide image component with skeleton placeholder and neutral fallback.
+ */
+function SlideImage({ src, alt }) {
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    setLoaded(false);
+    setError(false);
+  }, [src]);
+
+  if (error || !src) {
+    return (
+      <div className="pdp-slide-fallback" aria-label={alt}>
+        <Sprout size={48} strokeWidth={1.5} className="pdp-fallback-icon" />
+        <span className="pdp-fallback-text">{alt}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pdp-slide-img-wrap">
+      {!loaded && <div className="pdp-slide-skeleton" />}
+      <img
+        src={src}
+        alt={alt}
+        className={`pdp-slide-img ${loaded ? "pdp-slide-img--loaded" : ""}`}
+        onLoad={() => setLoaded(true)}
+        onError={() => setError(true)}
+        loading="lazy"
+      />
+    </div>
+  );
+}
 
 export default function ProductDetailPage({
   product,
@@ -13,356 +152,467 @@ export default function ProductDetailPage({
   onButtonClick,
 }) {
   const [quantity, setQuantity] = useState(1);
-  const [selectedColor, setSelectedColor] = useState(
-    product?.variants?.[0]?.name || "Natural Olive"
-  );
-  const [activeTab, setActiveTab] = useState("specs"); // "specs" | "material" | "care"
+  const [activeSlide, setActiveSlide] = useState(0);
+
+  // Derive variants and real color values from data
+  const colors = useMemo(() => {
+    if (product?.variants && product.variants.length > 0) {
+      return product.variants.map((v, i) => {
+        const name = v.name || v.title || `Variant ${i + 1}`;
+        return {
+          name,
+          hex: v.hex || v.color || getHexForColor(name, i),
+          stock: v.stock,
+        };
+      });
+    }
+    return [
+      { name: "Natural Olive", hex: "#4a6741" },
+      { name: "Raw Husk Cream", hex: "#e2d7c0" },
+      { name: "Earthy Terracotta", hex: "#b4654a" },
+    ];
+  }, [product]);
+
+  // Selected colorway with guaranteed synchronization
+  const [selectedColor, setSelectedColor] = useState(() => {
+    return (
+      product?.variant_name ||
+      product?.variants?.[0]?.name ||
+      colors[0]?.name ||
+      "Natural Olive"
+    );
+  });
+
+  // Re-sync when product or variant changes
+  useEffect(() => {
+    if (product) {
+      const nextColor =
+        product.variant_name ||
+        product.variants?.[0]?.name ||
+        colors[0]?.name ||
+        "Natural Olive";
+      setSelectedColor(nextColor);
+      setActiveSlide(0);
+      setQuantity(1);
+    }
+  }, [product?.id, product?.sku, product?.variant_name, colors]);
+
+  // Resolve images for active colorway
+  const images = useMemo(() => {
+    const list = getImagesForProductAndVariant(product, selectedColor);
+    if (list.length === 0 && product?.image) {
+      return [product.image];
+    }
+    return list;
+  }, [product, selectedColor]);
+
+  // Slider touch/drag swipe support
+  const touchStartX = useRef(0);
+  const touchDeltaX = useRef(0);
+  const isSwiping = useRef(false);
+
+  const handleTouchStart = (e) => {
+    touchStartX.current = e.touches ? e.touches[0].clientX : e.clientX;
+    touchDeltaX.current = 0;
+    isSwiping.current = true;
+  };
+
+  const handleTouchMove = (e) => {
+    if (!isSwiping.current) return;
+    const currentX = e.touches ? e.touches[0].clientX : e.clientX;
+    touchDeltaX.current = currentX - touchStartX.current;
+  };
+
+  const handleTouchEnd = () => {
+    if (!isSwiping.current) return;
+    isSwiping.current = false;
+    const threshold = 40;
+    if (images.length > 1) {
+      if (touchDeltaX.current > threshold) {
+        // Swipe Right -> Previous image
+        setActiveSlide((prev) => (prev > 0 ? prev - 1 : images.length - 1));
+      } else if (touchDeltaX.current < -threshold) {
+        // Swipe Left -> Next image
+        setActiveSlide((prev) => (prev < images.length - 1 ? prev + 1 : 0));
+      }
+    }
+  };
+
+  // Swatch selection handler
+  const handleColorSelect = (colorName) => {
+    setSelectedColor(colorName);
+    setActiveSlide(0);
+  };
+
+  if (!product) return null;
+
+  // Pricing calculations
+  const unitPrice = Number(product.salePrice || product.price) || 0;
+  const mrp = Number(product.mrp) || 0;
+  const hasDiscount = mrp > unitPrice;
+  const discountPct = hasDiscount ? Math.round(((mrp - unitPrice) / mrp) * 100) : 0;
+  const totalPrice = unitPrice * quantity;
+  const savings = hasDiscount ? (mrp - unitPrice) * quantity : 0;
 
   const displayButtons =
     buttons && buttons.length > 0
       ? buttons
       : ["Next", "Cheaper", "Compare", "I'll take it"];
 
-  if (!product) return null;
-
-  // Recommended complementary products from live catalog
-  const sourceProducts = products && products.length > 0 ? products : [];
-  const recommended = sourceProducts
-    .filter((p) => p.id !== product.id)
-    .sort((a, b) => {
-      const aOverlap = (a.categories || []).filter((c) => (product.categories || []).includes(c)).length;
-      const bOverlap = (b.categories || []).filter((c) => (product.categories || []).includes(c)).length;
-      return bOverlap - aOverlap;
-    })
-    .slice(0, 3);
-
-  const colors =
-    product?.variants && product.variants.length > 0
-      ? product.variants.map((v, i) => {
-          const defaultHexes = ["#4a6741", "#e2d7c0", "#b4654a", "#22c55e", "#f97316"];
-          return {
-            name: v.name || `Variant ${i + 1}`,
-            hex: defaultHexes[i % defaultHexes.length],
-            desc: v.stock ? `${v.stock} in stock` : "Eco Finish",
-            image: v.images?.[0] || product.image,
-          };
-        })
-      : [
-          { name: "Natural Olive", hex: "#4a6741", desc: "Matte herbal tones" },
-          { name: "Raw Husk Cream", hex: "#e2d7c0", desc: "Natural unbleached finish" },
-          { name: "Earthy Terracotta", hex: "#b4654a", desc: "Warm clay warmth" },
-        ];
-
-  const unitPrice = product.salePrice || product.price;
-  const totalPrice = unitPrice * quantity;
-  const savings = product.salePrice ? (product.price - product.salePrice) * quantity : 0;
-
   return (
-    <div className="pdp-wrapper" aria-label={`Details for ${product.name}`}>
+    <div className="pdp-redesign-wrapper" aria-label={`Details for ${product.name}`}>
       {/* ── Top Navigation Bar ── */}
-      <nav className="pdp-nav-bar">
+      <nav className="pdp-top-nav">
         <button
           type="button"
-          className="pdp-back-btn"
+          className="pdp-nav-back-button"
           onClick={onBack}
           aria-label="Back to Catalog"
         >
-          <span className="back-arrow">←</span>
+          <ArrowLeft size={20} strokeWidth={2.5} />
           <span>Back to Catalog</span>
         </button>
 
-        <div className="pdp-top-meta">
-          <span className="pdp-stock-indicator">
-            <span className="stock-dot" />
-            <span>In Stock at Kiosk Terminal #GF-04</span>
-          </span>
-          <div className="pdp-breadcrumbs">
-            <span className="crumb crumb-dim" onClick={onBack}>Products</span>
-            <span className="crumb-sep">/</span>
-            <span className="crumb crumb-active">{product.name}</span>
+        <div className="pdp-nav-meta">
+          <div className="pdp-nav-stock-pill">
+            <span className="pdp-stock-dot-pulse" />
+            <span>Terminal #GF-04 • In Stock</span>
+          </div>
+          <div className="pdp-nav-breadcrumbs">
+            <span className="crumb-btn" onClick={onBack}>Products</span>
+            <span className="crumb-divider">/</span>
+            <span className="crumb-current">{product.name}</span>
           </div>
         </div>
       </nav>
 
-      {/* ── Main Product Hero ── */}
-      <div className="pdp-hero-grid">
-        {/* Left Column: Media Stage & Circular Proof Badges */}
-        <div className="pdp-media-col">
-          <div className="pdp-image-stage">
-            {product.badge && <span className="pdp-floating-badge">{product.badge}</span>}
-            <div className="pdp-art-center">
-              <ProductArt image={product.image} name={product.name} shape={product.shape} />
-            </div>
-            <div className="pdp-stage-accent" />
-          </div>
+      {/* ── Main Two-Column View (Zero Vertical Scroll) ── */}
+      <div className="pdp-two-column-grid">
+        {/* ── LEFT COLUMN (48%): Image Gallery & Eco Banner ── */}
+        <div className="pdp-gallery-column">
+          {/* Main Image Slider Stage */}
+          <div
+            className="pdp-slider-stage"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            onMouseDown={handleTouchStart}
+            onMouseMove={handleTouchMove}
+            onMouseUp={handleTouchEnd}
+            onMouseLeave={handleTouchEnd}
+          >
+            {/* Non-intrusive Bestseller Badge */}
+            {product.badge && (
+              <span className="pdp-badge-pill">{product.badge}</span>
+            )}
 
-          {/* Eco Proof Highlights */}
-          <div className="pdp-eco-proof-strip">
-            <div className="eco-proof-item">
-              <span className="proof-icon">🌾</span>
-              <div>
-                <strong>100% Upcycled</strong>
-                <span>Rice-husk biocomposite</span>
-              </div>
-            </div>
-            <div className="eco-proof-item">
-              <span className="proof-icon">🚫</span>
-              <div>
-                <strong>0% Virgin Plastic</strong>
-                <span>Non-toxic & food grade</span>
-              </div>
-            </div>
-            <div className="eco-proof-item">
-              <span className="proof-icon">♻️</span>
-              <div>
-                <strong>BPA & Toxin Free</strong>
-                <span>Dishwasher safe</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Environmental Diverted Stubble Card */}
-          <div className="pdp-impact-card">
-            <span className="impact-leaf">🌱</span>
-            <div className="impact-info">
-              <strong>Farm Residue Repurposed</strong>
-              <p>Choosing this product prevents ~210g of agricultural rice straw from open-field burning.</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column: Information, Specs & Buy Box */}
-        <div className="pdp-info-col">
-          {/* Eyebrow & Title */}
-          <div className="pdp-header">
-            <span className="pdp-eyebrow">🌾 SUSTAINABLE ESSENTIALS • CIRCULAR BIOCOMPOSITE</span>
-            <h1 className="pdp-title">{product.name}</h1>
-            <div className="pdp-rating-row">
-              <div className="pdp-stars">★★★★★</div>
-              <span className="pdp-rating-score">{product.rating || "4.9"}</span>
-              <span className="pdp-rating-count">({product.reviews || 128} verified kiosk reviews)</span>
-            </div>
-            <p className="pdp-blurb">{product.blurb}</p>
-          </div>
-
-          {/* Pricing Box */}
-          <div className="pdp-pricing-card">
-            <div className="pdp-price-row">
-              <div className="price-main">
-                <span className="price-currency">₹</span>
-                <span className="price-val">{unitPrice}</span>
-              </div>
-              {product.salePrice && (
-                <>
-                  <span className="price-original">₹{product.price}</span>
-                  <span className="price-discount-pill">
-                    Save ₹{product.price - product.salePrice} (19% OFF)
-                  </span>
-                </>
-              )}
-            </div>
-            <span className="pdp-tax-note">✓ All taxes included • Free express carbon-neutral delivery</span>
-          </div>
-
-          {/* Finish & Color Palette Selection */}
-          <div className="pdp-option-group">
-            <div className="option-label-row">
-              <span className="option-label">Select Colorway:</span>
-              <strong className="option-selected-name">{selectedColor}</strong>
-            </div>
-            <div className="color-swatches-grid">
-              {colors.map((c) => (
-                <button
-                  key={c.name}
-                  type="button"
-                  className={`color-swatch-card ${selectedColor === c.name ? "color-swatch-card--active" : ""}`}
-                  onClick={() => setSelectedColor(c.name)}
-                >
-                  <span className="swatch-circle" style={{ backgroundColor: c.hex }} />
-                  <div className="swatch-meta">
-                    <span className="swatch-title">{c.name}</span>
-                    <span className="swatch-desc">{c.desc}</span>
-                  </div>
-                </button>
+            {/* Slider Track */}
+            <div
+              className="pdp-slider-track"
+              style={{
+                transform: `translateX(-${activeSlide * 100}%)`,
+              }}
+            >
+              {images.map((imgUrl, idx) => (
+                <div key={idx} className="pdp-slide-frame">
+                  <SlideImage
+                    src={imgUrl}
+                    alt={`${product.name} - Angle ${idx + 1}`}
+                  />
+                </div>
               ))}
             </div>
-          </div>
 
-          {/* Tabbed Product Details */}
-          <div className="pdp-tabs-container">
-            <div className="pdp-tabs-bar" role="tablist">
-              <button
-                type="button"
-                className={`pdp-tab-nav ${activeTab === "specs" ? "pdp-tab-nav--active" : ""}`}
-                onClick={() => setActiveTab("specs")}
-              >
-                Specifications
-              </button>
-              <button
-                type="button"
-                className={`pdp-tab-nav ${activeTab === "material" ? "pdp-tab-nav--active" : ""}`}
-                onClick={() => setActiveTab("material")}
-              >
-                Material & Origin
-              </button>
-              <button
-                type="button"
-                className={`pdp-tab-nav ${activeTab === "care" ? "pdp-tab-nav--active" : ""}`}
-                onClick={() => setActiveTab("care")}
-              >
-                Care & Warranty
-              </button>
-            </div>
+            {/* Prev / Next Arrow Controls */}
+            {images.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  className="pdp-slider-nav-btn pdp-slider-nav-btn--prev"
+                  onClick={() =>
+                    setActiveSlide((prev) => (prev > 0 ? prev - 1 : images.length - 1))
+                  }
+                  aria-label="Previous image"
+                >
+                  <ChevronLeft size={24} strokeWidth={2.5} />
+                </button>
+                <button
+                  type="button"
+                  className="pdp-slider-nav-btn pdp-slider-nav-btn--next"
+                  onClick={() =>
+                    setActiveSlide((prev) => (prev < images.length - 1 ? prev + 1 : 0))
+                  }
+                  aria-label="Next image"
+                >
+                  <ChevronRight size={24} strokeWidth={2.5} />
+                </button>
+              </>
+            )}
 
-            <div className="pdp-tab-content">
-              {activeTab === "specs" && (
-                <div className="specs-grid">
-                  {product.specs?.map((spec, idx) => (
-                    <div key={idx} className="spec-card">
-                      <span className="spec-bullet">✓</span>
-                      <span>{spec}</span>
-                    </div>
-                  ))}
-                  <div className="spec-card">
-                    <span className="spec-bullet">✓</span>
-                    <span>100% Food-Grade Certified</span>
-                  </div>
-                  <div className="spec-card">
-                    <span className="spec-bullet">✓</span>
-                    <span>Zero Melamine / Formaldehyde</span>
-                  </div>
-                </div>
-              )}
-
-              {activeTab === "material" && (
-                <p className="tab-narrative">
-                  Handcrafted from 100% upcycled rice-husk agricultural residue sourced from North Indian farming cooperatives.
-                  Naturally colored with food-grade mineral pigments, completely free of virgin plastics and harmful binders.
-                </p>
-              )}
-
-              {activeTab === "care" && (
-                <p className="tab-narrative">
-                  Dishwasher friendly (top rack recommended). Microwave safe up to 3 minutes for food reheating.
-                  Backed by GreenFibre&apos;s 1-Year Kiosk Replacement Warranty against manufacturing defects.
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Quantity Selector & High-Impact CTA */}
-          <div className="pdp-buy-bar">
-            <div className="pdp-qty-control">
-              <button
-                type="button"
-                className="qty-btn"
-                onClick={() => setQuantity(Math.max(1, quantity - 1))}
-                disabled={quantity <= 1}
-                aria-label="Decrease quantity"
-              >
-                −
-              </button>
-              <span className="qty-number">{quantity}</span>
-              <button
-                type="button"
-                className="qty-btn"
-                onClick={() => setQuantity(quantity + 1)}
-                aria-label="Increase quantity"
-              >
-                +
-              </button>
-            </div>
-
-            <button
-              type="button"
-              className="pdp-cta-btn"
-              onClick={() => onProceedToCheckout({ product, quantity, selectedColor, totalPrice, savings })}
-            >
-              <div className="cta-left">
-                <span className="cta-icon">🛍️</span>
-                <span className="cta-text">Add to Cart & Checkout</span>
-              </div>
-              <div className="cta-right">
-                <span className="cta-price">₹{totalPrice}</span>
-                <span className="cta-arrow">→</span>
-              </div>
-            </button>
-          </div>
-
-          {/* Action Buttons below product card (SHOW_PRODUCT_CARD) */}
-          <div className="pdp-action-buttons-strip">
-            <span className="pdp-action-buttons-label">⚡ Avatar Suggestions:</span>
-            <div className="pdp-action-buttons-grid">
-              {displayButtons.map((btn, idx) => {
-                const label = typeof btn === "string" ? btn : btn.label || btn.name || btn.id;
-                const isTakeIt = /take it|i'll take it|buy/i.test(label);
-                return (
+            {/* Dot Indicators */}
+            {images.length > 1 && (
+              <div className="pdp-slider-dots-row">
+                {images.map((_, idx) => (
                   <button
                     key={idx}
                     type="button"
-                    className={`pdp-action-btn ${isTakeIt ? "pdp-action-btn--take" : ""}`}
-                    onClick={() => {
-                      if (isTakeIt) {
-                        onProceedToCheckout?.({ product, quantity, selectedColor, totalPrice, savings });
-                      }
-                      onButtonClick?.(btn);
-                    }}
+                    className={`pdp-slider-dot-item ${
+                      activeSlide === idx ? "pdp-slider-dot-item--active" : ""
+                    }`}
+                    onClick={() => setActiveSlide(idx)}
+                    aria-label={`Go to slide ${idx + 1}`}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Thumbnail Strip */}
+          {images.length > 1 && (
+            <div className="pdp-thumbnails-strip" role="tablist">
+              {images.map((imgUrl, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  className={`pdp-thumbnail-item ${
+                    activeSlide === idx ? "pdp-thumbnail-item--active" : ""
+                  }`}
+                  onClick={() => setActiveSlide(idx)}
+                  aria-label={`Thumbnail ${idx + 1}`}
+                >
+                  <img
+                    src={imgUrl}
+                    alt={`Thumbnail ${idx + 1}`}
+                    className="pdp-thumb-img"
+                    loading="lazy"
+                  />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Slim One-Line Eco Note Banner */}
+          <div className="pdp-eco-banner">
+            <Leaf size={16} strokeWidth={2.2} className="eco-leaf-icon" />
+            <span className="eco-banner-text">
+              <strong>Farm Residue Repurposed:</strong> Choosing this item repurposes ~210g of crop straw, preventing open-field burning.
+            </span>
+          </div>
+        </div>
+
+        {/* ── RIGHT COLUMN (52%): Product Info & Swatches ── */}
+        <div className="pdp-info-column">
+          {/* Header Block: Category Chip, Product Name, Rating */}
+          <div className="pdp-header-block">
+            <span className="pdp-category-chip">
+              <Sprout size={13} strokeWidth={2.2} />
+              <span>{String(product.category || "Drinkware").toUpperCase()}</span>
+            </span>
+
+            <h1 className="pdp-main-title">{product.name}</h1>
+
+            <div className="pdp-rating-strip">
+              <div className="pdp-star-group">
+                {[...Array(5)].map((_, i) => (
+                  <Star key={i} size={17} fill="#f59e0b" color="#f59e0b" />
+                ))}
+              </div>
+              <span className="pdp-rating-score-val">{product.rating || "4.9"}</span>
+              <span className="pdp-rating-review-count">
+                ({product.reviews || 128} verified kiosk reviews)
+              </span>
+            </div>
+
+            {/* Short Description (Max 2 lines) */}
+            <p className="pdp-description-blurb">
+              {product.description ||
+                product.blurb ||
+                `${product.name} handcrafted from sustainable rice-husk agricultural biocomposite.`}
+            </p>
+          </div>
+
+          {/* Price Block: Big Price, MRP, Save X%, Tax Line */}
+          <div className="pdp-price-card">
+            <div className="pdp-price-flex">
+              <span className="pdp-current-price">₹{unitPrice.toLocaleString("en-IN")}</span>
+              {hasDiscount && discountPct > 0 && (
+                <>
+                  <span className="pdp-old-mrp">₹{mrp.toLocaleString("en-IN")}</span>
+                  <span className="pdp-save-tag">Save {discountPct}%</span>
+                </>
+              )}
+            </div>
+            <span className="pdp-tax-caption">Inclusive of all taxes</span>
+          </div>
+
+          {/* Colour Selector: Round Swatch Chips with Guaranteed Label Match */}
+          <div className="pdp-colour-section">
+            <div className="pdp-colour-label-row">
+              <span className="pdp-colour-heading">Colour:</span>
+              <strong className="pdp-colour-selected-name">{selectedColor}</strong>
+            </div>
+
+            <div className="pdp-swatches-grid">
+              {colors.map((c) => {
+                const isSelected =
+                  (selectedColor || "").toLowerCase().trim() === c.name.toLowerCase().trim();
+                return (
+                  <button
+                    key={c.name}
+                    type="button"
+                    className={`pdp-swatch-button ${
+                      isSelected ? "pdp-swatch-button--active" : ""
+                    }`}
+                    onClick={() => handleColorSelect(c.name)}
+                    aria-pressed={isSelected}
                   >
-                    <span>{label}</span>
+                    <span
+                      className="pdp-swatch-circle"
+                      style={{ backgroundColor: c.hex }}
+                    />
+                    <span className="pdp-swatch-name-text">{c.name}</span>
+                    {isSelected && (
+                      <Check size={14} strokeWidth={3} className="pdp-swatch-check-icon" />
+                    )}
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {/* Bulk Orders Note */}
-          <div className="pdp-bulk-banner">
-            <span className="bulk-icon">🏢</span>
-            <span>Ordering 25+ units for your office or conference? Custom corporate laser logo engraving is available.</span>
+          {/* Highlights Row: 4 Compact Cards with Lucide Icons (Replacing Old Tabs) */}
+          <div className="pdp-highlights-grid">
+            <div className="pdp-highlight-box">
+              <div className="pdp-highlight-icon-wrap">
+                <Sprout size={18} strokeWidth={2.2} />
+              </div>
+              <div className="pdp-highlight-meta">
+                <strong>100% Upcycled</strong>
+                <span>Rice-husk biocomposite</span>
+              </div>
+            </div>
+
+            <div className="pdp-highlight-box">
+              <div className="pdp-highlight-icon-wrap">
+                <Ban size={18} strokeWidth={2.2} />
+              </div>
+              <div className="pdp-highlight-meta">
+                <strong>Zero Plastic</strong>
+                <span>0% virgin plastic used</span>
+              </div>
+            </div>
+
+            <div className="pdp-highlight-box">
+              <div className="pdp-highlight-icon-wrap">
+                <ShieldCheck size={18} strokeWidth={2.2} />
+              </div>
+              <div className="pdp-highlight-meta">
+                <strong>BPA & Toxin Free</strong>
+                <span>100% food-grade safe</span>
+              </div>
+            </div>
+
+            <div className="pdp-highlight-box">
+              <div className="pdp-highlight-icon-wrap">
+                <Truck size={18} strokeWidth={2.2} />
+              </div>
+              <div className="pdp-highlight-meta">
+                <strong>Free Delivery</strong>
+                <span>Carbon-neutral dispatch</span>
+              </div>
+            </div>
           </div>
+
+          {/* Avatar Suggestions (Preserved Functionality) */}
+          {displayButtons && displayButtons.length > 0 && (
+            <div className="pdp-suggestions-row">
+              <span className="pdp-suggestions-tag">⚡ Greenie:</span>
+              <div className="pdp-suggestions-chips">
+                {displayButtons.map((btn, idx) => {
+                  const label =
+                    typeof btn === "string" ? btn : btn.label || btn.name || btn.id;
+                  const isTakeIt = /take it|i'll take it|buy/i.test(label);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      className={`pdp-suggest-button ${
+                        isTakeIt ? "pdp-suggest-button--take" : ""
+                      }`}
+                      onClick={() => {
+                        if (isTakeIt) {
+                          onProceedToCheckout?.({
+                            product,
+                            quantity,
+                            selectedColor,
+                            totalPrice,
+                            savings,
+                          });
+                        }
+                        onButtonClick?.(btn);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* ── Avatar Recommendations Section ── */}
-      {recommended.length > 0 && (
-        <section className="pdp-recommended-section" aria-label="Avatar Recommendations">
-          <div className="section-head">
-            <div className="section-head__title">
-              <span className="section-tag" style={{ background: "#e6f7ec", color: "#007a2d", fontWeight: "700", border: "1px solid rgba(0, 166, 62, 0.25)" }}>
-                🤖 Avatar Recommendations
-              </span>
-              <h2>Handpicked by Greenie</h2>
-            </div>
-            <span className="section-subtitle">
-              Looking for something else? Greenie suggests these verified sustainable alternatives and complementary pairings for your {product.name}:
-            </span>
-          </div>
+      {/* ── Sticky Bottom Action Bar (Content Never Hides Behind It) ── */}
+      <footer className="pdp-sticky-action-bar">
+        {/* Quantity Stepper (min 56px touch targets) */}
+        <div className="pdp-action-stepper">
+          <button
+            type="button"
+            className="pdp-stepper-touch-btn"
+            onClick={() => setQuantity((q) => Math.max(1, q - 1))}
+            disabled={quantity <= 1}
+            aria-label="Decrease quantity"
+          >
+            <Minus size={22} strokeWidth={2.5} />
+          </button>
+          <span className="pdp-stepper-count">{quantity}</span>
+          <button
+            type="button"
+            className="pdp-stepper-touch-btn"
+            onClick={() => setQuantity((q) => q + 1)}
+            aria-label="Increase quantity"
+          >
+            <Plus size={22} strokeWidth={2.5} />
+          </button>
+        </div>
 
-          <div className="recommended-grid">
-            {recommended.map((item) => (
-              <article
-                key={item.id}
-                className="recommended-card"
-                onClick={() => onSelectProduct(item)}
-                role="button"
-                tabIndex={0}
-              >
-                <div className="rec-card__media">
-                  <ProductArt image={item.image} name={item.name} shape={item.shape} />
-                  <span className="rec-badge">{item.badge || "Avatar Pick"}</span>
-                </div>
-                <div className="rec-card__body">
-                  <h3 className="rec-card__title">{item.name}</h3>
-                  <div className="rec-card__price-row">
-                    <PriceTag product={item} size="md" />
-                    <span className="rec-card__action">Explore with Greenie →</span>
-                  </div>
-                </div>
-              </article>
-            ))}
+        {/* Total Price Display */}
+        <div className="pdp-action-price-summary">
+          <span className="pdp-action-price-label">Total Price:</span>
+          <span className="pdp-action-price-num">₹{totalPrice.toLocaleString("en-IN")}</span>
+        </div>
+
+        {/* Big Primary Checkout Button */}
+        <button
+          type="button"
+          className="pdp-primary-checkout-btn"
+          onClick={() =>
+            onProceedToCheckout?.({
+              product,
+              quantity,
+              selectedColor,
+              totalPrice,
+              savings,
+            })
+          }
+        >
+          <div className="pdp-checkout-btn-content">
+            <ShoppingBag size={22} strokeWidth={2.2} />
+            <span className="pdp-checkout-btn-title">Add to Cart &amp; Checkout</span>
           </div>
-        </section>
-      )}
+          <ChevronRight size={22} strokeWidth={2.5} />
+        </button>
+      </footer>
     </div>
   );
 }

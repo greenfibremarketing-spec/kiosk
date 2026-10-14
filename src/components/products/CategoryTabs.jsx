@@ -19,6 +19,7 @@ export default function CategoryTabs({
   onSelect,
   categories = [],
   products = [],
+  onOpenMore,
 }) {
   if (!categories || categories.length === 0) return null;
 
@@ -33,20 +34,12 @@ export default function CategoryTabs({
     }).length;
   };
 
-  const getIcon = (cat) => {
-    if (!cat) return null;
-    const idKey = String(cat.id || "").toLowerCase().trim();
-    const nameKey = String(cat.label || cat.name || "").toLowerCase().trim();
-    return CATEGORY_ICONS[idKey] || CATEGORY_ICONS[nameKey] || cat.icon || null;
-  };
-
   return (
     <div className="category-tabs-container">
       <div className="chips category-chips" role="tablist" aria-label="Product Categories">
         {categories.map((c) => {
           const isSelected = String(c.id).toLowerCase() === String(active || "").toLowerCase();
           const count = getCount(c.id);
-          const icon = getIcon(c);
 
           return (
             <button
@@ -57,7 +50,6 @@ export default function CategoryTabs({
               className={`chip chip--dark ${isSelected ? "chip--active" : ""}`}
               onClick={() => onSelect(c)}
             >
-              {icon && <span className="tab-icon" aria-hidden="true">{icon}</span>}
               <span className="tab-label">{c.label || c.name}</span>
               <span className={`tab-count ${count === 0 ? "tab-count--zero" : ""}`}>
                 {count}
@@ -65,6 +57,18 @@ export default function CategoryTabs({
             </button>
           );
         })}
+        {onOpenMore && (
+          <button
+            type="button"
+            role="tab"
+            aria-label="More categories"
+            className="chip chip--dark chip--more"
+            onClick={onOpenMore}
+          >
+            <span className="tab-label">More</span>
+            <span className="tab-more-arrow">→</span>
+          </button>
+        )}
       </div>
     </div>
   );
