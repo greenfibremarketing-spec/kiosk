@@ -97,6 +97,7 @@ export function useKiosk() {
   const catalogRetryCountRef = useRef(0);
   const lastAppliedTurnIdRef = useRef(null);
   const lastAppliedSeqRef = useRef(0);
+  const lastHandledActionRef = useRef({ key: null, t: 0 });
   const isSendingRef = useRef(false);
   const nameRef = useRef(name);
   nameRef.current = name;
@@ -459,6 +460,25 @@ export function useKiosk() {
     latestRef.current._stageRef = stageRef;
   }, []);
 
+  // ── User did something: cut Greenie off immediately ──
+  const stopSpeechForUserAction = useCallback((reason = "user_action") => {
+    lastHandledActionRef.current = { key: null, t: 0 };
+    speechController.cancelAll(reason);
+    const stage = stageRef.current || latestRef.current._stageRef?.current;
+    stage?.stop?.(reason);
+    abortRef.current?.abort();
+    activeActionReplyIdRef.current = null;
+    turnsWithSentencesRef.current.clear();
+
+    // Backend may be waiting for SPEECH_DONE of the line we just cut: release it
+    const pendingId = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
+    pendingSpeechAckRef.current = null;
+    clearTimeout(speechAckTimerRef.current);
+    if (pendingId) kioskWS.flushSpeechDone(pendingId);
+
+    setSpeaking(false);
+    if (convStateRef.current === S.SPEAKING) setConv(S.ATTENTIVE);
+  }, [setConv]);
 
   // ── Say something ────────────────────────────────────────────────────────
   const say = useCallback((text) => {
@@ -712,6 +732,10 @@ export function useKiosk() {
   // ── Interrupt avatar speech (User Barge-in) ────────────────────────────────
   const interruptAvatar = useCallback(async () => {
     speechController.cancelAll("user_barge_in");
+    activeActionReplyIdRef.current = null;
+    const pendingId = pendingSpeechAckRef.current || kioskWS.pendingSpeechId;
+    if (pendingId) kioskWS.flushSpeechDone(pendingId);
+
     abortRef.current?.abort();
     if (typeof window !== "undefined") {
       try { window.speechSynthesis?.cancel(); } catch (_) {}
@@ -727,6 +751,7 @@ export function useKiosk() {
 
   // ── Monotonic Onboarding Navigation: submitName & skipName ─────────────────
   const submitName = useCallback((n) => {
+    stopSpeechForUserAction("user_submit_name");
     lastInputAtRef.current = Date.now();
     const trimmed = String(n || "").trim();
     if (!trimmed) return;
@@ -751,9 +776,10 @@ export function useKiosk() {
         setOnboardingOpen(true);
       }
     }, 1500);
-  }, []);
+  }, [stopSpeechForUserAction]);
 
   const skipName = useCallback(() => {
+    stopSpeechForUserAction("user_skip_name");
     lastInputAtRef.current = Date.now();
     nameSubmittedRef.current = true;
     KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
@@ -772,7 +798,7 @@ export function useKiosk() {
         setOnboardingOpen(true);
       }
     }, 1500);
-  }, []);
+  }, [stopSpeechForUserAction]);
 
   // ── AI Screen Director: Handle structured server actions ────────────────
   const handleServerAction = useCallback((action, salesStage) => {
@@ -799,6 +825,18 @@ export function useKiosk() {
         : salesStage === "ASK_CATEGORY" || salesStage === "SELECT_CATEGORY"
         ? "SHOW_CATEGORIES"
         : null);
+
+    // Backend re-sends the same action inside the "done" frame: ignore the repeat
+    const spokenText = action?.message || action?.prompt || action?.text || action?.blurb || "";
+    if (spokenText) {
+      const key = `${actionType}|${spokenText}`;
+      const nowTs = Date.now();
+      if (lastHandledActionRef.current.key === key && nowTs - lastHandledActionRef.current.t < 5000) {
+        console.log(`[Kiosk] Ignoring repeated action ${actionType} (already handled)`);
+        return;
+      }
+      lastHandledActionRef.current = { key, t: nowTs };
+    }
 
     if (action && typeof action === "object") {
       setBackendAction(action);
@@ -1297,6 +1335,8 @@ export function useKiosk() {
       return;
     }
 
+    stopSpeechForUserAction("user_voice_turn");
+
     // ── Spoken purchase / checkout intent ──
     if (/^(?:buy|buy now|checkout|i'll take it|i want this|take it)$/i.test(trimmed)) {
       kioskWS.sendWsMessage("buy");
@@ -1355,7 +1395,7 @@ export function useKiosk() {
       isSendingRef.current = false;
     }
 
-  }, [handleServerAction, say, setConv, skipName, submitName]);
+  }, [handleServerAction, say, setConv, skipName, stopSpeechForUserAction, submitName]);
 
   // ── End-of-turn finalization ──────────────────────────────────────────────
   const finaliseAndSend = useCallback((explicitText) => {
@@ -1598,6 +1638,7 @@ export function useKiosk() {
 
   // ── Flow Actions ──────────────────────────────────────────────────────────
   const selectCategory = useCallback((cat) => {
+    stopSpeechForUserAction("user_tap_category");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     const rawId = typeof cat === "string" ? cat : (cat?.id || "all");
@@ -1617,9 +1658,10 @@ export function useKiosk() {
       category_id: cleanId,
       category_name: catName,
     });
-  }, [categories, presence]);
+  }, [categories, presence, stopSpeechForUserAction]);
 
   const selectProduct = useCallback((p) => {
+    stopSpeechForUserAction("user_tap_product");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     setProductId(p.id);
@@ -1627,21 +1669,23 @@ export function useKiosk() {
     setOnboardingOpen(false);
     KioskStepCache.setSelectedProduct(p);
     kioskWS.sendSelectProduct(p);
-  }, [presence]);
+  }, [presence, stopSpeechForUserAction]);
 
   const showAll = useCallback(() => {
+    stopSpeechForUserAction("user_tap_show_all");
     lastInputAtRef.current = Date.now();
     setCategory("all");
     setShowDetail(false);
     setOnboardingOpen(false);
     kioskWS.sendWsAction({ action: "SHOW_ALL" });
-  }, []);
+  }, [stopSpeechForUserAction]);
 
   const navigateBack = useCallback(() => {
+    stopSpeechForUserAction("user_tap_back");
     lastInputAtRef.current = Date.now();
     setShowDetail(false);
     kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
-  }, []);
+  }, [stopSpeechForUserAction]);
 
   const restartSession = useCallback(() => {
     lastInputAtRef.current = Date.now();
@@ -1650,26 +1694,29 @@ export function useKiosk() {
   }, [reset]);
 
   const send = useCallback((text) => {
+    stopSpeechForUserAction("user_send");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     if (text) {
       kioskWS.sendWsMessage(text);
     }
-  }, [presence]);
+  }, [presence, stopSpeechForUserAction]);
 
   const enquire = useCallback(() => {
+    stopSpeechForUserAction("user_enquire");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     say(
       `Happy to help with a bulk enquiry${name ? ", " + name : ""}! ` +
       "Our team offers volume discounts, custom logo engraving, and certified eco packaging."
     );
-  }, [name, presence, say]);
+  }, [name, presence, say, stopSpeechForUserAction]);
 
   const handleButtonClick = useCallback((btn) => {
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     if (!btn) return;
+    stopSpeechForUserAction("user_tap_button");
     console.log("[Kiosk] User clicked flow button:", btn);
 
     const btnId = typeof btn === "string" ? btn.toLowerCase().trim() : (btn.id || btn.label || "").toLowerCase().trim();
@@ -1698,7 +1745,7 @@ export function useKiosk() {
     }
 
     kioskWS.sendButtonClick(btn);
-  }, [presence, restartSession, skipName]);
+  }, [presence, restartSession, skipName, stopSpeechForUserAction]);
 
   const products = useMemo(() => {
     if (liveTurnProducts.length > 0) {

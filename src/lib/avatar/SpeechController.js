@@ -69,6 +69,8 @@ export class SpeechController {
     // Prefetching management
     this._activePrefetches = new Map(); // key -> AbortController
     this._chunkSeq = 0;
+    this.cancelledReplyIds = new Set(); // replies the user cut off; never speak them again
+    this.recentEnqueued = []; // { norm, t }: lines queued in the last 15s, used to block repeats
 
     // Subtitle hold timer (2.5s hold)
     this._subtitleHoldTimer = null;
@@ -118,6 +120,10 @@ export class SpeechController {
    */
   beginReply(replyId, { source = "unknown", speechId = null } = {}) {
     const rid = replyId || `reply_${Date.now()}`;
+    if (this.cancelledReplyIds.has(rid)) {
+      console.log(`[SpeechController] beginReply ignored, ${rid} was cancelled`);
+      return rid;
+    }
     let meta = this.replyMap.get(rid);
     if (!meta) {
       meta = {
@@ -155,6 +161,11 @@ export class SpeechController {
     let rid = replyId;
     if (!rid || rid === "turn_default") {
       rid = this.currentPendingReplyId || this.beginReply(`reply_${Date.now()}`, { source: "streamed" });
+    }
+
+    if (this.cancelledReplyIds.has(rid)) {
+      console.log(`[SpeechController] Dropping sentence for cancelled reply ${rid}: "${String(text).slice(0, 40)}"`);
+      return;
     }
 
     let meta = this.replyMap.get(rid);
@@ -199,6 +210,17 @@ export class SpeechController {
         continue;
       }
       this.seenReplyKeys.add(dedupeKey);
+
+      // De-dupe 3: same words already queued recently, even if chunked differently or under another replyId
+      const flatNorm = normChunk.replace(/\s+/g, " ");
+      const nowTs = Date.now();
+      this.recentEnqueued = this.recentEnqueued.filter((e) => nowTs - e.t < 15000);
+      const recentText = this.recentEnqueued.map((e) => e.norm).join(" ");
+      if (flatNorm.length >= 6 && recentText.includes(flatNorm)) {
+        console.log(`[SpeechController] Skipping repeated line: "${chunk.slice(0, 40)}" (replyId=${rid})`);
+        continue;
+      }
+      this.recentEnqueued.push({ norm: flatNorm, t: nowTs });
 
       const item = {
         id: "chunk_" + (++this._chunkSeq),
@@ -265,8 +287,8 @@ export class SpeechController {
     this.onSubtitleClear?.();
 
     // Abort active prefetch fetches
-    for (const [key, controller] of this._activePrefetches.entries()) {
-      try { controller.abort(); } catch (_) {}
+    for (const [, entry] of this._activePrefetches.entries()) {
+      try { entry.controller.abort(); } catch (_) {}
     }
     this._activePrefetches.clear();
 
@@ -303,13 +325,25 @@ export class SpeechController {
       try { fn("cancelled"); } catch (_) {}
     }
 
+    if (reason !== "session_reset") {
+      for (const [rid, meta] of this.replyMap.entries()) {
+        if (!meta.ended || this.queue.some((q) => q.replyId === rid)) this.cancelledReplyIds.add(rid);
+      }
+      if (this.currentPendingReplyId) this.cancelledReplyIds.add(this.currentPendingReplyId);
+      if (this.cancelledReplyIds.size > 200) {
+        this.cancelledReplyIds = new Set(Array.from(this.cancelledReplyIds).slice(-100));
+      }
+    }
+
     // Reset queue state
     this.queue.length = 0;
+    this.recentEnqueued.length = 0;
     this.currentPlayingItem = null;
     this.isDraining = false;
     this.currentPendingReplyId = null;
 
     if (reason === "session_reset") {
+      this.cancelledReplyIds.clear();
       this.replyMap.clear();
       this.seenReplyKeys.clear();
       this.sentSpeechDones.clear();
@@ -351,9 +385,6 @@ export class SpeechController {
     return null;
   }
 
-  /**
-   * Internal helper to fetch & decode a chunk item with generation check.
-   */
   async _prefetchChunkAudio(item, gen) {
     if (gen !== this.generation || !item) return null;
     const model = TTS_CONFIG.model || "aura-2-luna-en";
@@ -364,34 +395,45 @@ export class SpeechController {
       return item.audioBuffer;
     }
 
-    if (this._activePrefetches.has(cacheKey)) {
-      // Already in flight
-      return null;
+    // Same text already being fetched: WAIT for that request (old code returned null = fake failure)
+    const inflight = this._activePrefetches.get(cacheKey);
+    if (inflight) {
+      const buf = await inflight.promise;
+      if (gen !== this.generation) return null;
+      if (buf) item.audioBuffer = buf;
+      return buf;
     }
 
     const abortCtrl = new AbortController();
-    this._activePrefetches.set(cacheKey, abortCtrl);
+    const promise = this._fetchAndDecode(item, gen, cacheKey, model, abortCtrl);
+    this._activePrefetches.set(cacheKey, { controller: abortCtrl, promise });
+    try {
+      return await promise;
+    } finally {
+      if (this._activePrefetches.get(cacheKey)?.promise === promise) {
+        this._activePrefetches.delete(cacheKey);
+      }
+    }
+  }
 
+  async _fetchAndDecode(item, gen, cacheKey, model, abortCtrl) {
     const meta = this.replyMap.get(item.replyId);
     if (meta && !meta.hasLoggedFirstReq) {
       meta.hasLoggedFirstReq = true;
       console.log(`[SpeechController] first TTS request replyId=${item.replyId} text="${item.sanitized.slice(0, 50)}"`);
     }
-
     try {
       const audioCtx = getAudioContext();
       const res = await fetch(
         `http://localhost:4000/api/tts?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(model)}`,
         { signal: abortCtrl.signal }
       );
-
       if (gen !== this.generation) return null;
 
       if (meta && !meta.hasLoggedFirstByte) {
         meta.hasLoggedFirstByte = true;
         console.log(`[SpeechController] first byte replyId=${item.replyId} status=${res.status}`);
       }
-
       if (res.ok && audioCtx) {
         const ab = await res.arrayBuffer();
         if (gen !== this.generation) return null;
@@ -406,8 +448,6 @@ export class SpeechController {
       if (err?.name !== "AbortError") {
         console.warn(`[SpeechController] TTS fetch failed: "${item.sanitized.slice(0, 40)}"`, err?.message || err);
       }
-    } finally {
-      this._activePrefetches.delete(cacheKey);
     }
     return null;
   }
@@ -460,10 +500,10 @@ export class SpeechController {
           console.error(`[SpeechController] Play error for item ${item.id}:`, err?.message || err);
           this._handleChunkFail(item, err?.message || "playback_error");
         } finally {
-          if (this.queue[0] === item) {
-            this.queue.shift();
+          if (drainGen === this.generation) {
+            if (this.queue[0] === item) this.queue.shift();
+            this.currentPlayingItem = null;
           }
-          this.currentPlayingItem = null;
         }
 
         if (drainGen !== this.generation) break;

@@ -45,6 +45,8 @@ class KioskWebSocketClient {
     this.currentSpeechId = null;
     this.pendingSpeechId = null;
     this.speechDoneTimer = null;
+    this.inFlightTurnId = null;   // turn currently streaming from the backend
+    this.staleTurns = new Set();  // turns the user cancelled; their frames are ignored
   }
 
   generateTurnId() {
@@ -95,6 +97,8 @@ class KioskWebSocketClient {
     }
 
     // Close previous session connection if session changed
+    this.staleTurns.clear();
+    this.inFlightTurnId = null;
     if (this.ws) {
       try {
         this.ws.close();
@@ -199,6 +203,18 @@ class KioskWebSocketClient {
         return;
       }
 
+      const frameTurnId = meta?.turn_id || payload.turn_id || data?.turn_id || null;
+      if (frameTurnId && this.staleTurns.has(frameTurnId)) {
+        if (type === "done" || type === "cancelled" || type === "error") {
+          this.staleTurns.delete(frameTurnId);
+        }
+        if (type !== "token") console.log(`[KioskWS] Dropping stale ${type} frame from cancelled turn ${frameTurnId}`);
+        return;
+      }
+      if (frameTurnId && !this.inFlightTurnId && (type === "token" || type === "action" || type === "sentence")) {
+        this.inFlightTurnId = frameTurnId; // backend-started turn (e.g. auto greet)
+      }
+
       // Extract action data whether structured as type="action" or top-level action payload
       const actionData = (type === "action" || payload.action || data?.action)
         ? (data || payload?.data || payload)
@@ -228,7 +244,7 @@ class KioskWebSocketClient {
         case "token": {
           const tokenStr = typeof data === "string" ? data : "";
           this.currentResponse += tokenStr;
-          console.log(`[BACKEND >> TOKEN] "${tokenStr}"`);
+          console.log(`[BACKEND >> TOKEN] turn=${frameTurnId || "?"} "${tokenStr}"`);
           this.emit("token", tokenStr);
 
           // Buffer streamed tokens into sentences and emit completed sentences for early TTS
@@ -276,6 +292,7 @@ class KioskWebSocketClient {
         }
 
         case "done": {
+          this.inFlightTurnId = null;
           this.isBusy = false;
           // Flush any remaining buffered tokens as the final sentence
           this.sentenceStreamer?.flush();
@@ -314,6 +331,7 @@ class KioskWebSocketClient {
         }
 
         case "cancelled": {
+          this.inFlightTurnId = null;
           this.isBusy = false;
           this.sentenceStreamer?.reset();
           this.currentTurnId = null;
@@ -330,6 +348,7 @@ class KioskWebSocketClient {
         }
 
         case "error": {
+          this.inFlightTurnId = null;
           this.isBusy = false;
           this.sentenceStreamer?.reset();
           this.currentTurnId = null;
@@ -416,15 +435,18 @@ class KioskWebSocketClient {
     const onAction = callbacks?.onAction;
 
     // If backend is still generating a previous turn, cleanly cancel it to release coordinator lock
-    if (this.isBusy && this.currentTurnId) {
-      console.log(`[KioskWS] Preempting previous turn ${this.currentTurnId} for new query`);
-      this.cancel(this.currentTurnId);
+    const prevTurn = this.inFlightTurnId || (this.isBusy ? this.currentTurnId : null);
+    if (prevTurn) {
+      console.log(`[KioskWS] Preempting previous turn ${prevTurn} for new query`);
+      this._markStale(prevTurn);
+      this.cancel(prevTurn);
       await new Promise((r) => setTimeout(r, 40));
     }
 
     const turnId = this.generateTurnId();
     this.isBusy = true;
     this.currentTurnId = turnId;
+    this.inFlightTurnId = turnId;
     this.sentenceStreamer?.reset();
     this.currentResponse = "";
     this.lastAction = null;
@@ -481,15 +503,18 @@ class KioskWebSocketClient {
     }
 
     // If backend is still generating a previous turn, cleanly cancel it to release coordinator lock
-    if (this.isBusy && this.currentTurnId) {
-      console.log(`[KioskWS] Preempting previous turn ${this.currentTurnId} for action ${action}`);
-      this.cancel(this.currentTurnId);
+    const prevTurn = this.inFlightTurnId || (this.isBusy ? this.currentTurnId : null);
+    if (prevTurn) {
+      console.log(`[KioskWS] Preempting previous turn ${prevTurn} for action ${action}`);
+      this._markStale(prevTurn);
+      this.cancel(prevTurn);
       await new Promise((r) => setTimeout(r, 40));
     }
 
     const turnId = options.turnId || this.generateTurnId();
     this.isBusy = true;
     this.currentTurnId = turnId;
+    this.inFlightTurnId = turnId;
     this.currentResponse = "";
     this.lastAction = null;
 
@@ -607,19 +632,48 @@ class KioskWebSocketClient {
     return Promise.resolve({ success: true });
   }
 
+  _markStale(turnId) {
+    if (!turnId) return;
+    this.staleTurns.add(turnId);
+    if (this.staleTurns.size > 50) {
+      this.staleTurns.delete(this.staleTurns.values().next().value);
+    }
+  }
+
+  // Every user-initiated frame (tap / typed message) goes through here
+  _dispatchUserFrame(frame, turnId, label) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn(`[KioskWS] WebSocket not open when sending ${label}:`, frame);
+      return;
+    }
+    const previous = this.inFlightTurnId;
+    let delayMs = 0;
+    if (previous && previous !== turnId) {
+      console.log(`[KioskWS] Cancelling stale turn ${previous} for new ${label} (turn ${turnId})`);
+      this._markStale(previous);
+      this.cancel(previous);
+      delayMs = 40; // same small gap your sendQuery uses so the backend lock is released
+    }
+    this.inFlightTurnId = turnId;
+    this.currentTurnId = turnId;
+    this.sentenceStreamer?.reset();
+    this.currentResponse = "";
+    this.lastAction = null;
+
+    const send = () => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        console.log(`[KioskWS] Sending ${label} frame:`, frame);
+        this.ws.send(JSON.stringify(frame));
+      }
+    };
+    delayMs ? setTimeout(send, delayMs) : send();
+  }
+
   // ── Standard Protocol v2 Sending API ──
   sendWsMessage(text) {
     const turnId = this.generateTurnId();
-    const frame = {
-      message: String(text || ""),
-      turn_id: turnId,
-    };
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      console.log("[KioskWS] Sending message frame:", frame);
-      this.ws.send(JSON.stringify(frame));
-    } else {
-      console.warn("[KioskWS] WebSocket not open when sending message:", text);
-    }
+    const frame = { message: String(text || ""), turn_id: turnId };
+    this._dispatchUserFrame(frame, turnId, "message");
     return turnId;
   }
 
@@ -627,13 +681,7 @@ class KioskWebSocketClient {
     const action = actionPayload?.action;
     const turnId = actionPayload?.turn_id || this.generateTurnId();
     const frame = this.buildActionFrame(action, actionPayload, turnId);
-
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      console.log("[KioskWS] Sending action frame:", frame);
-      this.ws.send(JSON.stringify(frame));
-    } else {
-      console.warn("[KioskWS] WebSocket not open when sending action:", actionPayload);
-    }
+    this._dispatchUserFrame(frame, turnId, "action");
     return turnId;
   }
 
