@@ -579,6 +579,7 @@ export class GreenieAvatar {
         }
       }
       this.setMorph("jawOpen", 0);
+      this.setMorph("mouthOpen", 0);
       this.setMorph("mouthFunnel", 0);
       this.setMorph("mouthPucker", 0);
       this.setMorph("mouthStretch", 0);
@@ -888,17 +889,32 @@ export class GreenieAvatar {
     // =========================================================
     // HOVER FLIGHT & SPEAKING STATE EVALUATION
     // =========================================================
+    const isSpeakingCtrl = speechController.currentSourceNode !== null;
     const isSpeakingTTS =
       typeof window !== "undefined" &&
       window.speechSynthesis?.speaking &&
       !window.speechSynthesis?.paused &&
       this.started;
     const isSpeakingAudio = this.mode === "audio" && this.audio && !this.audio.paused;
-    const isSpeaking = isSpeakingTTS || isSpeakingAudio;
+    const isSpeaking = isSpeakingCtrl || isSpeakingTTS || isSpeakingAudio;
 
     // Real-time formant-based viseme analysis (reads delayed audio live)
     const m = getMouth(isSpeaking, dt);
     const STYLE = 0.75;
+
+    if (!this._lastLipLog || currentTime - this._lastLipLog >= 1000) {
+      this._lastLipLog = currentTime;
+      console.log(
+        "[LipSync] isSpeaking=",
+        isSpeaking,
+        "open=",
+        m.open.toFixed(2),
+        "wide=",
+        m.wide.toFixed(2),
+        "round=",
+        m.round.toFixed(2)
+      );
+    }
 
     // Lifts up 0.52m into the air when explaining, glides softly back down when done
     const targetHover = isSpeaking && !this.flyingEntrance ? 0.52 : 0;
@@ -1211,6 +1227,7 @@ export class GreenieAvatar {
     // =========================================================
     // 1. ARKit morph targets (jawOpen, mouthFunnel, mouthPucker, mouthStretch, mouthSmile, mouthClose, browInnerUp)
     this.setMorph("jawOpen", m.open * STYLE);
+    this.setMorph("mouthOpen", m.open * STYLE);
     this.setMorph("mouthFunnel", m.round * m.open);
     this.setMorph("mouthPucker", m.round * 0.5 * m.open);
     this.setMorph("mouthStretch", m.wide * 0.6 * m.open);

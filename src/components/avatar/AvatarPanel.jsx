@@ -16,7 +16,6 @@ import Captions from "@/components/avatar/Captions";
 import DebugOverlay from "@/components/debug/DebugOverlay";
 import LiveSpeechTester from "@/components/debug/LiveSpeechTester";
 import { preferredVoice } from "@/lib/avatar/voice";
-import VoiceHUD from "./VoiceHUD";
 
 export default function AvatarPanel({
   caption,
@@ -223,22 +222,6 @@ export default function AvatarPanel({
         />
       )}
 
-      {/* Voice HUD at bottom-left */}
-      {isEngaged && (
-        <div className="voice-hud-fixed-container">
-          <VoiceHUD
-            listening={listening}
-            speaking={isAvatarSpeaking || speaking}
-            liveTranscript={liveTranscript}
-            userSpeaking={userSpeaking}
-            convState={convState}
-            onToggleMic={onToggleMic}
-            micError={micError}
-            audioLevel={audioLevel}
-            onQuickPick={onQuickPick}
-          />
-        </div>
-      )}
 
       {/* Live Speech Testing Monitor (visible in debug mode) */}
       {debugOpen && (

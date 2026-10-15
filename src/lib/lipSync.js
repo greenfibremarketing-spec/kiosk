@@ -26,10 +26,16 @@ export function attachLipSync(audioTarget) {
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return () => {};
-    ctx ??= new AC();
+    if (audioTarget?.context) {
+      ctx = audioTarget.context;
+    } else {
+      ctx ??= new AC();
+    }
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
 
-    if (!analyser) {
+    console.log(`[LipSync] attached, ctx.state=${ctx.state}`);
+
+    if (!analyser || analyser.context !== ctx) {
       analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       analyser.smoothingTimeConstant = 0;
