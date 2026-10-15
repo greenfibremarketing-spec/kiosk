@@ -60,7 +60,13 @@ import { useMic } from "@/hooks/useMic";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
 import { useSpeech } from "@/hooks/useSpeech";
 import speechConfig from "@/lib/speechConfig";
-import { returnFromDetail } from "@/lib/greetConfig";
+import {
+  returnFromDetail,
+  PAIRUP_ASK_TIMEOUT_MS,
+  PAIRUP_DISCOUNT_PERCENT,
+  PAIRUP_MAX_PER_SESSION,
+  getPairUpSpeech,
+} from "@/lib/greetConfig";
 import { prefetchAudio, prewarmVoiceCache } from "@/lib/avatar/GreenieAvatar";
 import { speechController, warmupSpeech } from "@/lib/avatar/SpeechController";
 
@@ -102,6 +108,125 @@ export function useKiosk() {
   const [hintBubble, setHintBubble] = useState(null);
   const [recommendationOpen, setRecommendationOpen] = useState(false);
   const [recommendationData, setRecommendationData] = useState(null);
+
+  // ── Cart & Pair-Up Suggestions State ───────────────────────────────────────
+  const [cartItems, setCartItems] = useState([]);
+  const cartItemsRef = useRef(cartItems);
+  cartItemsRef.current = cartItems;
+
+  const [pairUpPromptOpen, setPairUpPromptOpen] = useState(false);
+  const [pairUpModalOpen, setPairUpModalOpen] = useState(false);
+  const [pairUpProducts, setPairUpProducts] = useState([]);
+  const [pairUpQuestionText, setPairUpQuestionText] = useState("");
+  const [pairUpCaption, setPairUpCaption] = useState(
+    "Psst! Pick any one pair-up from here and unlock an extra 5% off your whole order!"
+  );
+  const [showCheckout, setShowCheckout] = useState(false);
+
+  const pairUpTimerRef = useRef(null);
+  const sessionPairUpAskCountRef = useRef(0);
+  const consecutiveNoCountRef = useRef(0);
+  const askedProductIdsRef = useRef(new Set());
+  const pairupCacheRef = useRef(new Map());
+  const pairUpVariantIdxRef = useRef({
+    pairUpAsk: -1,
+    pairUpYes: -1,
+    pairUpNo: -1,
+    pairUpAdded: -1,
+    pairUpSkipped: -1,
+  });
+  const pairUpActiveProductIdRef = useRef(null);
+  const addedPairUpInCurrentModalRef = useRef(false);
+
+  // Integer paise money math (no float rounding errors)
+  const cartTotals = useMemo(() => {
+    let subtotalPaise = 0;
+    let hasPairUp = false;
+
+    for (const item of cartItems) {
+      const qty = Number(item.quantity) || 1;
+      const pricePaise = Math.round(Number(item.price || item.salePrice || 0) * 100);
+      subtotalPaise += pricePaise * qty;
+      if (item.isPairUp) {
+        hasPairUp = true;
+      }
+    }
+
+    const discountPaise = hasPairUp
+      ? Math.round((subtotalPaise * PAIRUP_DISCOUNT_PERCENT) / 100)
+      : 0;
+
+    const totalPaise = subtotalPaise - discountPaise;
+
+    const subtotal = Math.round(subtotalPaise / 100);
+    const discount = Math.round(discountPaise / 100);
+    const total = Math.round(totalPaise / 100);
+
+    return {
+      subtotalPaise,
+      discountPaise,
+      totalPaise,
+      subtotal,
+      discount,
+      total,
+      savings: discount,
+      hasPairUpDiscount: hasPairUp && discount > 0,
+      itemCount: cartItems.reduce((acc, it) => acc + (Number(it.quantity) || 1), 0),
+    };
+  }, [cartItems]);
+
+  // Helper to select 3-4 suggestions (balancing same category and different categories)
+  const getPairUpSuggestions = useCallback(
+    (targetProduct, currentCartItems = [], allProducts = []) => {
+      const catalog = allProducts && allProducts.length > 0 ? allProducts : backendCatalog;
+      if (!catalog || catalog.length === 0) return [];
+
+      const cartIds = new Set(
+        (currentCartItems || []).map((i) => String(i.id || i.sku || "").toLowerCase())
+      );
+      if (targetProduct) {
+        cartIds.add(String(targetProduct.id || targetProduct.sku || "").toLowerCase());
+      }
+
+      const targetCategory = String(targetProduct?.category || "").toLowerCase();
+
+      const sameCategory = [];
+      const diffCategory = [];
+
+      for (const p of catalog) {
+        const pid = String(p.id || p.sku || "").toLowerCase();
+        if (cartIds.has(pid)) continue;
+
+        const pCat = String(p.category || "").toLowerCase();
+        if (targetCategory && (pCat === targetCategory || pCat.includes(targetCategory))) {
+          sameCategory.push(p);
+        } else {
+          diffCategory.push(p);
+        }
+      }
+
+      const selected = [];
+      if (sameCategory.length > 0) {
+        selected.push(...sameCategory.slice(0, 2));
+      }
+      if (diffCategory.length > 0) {
+        const needed = 4 - selected.length;
+        selected.push(...diffCategory.slice(0, Math.max(2, needed)));
+      }
+      if (selected.length < 4) {
+        for (const p of catalog) {
+          const pid = String(p.id || p.sku || "").toLowerCase();
+          if (!cartIds.has(pid) && !selected.some((s) => String(s.id || s.sku || "").toLowerCase() === pid)) {
+            selected.push(p);
+            if (selected.length >= 4) break;
+          }
+        }
+      }
+
+      return selected.slice(0, 4);
+    },
+    [backendCatalog]
+  );
 
   // Guards & references
   const greetingDoneRef = useRef(false);
@@ -1241,6 +1366,17 @@ export function useKiosk() {
     setHintBubble(null);
     setRecommendationOpen(false);
     setRecommendationData(null);
+    setPairUpPromptOpen(false);
+    setPairUpModalOpen(false);
+    setPairUpProducts([]);
+    setPairUpCaption("Psst! Pick any one pair-up from here and unlock an extra 5% off your whole order!");
+    setCartItems([]);
+    setShowCheckout(false);
+    sessionPairUpAskCountRef.current = 0;
+    consecutiveNoCountRef.current = 0;
+    askedProductIdsRef.current.clear();
+    pairupCacheRef.current.clear();
+    if (pairUpTimerRef.current) clearTimeout(pairUpTimerRef.current);
     setShowDetail(false);
     setOnboardingOpen(false);
     setOnboardingStep(1);
@@ -1376,6 +1512,16 @@ export function useKiosk() {
         warningDeadlineRef.current = null;
         setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
         latestRef.current.reset?.("face_absent_hard_timeout");
+        return;
+      }
+
+      if (latestRef.current.pairUpPromptOpen || latestRef.current.pairUpModalOpen) {
+        // Pause idle inactivity timers while prompt card or pop-up is open,
+        // but keep the face-absence hard reset intact.
+        if (warningDeadlineRef.current !== null || sessionTimeoutWarningRef.current.active) {
+          warningDeadlineRef.current = null;
+          setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
+        }
         return;
       }
 
@@ -1795,7 +1941,6 @@ export function useKiosk() {
       }
 
       case "CONFIRM_BUY": {
-        setCartModalOpen(true);
         const currentCatalog = latestRef.current.backendCatalog || [];
         const target =
           findMatchingLocalProduct(action?.sku, currentCatalog) ||
@@ -1804,11 +1949,30 @@ export function useKiosk() {
           currentCatalog[0] ||
           null;
 
-        setCartModalData({
-          sku: action?.sku || target?.sku,
-          product: target,
-          buttons: action?.buttons || ["Checkout", "Keep shopping"],
-        });
+        if (target) {
+          const targetItem = {
+            id: target.id || target.sku,
+            sku: target.sku || target.id,
+            name: target.name,
+            price: target.salePrice || target.price || 0,
+            quantity: 1,
+            selectedColor: "Natural Olive",
+            image: target.image,
+            shape: target.shape,
+            isPairUp: false,
+          };
+          setCartItems((prev) => {
+            if (prev.some((i) => i.id === targetItem.id || i.sku === targetItem.sku)) return prev;
+            return [...prev, targetItem];
+          });
+
+          // Generate 3-4 suggestions for the popup
+          const suggs = getPairUpSuggestions(target, cartItemsRef.current, currentCatalog);
+          setPairUpProducts(suggs);
+        }
+
+        setPairUpModalOpen(true);
+        setCartModalOpen(false);
         const msg = action?.message;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
           const cleanMsg = msg.trim();
@@ -2106,6 +2270,33 @@ export function useKiosk() {
     if (isOverrideIntent) {
       console.log("[Kiosk] Spoken identity override detected:", trimmed);
       latestRef.current.resetSession?.("user_speech");
+      return;
+    }
+
+    // ── Spoken answers during Pair-Up Prompt ──
+    if (latestRef.current.pairUpPromptOpen) {
+      const clean = trimmed
+        .toLowerCase()
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const isYes = /^(?:yes|sure|okay|ok|show\s+me|haan|ha|dikhao|ji)\b/i.test(clean);
+      const isNo = /^(?:no|nope|skip|not\s+now|nahi|nahin|no\s+thanks)\b/i.test(clean);
+
+      if (isYes) {
+        console.log("[PairUp] Spoken YES received:", trimmed);
+        latestRef.current.handlePairUpYes?.();
+        return;
+      }
+      if (isNo) {
+        console.log("[PairUp] Spoken NO received:", trimmed);
+        latestRef.current.handlePairUpNo?.();
+        return;
+      }
+
+      // Ignore unrelated interruptions while prompt is active, keep waiting without guessing
+      console.log("[PairUp] Unmatched voice input while prompt active, ignoring:", trimmed);
       return;
     }
 
@@ -2469,6 +2660,23 @@ export function useKiosk() {
     setOnboardingOpen(false);
     KioskStepCache.setSelectedProduct(p);
     kioskWS.sendSelectProduct(p);
+
+    // Prefetch pair-up suggestions in background
+    const pid = p?.id || p?.sku;
+    if (pid && !pairupCacheRef.current.has(pid)) {
+      const cartSkus = cartItemsRef.current.map((i) => i.sku || i.id).join(",");
+      fetch(`http://localhost:5007/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (Array.isArray(data?.products)) {
+            pairupCacheRef.current.set(pid, data.products);
+            console.log(`[PairUp] Prefetched ${data.products.length} pair-up products for ${pid}`);
+          }
+        })
+        .catch((err) => {
+          console.warn("[PairUp] Prefetch notice:", err?.message || err);
+        });
+    }
   }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
 
   const showAll = useCallback(() => {
@@ -2533,21 +2741,29 @@ export function useKiosk() {
 
     const btnId = typeof btn === "string" ? btn.toLowerCase().trim() : (btn.id || btn.label || "").toLowerCase().trim();
 
-    if (btnId === "skip_name" || btnId === "skip") {
+    if (btnId === "skip_name") {
       skipName();
       return;
     }
 
-    if (btnId === "checkout") {
-      kioskWS.sendWsMessage("checkout");
-      setCartModalOpen(false);
-      setQrModalOpen(true);
+    if (btnId === "checkout" || btnId === "proceed" || btnId === "proceed_to_cart") {
+      openCart({ fromPairUp: true });
+      return;
+    }
+
+    if (btnId === "skip") {
+      if (onboardingOpen) {
+        skipName();
+      } else {
+        openCart({ fromPairUp: true });
+      }
       return;
     }
 
     if (btnId === "keep_shopping" || btnId === "keep shopping") {
       kioskWS.sendWsMessage("keep shopping");
       setCartModalOpen(false);
+      setPairUpModalOpen(false);
       return;
     }
 
@@ -2581,6 +2797,214 @@ export function useKiosk() {
     setRecommendationOpen(false);
     kioskWS.sendWsAction({ action: "DECLINE_RECOMMENDATION" });
   }, [stopSpeechForUserAction]);
+
+  // ── Pair-Up Speech & Action Handlers ─────────────────────────────────────
+  const isNavigatingToCartRef = useRef(false);
+
+  const speakPairUpLine = useCallback(
+    (type, extraName = "", openTime = 0) => {
+      const activeName = extraName || latestRef.current?.name || KioskStepCache.getCustomerName() || "";
+      const isNameSub = Boolean(nameSubmittedRef.current && activeName);
+      const lastIdx = pairUpVariantIdxRef.current[type] ?? -1;
+      const { text, displayText, chunks, nextIndex } = getPairUpSpeech(type, {
+        name: activeName,
+        nameSubmitted: isNameSub,
+        lastIndex: lastIdx,
+      });
+      pairUpVariantIdxRef.current[type] = nextIndex;
+
+      if (displayText) {
+        setPairUpCaption(displayText);
+        setCaption(displayText);
+      } else if (text) {
+        setPairUpCaption(text);
+        setCaption(text);
+      }
+
+      if (text) {
+        cancelPendingReturnFromDetail("pairup_action");
+        speechController.cancelAll("pairup_action");
+        const replyId = `pu_${type}_${Date.now()}`;
+        speechController.beginReply(replyId, { source: "pairup" });
+        const lineChunks = Array.isArray(chunks) && chunks.length > 0 ? chunks : [text];
+        for (const chunk of lineChunks) {
+          speechController.appendSentence(replyId, chunk, { turnId: replyId, openTime });
+        }
+        speechController.endReply(replyId);
+      }
+      return text;
+    },
+    [cancelPendingReturnFromDetail]
+  );
+
+  const openCart = useCallback(
+    ({ fromPairUp = true } = {}) => {
+      if (isNavigatingToCartRef.current) return;
+      isNavigatingToCartRef.current = true;
+      setTimeout(() => {
+        isNavigatingToCartRef.current = false;
+      }, 800);
+
+      cancelPendingReturnFromDetail("open_cart");
+      setPairUpModalOpen(false);
+      setCartModalOpen(false);
+      setShowCheckout(true);
+    },
+    [cancelPendingReturnFromDetail]
+  );
+
+  const removeCartItem = useCallback((idOrSku) => {
+    setCartItems((prev) => prev.filter((it) => it.id !== idOrSku && it.sku !== idOrSku));
+  }, []);
+
+  const handleAddToCart = useCallback(
+    async ({ product, quantity = 1, selectedColor = "Natural Olive" } = {}) => {
+      if (!product) return;
+      const openTime = Date.now();
+      const pid = product.id || product.sku;
+
+      cancelPendingReturnFromDetail("add_to_cart");
+      speechController.cancelAll("pairup_action");
+
+      // 1. Add primary product to cart
+      const primaryItem = {
+        id: pid,
+        sku: product.sku || pid,
+        name: product.name,
+        price: product.salePrice || product.price || 0,
+        quantity,
+        selectedColor,
+        image: product.image,
+        shape: product.shape,
+        isPairUp: false,
+      };
+
+      setCartItems((prev) => {
+        const existingIdx = prev.findIndex(
+          (i) => (i.id === primaryItem.id || i.sku === primaryItem.sku) && i.selectedColor === primaryItem.selectedColor
+        );
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            quantity: (updated[existingIdx].quantity || 1) + primaryItem.quantity,
+          };
+          return updated;
+        }
+        return [...prev, primaryItem];
+      });
+
+      // 2. Compute 3-4 suggestions (balancing same category and different categories)
+      let suggestions = pairupCacheRef.current.get(pid);
+      if (!suggestions || suggestions.length === 0) {
+        suggestions = getPairUpSuggestions(product, cartItemsRef.current, backendCatalog);
+      }
+      setPairUpProducts(suggestions);
+
+      // 3. Open pair-up bottom sheet pop-up immediately (never block on TTS)
+      setPairUpModalOpen(true);
+      setCartModalOpen(false);
+
+      // 4. In the exact same tick, speak pairUpIntro
+      speakPairUpLine("pairUpIntro", "", openTime);
+
+      // Background verify with backend /pairups if not cached yet
+      if (!pairupCacheRef.current.has(pid)) {
+        try {
+          const cartSkus = cartItemsRef.current.map((i) => i.sku || i.id).join(",");
+          const res = await fetch(
+            `http://localhost:5007/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            const list = Array.isArray(data) ? data : Array.isArray(data?.products) ? data.products : [];
+            if (list.length > 0) {
+              pairupCacheRef.current.set(pid, list);
+              setPairUpProducts(list);
+            }
+          }
+        } catch (_) {}
+      }
+    },
+    [backendCatalog, cancelPendingReturnFromDetail, getPairUpSuggestions, speakPairUpLine]
+  );
+
+  const handlePairUpYes = useCallback(() => {
+    if (pairUpTimerRef.current) clearTimeout(pairUpTimerRef.current);
+    consecutiveNoCountRef.current = 0;
+    setPairUpPromptOpen(false);
+    speakPairUpLine("pairUpIntro");
+    setPairUpModalOpen(true);
+  }, [speakPairUpLine]);
+
+  const handlePairUpNo = useCallback(() => {
+    if (pairUpTimerRef.current) clearTimeout(pairUpTimerRef.current);
+    consecutiveNoCountRef.current += 1;
+    setPairUpPromptOpen(false);
+    speakPairUpLine("pairUpSkipped");
+    openCart({ fromPairUp: true });
+  }, [openCart, speakPairUpLine]);
+
+  const handlePairUpAddProduct = useCallback(
+    (item) => {
+      if (!item) return;
+      const pid = item.id || item.sku;
+
+      const pairItem = {
+        id: pid,
+        sku: item.sku || pid,
+        name: item.name,
+        price: item.salePrice || item.price || 0,
+        quantity: 1,
+        image: item.image,
+        shape: item.shape,
+        isPairUp: true,
+      };
+
+      setCartItems((prev) => {
+        const existing = prev.find((i) => i.id === pairItem.id || i.sku === pairItem.sku);
+        if (existing) return prev;
+        return [...prev, pairItem];
+      });
+
+      addedPairUpInCurrentModalRef.current = true;
+    },
+    []
+  );
+
+  const handlePairUpSkip = useCallback(() => {
+    const hasPairUpAdded = cartItemsRef.current.some((i) => i.isPairUp);
+    if (hasPairUpAdded) {
+      speakPairUpLine("pairUpAdded");
+    } else {
+      speakPairUpLine("pairUpSkipped");
+    }
+    openCart({ fromPairUp: true });
+  }, [openCart, speakPairUpLine]);
+
+  const handlePairUpProceed = useCallback(() => {
+    const hasPairUpAdded = cartItemsRef.current.some((i) => i.isPairUp);
+    if (hasPairUpAdded) {
+      speakPairUpLine("pairUpAdded");
+    } else {
+      speakPairUpLine("pairUpSkipped");
+    }
+    openCart({ fromPairUp: true });
+  }, [openCart, speakPairUpLine]);
+
+  const handlePairUpClose = useCallback(() => {
+    const hasPairUpAdded = cartItemsRef.current.some((i) => i.isPairUp);
+    if (hasPairUpAdded) {
+      speakPairUpLine("pairUpAdded");
+    } else {
+      speakPairUpLine("pairUpSkipped");
+    }
+    openCart({ fromPairUp: true });
+  }, [openCart, speakPairUpLine]);
+
+  const handlePairUpDone = useCallback(() => {
+    handlePairUpProceed();
+  }, [handlePairUpProceed]);
 
   const products = useMemo(() => {
     if (liveTurnProducts.length > 0) {
@@ -2659,6 +3083,16 @@ export function useKiosk() {
     requestRecommendation,
     acceptRecommendation,
     declineRecommendation,
+    pairUpPromptOpen,
+    pairUpModalOpen,
+    handlePairUpYes,
+    handlePairUpNo,
+    handlePairUpAddProduct,
+    handlePairUpSkip,
+    handlePairUpDone,
+    handleAddToCart,
+    cartItems,
+    cartTotals,
   };
 
   return {
@@ -2746,5 +3180,27 @@ export function useKiosk() {
     declineRecommendation,
     kioskModeRef,
     replayingRef,
+    cartItems,
+    cartTotals,
+    removeCartItem,
+    pairUpPromptOpen,
+    setPairUpPromptOpen,
+    pairUpModalOpen,
+    setPairUpModalOpen,
+    pairUpCaption,
+    setPairUpCaption,
+    pairUpProducts,
+    pairUpQuestionText,
+    showCheckout,
+    setShowCheckout,
+    openCart,
+    handleAddToCart,
+    handlePairUpYes,
+    handlePairUpNo,
+    handlePairUpAddProduct,
+    handlePairUpSkip,
+    handlePairUpProceed,
+    handlePairUpClose,
+    handlePairUpDone,
   };
 }

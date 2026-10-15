@@ -148,6 +148,7 @@ export default function ProductDetailPage({
   products = [],
   onBack,
   onProceedToCheckout,
+  onAddToCart,
   onSelectProduct,
   buttons = [],
   onButtonClick,
@@ -546,15 +547,26 @@ export default function ProductDetailPage({
                       }`}
                       onClick={() => {
                         if (isTakeIt) {
-                          onProceedToCheckout?.({
-                            product,
-                            quantity,
-                            selectedColor,
-                            totalPrice,
-                            savings,
-                          });
+                          if (onAddToCart) {
+                            onAddToCart({
+                              product,
+                              quantity,
+                              selectedColor,
+                              totalPrice,
+                              savings,
+                            });
+                          } else {
+                            onProceedToCheckout?.({
+                              product,
+                              quantity,
+                              selectedColor,
+                              totalPrice,
+                              savings,
+                            });
+                          }
+                        } else {
+                          onButtonClick?.(btn);
                         }
-                        onButtonClick?.(btn);
                       }}
                     >
                       {label}
@@ -603,16 +615,30 @@ export default function ProductDetailPage({
         <button
           type="button"
           className="pdp-primary-checkout-btn"
-          onClickCapture={() => speakFeedback("add_to_cart", { productName: product.name, qty: quantity })}
-          onClick={() =>
-            onProceedToCheckout?.({
-              product,
-              quantity,
-              selectedColor,
-              totalPrice,
-              savings,
-            })
-          }
+          onClickCapture={() => {
+            if (!onAddToCart) {
+              speakFeedback("add_to_cart", { productName: product.name, qty: quantity });
+            }
+          }}
+          onClick={() => {
+            if (onAddToCart) {
+              onAddToCart({
+                product,
+                quantity,
+                selectedColor,
+                totalPrice,
+                savings,
+              });
+            } else {
+              onProceedToCheckout?.({
+                product,
+                quantity,
+                selectedColor,
+                totalPrice,
+                savings,
+              });
+            }
+          }}
         >
           <div className="pdp-checkout-btn-content">
             <ShoppingBag size={22} strokeWidth={2.2} />

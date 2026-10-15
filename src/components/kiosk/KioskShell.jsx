@@ -11,6 +11,8 @@ import StaffAssistanceBanner from "@/components/kiosk/StaffAssistanceBanner";
 import HintTooltip from "@/components/kiosk/HintTooltip";
 import SessionTimeoutBanner from "@/components/kiosk/SessionTimeoutBanner";
 import IdentityVerificationModal from "@/components/modals/IdentityVerificationModal";
+import PairUpPromptCard from "@/components/modals/PairUpPromptCard";
+import PairUpModal from "@/components/modals/PairUpModal";
 import { useKiosk } from "@/hooks/useKiosk";
 
 /**
@@ -141,6 +143,7 @@ export default function KioskShell() {
         onSubmitName={k.submitName}
         setStageRef={k.setStageRef}
         showDetail={k.showDetail}
+        isPairUpOpen={Boolean(k.pairUpModalOpen)}
         vadSpeech={k.vadSpeech}
         audioLevel={k.audioLevel}
         micError={k.micError}
@@ -181,6 +184,12 @@ export default function KioskShell() {
           onResetSession={k.resetSession}
           kioskModeRef={k.kioskModeRef}
           replayingRef={k.replayingRef}
+          onAddToCart={k.handleAddToCart}
+          cartItems={k.cartItems}
+          cartTotals={k.cartTotals}
+          onRemoveItem={k.removeCartItem}
+          showCheckout={k.showCheckout}
+          onCloseCheckout={() => k.setShowCheckout(false)}
         />
 
         {/* ── Onboarding Flow (Step 1: Ask Name, Step 2: Categories) ── */}
@@ -218,13 +227,37 @@ export default function KioskShell() {
           isOpen={isEngaged && Boolean(k.cartModalOpen)}
           product={k.cartModalData?.product || k.product}
           sku={k.cartModalData?.sku || k.product?.sku}
-          buttons={k.cartModalData?.buttons || k.actionButtons}
-          onClose={() => k.setCartModalOpen(false)}
+          buttons={k.cartModalData?.buttons || ["Proceed", "Skip"]}
+          cartItems={k.cartItems}
+          cartTotals={k.cartTotals}
+          suggestions={k.pairUpProducts}
+          onAddPairUp={k.handlePairUpAddProduct}
+          onRemoveItem={k.removeCartItem}
+          onClose={() => k.openCart({ fromPairUp: true })}
           onButtonClick={k.handleButtonClick}
-          onProceedToCheckout={() => {
-            k.setCartModalOpen(false);
-            k.setQrModalOpen(true);
-          }}
+          onProceedToCheckout={() => k.openCart({ fromPairUp: true })}
+        />
+
+        {/* ── Pair-Up Floating Prompt Card ── */}
+        <PairUpPromptCard
+          isOpen={isEngaged && Boolean(k.pairUpPromptOpen)}
+          question={k.pairUpQuestionText}
+          onYes={k.handlePairUpYes}
+          onNo={k.handlePairUpNo}
+        />
+
+        {/* ── Pair-Up Bottom Sheet Modal ── */}
+        <PairUpModal
+          isOpen={isEngaged && Boolean(k.pairUpModalOpen)}
+          products={k.pairUpProducts}
+          addedIds={k.cartItems?.filter((i) => i.isPairUp).map((i) => i.id || i.sku) || []}
+          savings={k.cartTotals?.savings || 0}
+          hasDiscount={Boolean(k.cartTotals?.hasPairUpDiscount)}
+          captionText={k.pairUpCaption}
+          onAddProduct={k.handlePairUpAddProduct}
+          onSkip={k.handlePairUpSkip}
+          onProceed={k.handlePairUpProceed}
+          onClose={k.handlePairUpClose}
         />
 
         {/* ── Recommendation Bundle Modal (SHOW_RECOMMENDATION) ── */}

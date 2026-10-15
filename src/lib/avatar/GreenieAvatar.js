@@ -117,6 +117,32 @@ export async function prewarmVoiceCache(catalog = []) {
     "Which category would you like to explore today?",
     "Please select a category to view our sustainable products.",
     "No rush! Take your time, there's lots more to explore.",
+    // Pair-up suggestion lines (no-name & static remainders)
+    "Psst! Pick any one pair-up from here and unlock an extra 5% off your whole order!",
+    "Psst! Pick any one pair-up from here and unlock an extra 5 percent off your whole order!",
+    "Pick any one pair-up from here and unlock an extra 5% off your whole order!",
+    "Pick any one pair-up from here and unlock an extra 5 percent off your whole order!",
+    "Before you go, here's a little bonus! Add any one of these and your whole order gets 5% off.",
+    "Before you go, here's a little bonus! Add any one of these and your whole order gets 5 percent off.",
+    "Here's a little bonus! Add any one of these and your whole order gets 5% off.",
+    "Here's a little bonus! Add any one of these and your whole order gets 5 percent off.",
+    "No problem! Taking you to your cart.",
+    "Taking you to your cart.",
+    "Lovely! Your pair-up is added and your 5% discount is applied. Let's go to your cart!",
+    "Lovely! Your pair-up is added and your 5 percent discount is applied. Let's go to your cart!",
+    "Your pair-up is added and your 5% discount is applied. Let's go to your cart!",
+    "Your pair-up is added and your 5 percent discount is applied. Let's go to your cart!",
+    "Added to your cart! Pick any of these suggestions to get an extra five percent off your entire order.",
+    "Your item is added! Pair it up with any of these pieces to unlock five percent off your cart.",
+    "Here is your cart! Add any one companion piece below to get an extra five percent discount.",
+    "Here they are! Add any one to get an extra five percent off your cart.",
+    "Take a look. An extra five percent off if you pick one up.",
+    "No problem, here is your cart.",
+    "Sure thing, taking you to your cart.",
+    "Lovely choice! Your five percent discount is applied.",
+    "Added! You've unlocked five percent off the whole cart.",
+    "All good, here is your cart.",
+    "No worries, let's look at your cart.",
   ];
 
   if (Array.isArray(catalog) && catalog.length > 0) {
@@ -137,6 +163,10 @@ export async function prewarmVoiceCache(catalog = []) {
   (async () => {
     try {
       for (const line of uniqueLines) {
+        // Do not run pre-warming at the same time as a live line (yield while speaking)
+        while (speechController.isSpeaking()) {
+          await new Promise((r) => setTimeout(r, 400));
+        }
         await speechController.prefetchAudioBuffer(line);
         await prefetchAudio(line);
         await new Promise((r) => setTimeout(r, 60));

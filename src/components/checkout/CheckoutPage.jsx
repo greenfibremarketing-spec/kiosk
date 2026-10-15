@@ -25,9 +25,25 @@ export default function CheckoutPage({
     pincode: "380054",
   });
 
-  const unitPrice = product.salePrice || product.price;
-  const itemsSubtotal = unitPrice * qty;
-  const grandTotal = itemsSubtotal;
+  const hasCartItems = Array.isArray(order.cartItems) && order.cartItems.length > 0;
+  const unitPrice = product.salePrice || product.price || 0;
+  const itemsSubtotal = hasCartItems
+    ? order.cartTotals?.subtotal ||
+      order.cartItems.reduce(
+        (acc, i) => acc + Number(i.price || i.salePrice || 0) * (Number(i.quantity) || 1),
+        0
+      )
+    : unitPrice * qty;
+
+  const pairUpDiscount =
+    hasCartItems && order.cartTotals?.hasPairUpDiscount
+      ? order.cartTotals.discount
+      : 0;
+
+  const grandTotal = Math.max(0, itemsSubtotal - pairUpDiscount);
+  const totalUnits = hasCartItems
+    ? order.cartItems.reduce((acc, i) => acc + (Number(i.quantity) || 1), 0)
+    : qty;
 
   const handleInputChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -92,40 +108,68 @@ export default function CheckoutPage({
         <div className="checkout-summary-col">
           <div className="summary-header-row">
             <h2 className="summary-col-title">Order Bag</h2>
-            <span className="bag-count-pill">{qty} Item{qty > 1 ? "s" : ""}</span>
+            <span className="bag-count-pill">{totalUnits} Item{totalUnits > 1 ? "s" : ""}</span>
           </div>
 
-          {/* Item Card */}
-          <div className="order-item-card">
-            <div className="order-item-thumb">
-              <ProductArt image={product.image} name={product.name} shape={product.shape} />
-            </div>
-            <div className="order-item-details">
-              <h3 className="order-item-name">{product.name}</h3>
-              <span className="order-item-color">Finish: {selectedColor}</span>
-              <div className="order-item-qty-row">
-                <div className="checkout-qty-mini">
-                  <button
-                    type="button"
-                    onClick={() => setQty(Math.max(1, qty - 1))}
-                    disabled={qty <= 1}
-                    aria-label="Decrease quantity"
-                  >
-                    −
-                  </button>
-                  <span>{qty}</span>
-                  <button
-                    type="button"
-                    onClick={() => setQty(qty + 1)}
-                    aria-label="Increase quantity"
-                  >
-                    +
-                  </button>
+          {/* Cart Item(s) */}
+          {hasCartItems ? (
+            order.cartItems.map((item, idx) => {
+              const itemId = item.id || item.sku || `co_${idx}`;
+              const itemQty = Number(item.quantity) || 1;
+              const price = Number(item.price || item.salePrice || 0);
+              return (
+                <div key={itemId} className="order-item-card" style={{ marginBottom: "12px" }}>
+                  <div className="order-item-thumb">
+                    <ProductArt image={item.image} name={item.name} shape={item.shape} />
+                  </div>
+                  <div className="order-item-details">
+                    <h3 className="order-item-name">{item.name}</h3>
+                    <span className="order-item-color">Finish: {item.selectedColor || selectedColor}</span>
+                    <div className="order-item-qty-row">
+                      <span style={{ fontSize: "16px", fontWeight: "600", color: "#4a5c46" }}>Qty: {itemQty}</span>
+                      <span className="order-item-price">₹{(price * itemQty).toLocaleString("en-IN")}</span>
+                    </div>
+                    {item.isPairUp && (
+                      <div style={{ marginTop: "4px" }}>
+                        <span className="cart-pairup-tag">✨ Pair-up item</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <span className="order-item-price">₹{itemsSubtotal}</span>
+              );
+            })
+          ) : (
+            <div className="order-item-card">
+              <div className="order-item-thumb">
+                <ProductArt image={product.image} name={product.name} shape={product.shape} />
+              </div>
+              <div className="order-item-details">
+                <h3 className="order-item-name">{product.name}</h3>
+                <span className="order-item-color">Finish: {selectedColor}</span>
+                <div className="order-item-qty-row">
+                  <div className="checkout-qty-mini">
+                    <button
+                      type="button"
+                      onClick={() => setQty(Math.max(1, qty - 1))}
+                      disabled={qty <= 1}
+                      aria-label="Decrease quantity"
+                    >
+                      −
+                    </button>
+                    <span>{qty}</span>
+                    <button
+                      type="button"
+                      onClick={() => setQty(qty + 1)}
+                      aria-label="Increase quantity"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span className="order-item-price">₹{itemsSubtotal}</span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Plantable Gift Wrap Toggle */}
           <label className="gift-wrap-option">
@@ -145,20 +189,32 @@ export default function CheckoutPage({
             <span className="eco-badge-icon">🌾</span>
             <div>
               <strong>100% Upcycled Agricultural Biocomposite</strong>
-              <p>Your order diverts {qty * 210}g of crop residue from open-field burning.</p>
+              <p>Your order diverts {totalUnits * 210}g of crop residue from open-field burning.</p>
             </div>
           </div>
 
           {/* Cost Breakdown Table */}
           <div className="checkout-price-table">
             <div className="price-row">
-              <span>Item Subtotal ({qty} unit{qty > 1 ? "s" : ""})</span>
-              <span>₹{itemsSubtotal}</span>
+              <span>Item Subtotal ({totalUnits} unit{totalUnits > 1 ? "s" : ""})</span>
+              <span>₹{itemsSubtotal.toLocaleString("en-IN")}</span>
             </div>
-            {savings > 0 && (
+            {pairUpDiscount > 0 && (
+              <>
+                <div className="price-row price-row--green">
+                  <span>Pair-up discount (5%)</span>
+                  <span style={{ color: "#2e7d32", fontWeight: "700" }}>-₹{pairUpDiscount.toLocaleString("en-IN")}</span>
+                </div>
+                <div className="cart-savings-banner" style={{ margin: "6px 0", fontSize: "15px" }}>
+                  <span>✨</span>
+                  <span>You saved ₹{pairUpDiscount.toLocaleString("en-IN")} (5% off whole cart)</span>
+                </div>
+              </>
+            )}
+            {savings > 0 && pairUpDiscount === 0 && (
               <div className="price-row price-row--green">
                 <span>Special Kiosk Instant Discount</span>
-                <span>-₹{savings}</span>
+                <span>-₹{savings.toLocaleString("en-IN")}</span>
               </div>
             )}
             <div className="price-row">
@@ -172,7 +228,7 @@ export default function CheckoutPage({
             <div className="price-divider" />
             <div className="price-row price-row--total">
               <strong>Grand Total</strong>
-              <strong className="grand-total-val">₹{grandTotal}</strong>
+              <strong className="grand-total-val">₹{grandTotal.toLocaleString("en-IN")}</strong>
             </div>
           </div>
         </div>

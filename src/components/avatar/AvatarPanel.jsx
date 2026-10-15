@@ -43,6 +43,7 @@ export default function AvatarPanel({
   onSubmitName = null,
   setStageRef,
   showDetail = false,
+  isPairUpOpen = false,
   // debug extras
   vadSpeech,
   audioLevel,
@@ -190,15 +191,17 @@ export default function AvatarPanel({
         width={2} height={2}
       />
 
-      {/* Camera Privacy Notice fixed at bottom center */}
-      <div className="camera-privacy-notice-fixed" aria-label="Privacy Notice">
-        Camera is used only to detect presence. Nothing is saved or sent anywhere.
-      </div>
+      {/* Camera Privacy Notice fixed at bottom center (hidden when pair-up modal is open) */}
+      {!isPairUpOpen && (
+        <div className="camera-privacy-notice-fixed" aria-label="Privacy Notice">
+          Camera is used only to detect presence. Nothing is saved or sent anywhere.
+        </div>
+      )}
 
       {/* Floating Greenie Anchor - anchored bottom-right, transparent, pointer-events: none */}
       <div
         className={`greenie-avatar-anchor ${showDetail ? "greenie-avatar-anchor--pdp" : ""}`}
-        style={{ display: isEngaged ? "block" : "none", pointerEvents: "none" }}
+        style={{ display: isEngaged && !isPairUpOpen ? "block" : "none", pointerEvents: "none" }}
       >
         <GreenieStage
           ref={stageCallbackRef}
@@ -210,8 +213,8 @@ export default function AvatarPanel({
         />
       </div>
 
-      {/* Speech Bubble floating above Greenie */}
-      {isEngaged && (
+      {/* Speech Bubble floating above Greenie (hidden when pair-up modal is open; caption is inside modal) */}
+      {isEngaged && !isPairUpOpen && (
         <Captions
           text={caption}
           activeChunkText={activeChunkText}

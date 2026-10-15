@@ -25,6 +25,12 @@ export default function ProductShowcase({
   onResetSession,
   kioskModeRef = null,
   replayingRef = null,
+  onAddToCart,
+  cartItems = [],
+  cartTotals = null,
+  onRemoveItem,
+  showCheckout = false,
+  onCloseCheckout,
 }) {
   const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success"
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -52,6 +58,13 @@ export default function ProductShowcase({
       setView("catalog");
     }
   }, [category, showDetail, view]);
+
+  // If showCheckout prop is triggered, navigate to checkout view
+  useEffect(() => {
+    if (showCheckout) {
+      setView("checkout");
+    }
+  }, [showCheckout]);
 
   // When user clicks a product in the catalog
   const handleSelectProduct = (p) => {
@@ -200,6 +213,7 @@ export default function ProductShowcase({
           products={products}
           onBack={handleReturnToCatalog}
           onProceedToCheckout={handleProceedToCheckout}
+          onAddToCart={onAddToCart}
           onSelectProduct={handleSelectProduct}
           buttons={actionButtons}
           onButtonClick={onButtonClick}
@@ -209,11 +223,23 @@ export default function ProductShowcase({
       )}
 
       {/* ── View 3: Checkout Page (Shipping & Payment) ── */}
-      {view === "checkout" && orderData && (
+      {view === "checkout" && (orderData || (cartItems && cartItems.length > 0)) && (
         <CheckoutPage
-          order={orderData}
-          onBack={() => setView("detail")}
+          order={
+            orderData
+              ? { ...orderData, cartItems, cartTotals }
+              : {
+                  product: selectedProduct || product || cartItems[0] || {},
+                  cartItems,
+                  cartTotals,
+                }
+          }
+          onBack={() => {
+            setView(selectedProduct ? "detail" : "catalog");
+            onCloseCheckout?.();
+          }}
           onOrderSuccess={handleOrderSuccess}
+          onRemoveItem={onRemoveItem}
         />
       )}
 

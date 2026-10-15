@@ -240,15 +240,18 @@ export class SpeechController {
       meta.enqueuedCount++;
       meta.sentences.push(chunk);
       enqueuedInBatch++;
-
-      // If this is the very first chunk in the entire queue, issue its request FIRST and ALONE
-      if (this.queue.length === 1 && !this.isDraining) {
-        this._prefetchChunkAudio(item, this.generation);
-      }
     }
 
     if (enqueuedInBatch > 0) {
       console.log(`[SpeechController] Enqueued replyId=${rid} chunks=${enqueuedInBatch} totalQueue=${this.queue.length}`);
+    }
+
+    // Start all chunk TTS fetches as soon as enqueued (up to 3 in parallel)
+    for (let j = 0; j < Math.min(this.queue.length, 3); j++) {
+      const qItem = this.queue[j];
+      if (qItem && !qItem.audioBuffer) {
+        this._prefetchChunkAudio(qItem, this.generation);
+      }
     }
 
     // Ensure the single drain loop is processing
