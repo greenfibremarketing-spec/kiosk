@@ -58,7 +58,7 @@ function splitIntoSubtitles(fullText, wordsPerChunk = 6) {
   });
 }
 
-export default function Captions({ text, speaking, status, charIndex = 0, activeChunkText = "" }) {
+export default function Captions({ text, speaking, status, charIndex = 0, activeChunkText = "", showDetail = false }) {
   const [chunkIndex, setChunkIndex] = useState(0);
   const [holdingText, setHoldingText] = useState("");
   const chunks = useMemo(() => splitIntoSubtitles(text, 6), [text]);
@@ -137,32 +137,35 @@ export default function Captions({ text, speaking, status, charIndex = 0, active
 
   if (!displayText) return null;
 
+  // Split displayText into primary sentence (Line 1: bold) and secondary text (Line 2: grey-green)
+  const sentences = displayText ? String(displayText).trim().split(/(?<=[.!?])\s+/) : [];
+  let line1 = sentences[0] || displayText || "";
+  let line2 = sentences.slice(1).join(" ") || "";
+
+  if (!line2 && line1.length > 55) {
+    const clauseMatch = line1.match(/^([^,;—]{18,55}[,;—])\s*(.+)$/);
+    if (clauseMatch) {
+      line1 = clauseMatch[1];
+      line2 = clauseMatch[2];
+    }
+  }
+
+  const isVisible = Boolean(displayText && (speaking || holdingText));
+
   return (
     <div
-      className={`subs-bar ${(speaking || holdingText) ? "subs-bar--speaking" : "subs-bar--idle"}`}
+      className={`speech-bubble-card ${showDetail ? "speech-bubble-card--pdp" : ""} ${
+        isVisible ? "speech-bubble-card--active" : "speech-bubble-card--hidden"
+      }`}
       aria-live="polite"
       role="region"
-      aria-label="Speech Subtitles"
+      aria-label="Greeny Speech"
     >
-      <div className="subs-text-wrap">
-        <div className="subs-header">
-          {speaking && (
-            <span className="subs-wave-mini" aria-hidden="true">
-              <span className="wave-dot" />
-              <span className="wave-dot" />
-              <span className="wave-dot" />
-            </span>
-          )}
-          {chunks.length > 1 && speaking && (
-            <span className="subs-progress">
-              {chunkIndex + 1}/{chunks.length}
-            </span>
-          )}
-        </div>
-        <p key={`${text}-${chunkIndex}`} className="subs-text subs-text--animate">
-          {displayText}
-        </p>
+      <div className="speech-bubble-content">
+        <div className="speech-bubble-line1">{line1}</div>
+        {line2 ? <div className="speech-bubble-line2">{line2}</div> : null}
       </div>
+      <div className="speech-bubble-tail" aria-hidden="true" />
     </div>
   );
 }

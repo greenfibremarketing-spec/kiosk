@@ -114,31 +114,31 @@
   text-overflow: ellipsis;
 }
 
-/* Two-Column Grid */
+/* Two-Column Grid: Portrait (45vh gallery on top) & Landscape (2-Column Grid) */
 .pdp-two-column-grid {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: 48% 52%;
-  gap: 28px;
-  padding: 6px 28px 12px 28px;
-  overflow: hidden;
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  padding: 0 3vw 1.5vh 3vw;
+  overflow-y: auto;
+  gap: 1.5vh;
 }
 
-/* Left Column: Gallery */
 .pdp-gallery-column {
+  height: 45vh;
+  max-height: 45vh;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
   min-height: 0;
-  height: 100%;
 }
 
 .pdp-slider-stage {
   position: relative;
   flex: 1;
-  min-height: 320px;
+  min-height: 0;
   border-radius: 20px;
   background: #ffffff;
   border: 1.5px solid var(--line);
@@ -149,6 +149,35 @@
   justify-content: center;
   user-select: none;
   touch-action: pan-y;
+}
+
+.pdp-info-column {
+  flex: 1;
+  overflow-y: visible;
+}
+
+@media (orientation: landscape) and (min-width: 900px) {
+  .pdp-two-column-grid {
+    display: grid;
+    grid-template-columns: 48% 52%;
+    gap: 28px;
+    padding: 6px 28px 12px 28px;
+    overflow: hidden;
+    align-items: stretch;
+  }
+
+  .pdp-gallery-column {
+    height: 100%;
+    max-height: none;
+  }
+
+  .pdp-slider-stage {
+    min-height: 320px;
+  }
+
+  .pdp-info-column {
+    overflow-y: auto;
+  }
 }
 
 .pdp-badge-pill {
@@ -710,8 +739,10 @@
 /* Sticky Bottom Action Bar */
 .pdp-sticky-action-bar {
   flex-shrink: 0;
-  height: 84px;
-  padding: 12px 28px;
+  height: 9vh;
+  min-height: 64px;
+  max-height: 96px;
+  padding: 1vh 3vw;
   background: #ffffff;
   border-top: 1.5px solid var(--line);
   box-shadow: 0 -4px 16px rgba(25, 45, 32, 0.05);
@@ -2150,13 +2181,13 @@
   position: absolute;
   inset: 0;
   z-index: 90;
-  background: rgba(14, 30, 20, 0.42);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(30, 60, 45, 0.45);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: 0 0 10vh 2.5vw;
   animation: rightBackdropFadeIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
@@ -2176,17 +2207,22 @@
 
 .right-onboarding-card {
   position: relative;
-  width: 100%;
-  max-width: 560px;
+  width: min(44vw, 560px);
   background: #fdfbf7;
   border: 1.5px solid rgba(0, 166, 62, 0.3);
-  border-radius: 26px;
-  padding: 28px 32px;
+  border-radius: 3vh;
+  padding: 2.4vh 2.4vw;
   box-shadow: 0 24px 64px rgba(8, 24, 14, 0.28), 0 0 45px rgba(0, 166, 62, 0.12);
   display: flex;
   flex-direction: column;
   transition: all 0.28s cubic-bezier(0.16, 1, 0.3, 1);
   animation: rightCardSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.right-onboarding-card:has(.step-2-anim) {
+  width: min(60vw, 760px);
+  max-height: 82vh;
+  overflow-y: auto;
 }
 
 @keyframes rightCardSlideIn {
@@ -2303,8 +2339,11 @@
   gap: 12px;
   background: #ffffff;
   border: 1.5px solid rgba(0, 166, 62, 0.3);
-  border-radius: var(--radius-pill);
-  padding: 10px 18px;
+  border-radius: 2.5vh;
+  height: 5vh;
+  min-height: 44px;
+  max-height: 60px;
+  padding: 0 18px;
   box-shadow: 0 4px 16px rgba(25, 45, 32, 0.05);
   transition: all 0.2s ease;
 }
@@ -2344,13 +2383,16 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 12px 22px;
+  height: 5vh;
+  min-height: 44px;
+  max-height: 60px;
+  padding: 0 22px;
   background: linear-gradient(135deg, #00A63E 0%, #008f35 100%);
   color: #ffffff;
   border: none;
-  border-radius: var(--radius-pill);
+  border-radius: 2.5vh;
   font-family: var(--font-heading);
-  font-size: 14.5px;
+  font-size: clamp(14px, 1.8vh, 18px);
   font-weight: 800;
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(0, 166, 62, 0.3);
@@ -2369,13 +2411,16 @@
 }
 
 .right-btn-skip {
-  padding: 12px 18px;
+  height: 5vh;
+  min-height: 44px;
+  max-height: 60px;
+  padding: 0 18px;
   background: #f0ebe0;
   color: #5e7367;
   border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
+  border-radius: 2.5vh;
   font-family: var(--font-heading);
-  font-size: 13.5px;
+  font-size: clamp(12px, 1.8vh, 16px);
   font-weight: 700;
   cursor: pointer;
   transition: all 0.2s ease;

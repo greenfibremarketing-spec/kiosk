@@ -65,8 +65,7 @@ export default function CategoryTabs({
             className="chip chip--dark chip--more"
             onClick={onOpenMore}
           >
-            <span className="tab-label">More</span>
-            <span className="tab-more-arrow">→</span>
+            <span className="tab-label">+ More</span>
           </button>
         )}
       </div>

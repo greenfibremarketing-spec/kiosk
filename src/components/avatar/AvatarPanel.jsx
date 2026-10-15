@@ -6,6 +6,9 @@
  *   - Shows a pulsing "Listening" indicator while LISTENING
  *   - Passes full debug props to DebugOverlay
  *   - Forwards stageRef back to useKiosk via setStageRef
+ *   - Anchors Greenie small on the bottom-right with transparent canvas
+ *   - Anchors VoiceHUD on the bottom-left
+ *   - Anchors Speech Bubble floating above Greenie
  */
 import { useEffect, useRef, useState, useCallback } from "react";
 import GreenieStage from "./GreenieStage";
@@ -14,8 +17,6 @@ import DebugOverlay from "@/components/debug/DebugOverlay";
 import LiveSpeechTester from "@/components/debug/LiveSpeechTester";
 import { preferredVoice } from "@/lib/avatar/voice";
 import VoiceHUD from "./VoiceHUD";
-
-const CUSTOM_VOICE_OPTIONS = { pitch: 1.15, rate: 0.95 };
 
 export default function AvatarPanel({
   caption,
@@ -42,6 +43,7 @@ export default function AvatarPanel({
   onSkipName = null,
   onSubmitName = null,
   setStageRef,
+  showDetail = false,
   // debug extras
   vadSpeech,
   audioLevel,
@@ -51,11 +53,9 @@ export default function AvatarPanel({
   silentForMs,
 }) {
   const isEngaged = presenceState === "ENGAGED";
-  const attractVideoRef = useRef(null);
   const stageRef = useRef(null);
   const [isAvatarSpeaking, setIsAvatarSpeaking] = useState(false);
   const [spokenCharIndex, setSpokenCharIndex] = useState(0);
-  const [showGrandLeaves, setShowGrandLeaves] = useState(false);
   const [customVoice, setCustomVoice] = useState(null);
 
   const prevEngagedRef = useRef(false);
@@ -83,37 +83,16 @@ export default function AvatarPanel({
     window.speechSynthesis.onvoiceschanged = initVoice;
   }, []);
 
-  // ── Promo attract video ──────────────────────────────────────────────────
-  useEffect(() => {
-    const video = attractVideoRef.current;
-    if (!video) return;
-    video.muted = true;
-    video.defaultMuted = true;
-    const play = () => { video.muted = true; video.play().catch(() => {}); };
-    if (!isEngaged) { video.currentTime = 0; play(); }
-    else { video.pause(); }
-    video.addEventListener("loadeddata", play);
-    video.addEventListener("canplay", play);
-    video.addEventListener("ended", () => { video.currentTime = 0; play(); });
-    return () => {
-      video.removeEventListener("loadeddata", play);
-      video.removeEventListener("canplay", play);
-    };
-  }, [isEngaged]);
-
   // ── Arrival sequence ─────────────────────────────────────────────────────
   useEffect(() => {
     if (isEngaged && !prevEngagedRef.current) {
       arrivedRef.current = true;
-      setShowGrandLeaves(true);
       clearTimeout(introTimerRef.current);
       if (stageRef.current) {
         stageRef.current.flyIn(1.8);
       }
-      introTimerRef.current = setTimeout(() => setShowGrandLeaves(false), 3000);
     } else if (!isEngaged) {
       arrivedRef.current = false;
-      setShowGrandLeaves(false);
       clearTimeout(introTimerRef.current);
       stageRef.current?.stop();
       stageRef.current?.setEngaged(false);
@@ -141,9 +120,7 @@ export default function AvatarPanel({
 
     prevSpeechIdRef.current = speechId;
     prevCaptionRef.current  = caption;
-    // Note: Caption effect only updates subtitles, never triggers audio speak()
   }, [caption, speechId]);
-
 
   // ── Drive avatar expressions from convState ────────────────────────────────
   useEffect(() => {
@@ -201,77 +178,29 @@ export default function AvatarPanel({
   }, [onSpeakingChange]);
 
   return (
-    <section className="avatar-immersive" aria-label="GreenFibre Kiosk Display">
+    <div className="avatar-immersive-root" aria-label="GreenFibre Avatar Overlay">
       {/* Webcam element (hidden, used by MediaPipe) */}
       <video
         ref={videoRef}
         playsInline muted autoPlay
         style={{
           position: "fixed", top: 0, left: 0,
-          width: "320px", height: "240px",
-          opacity: 0.001, pointerEvents: "none", zIndex: -1,
+          width: "2px", height: "2px",
+          opacity: 0, pointerEvents: "none", zIndex: -1,
         }}
-        width={320} height={240}
+        width={2} height={2}
       />
 
-      {/* Subtle Camera Privacy Notice (Step 8) */}
-      <div className="camera-privacy-badge" aria-label="Privacy Notice">
-        <span className="privacy-camera-icon">📷</span>
-        <span>Camera is used only to detect presence. No faces are stored.</span>
+      {/* Camera Privacy Notice fixed at bottom center */}
+      <div className="camera-privacy-notice-fixed" aria-label="Privacy Notice">
+        Camera is used only to detect presence. Nothing is saved or sent anywhere.
       </div>
 
-      {/* ── ATTRACT SCREEN ── */}
+      {/* Floating Greenie Anchor - anchored bottom-right, transparent, pointer-events: none */}
       <div
-        className={`kiosk-layer attract-layer ${!isEngaged ? "kiosk-layer--active" : "kiosk-layer--hidden"}`}
-        onClick={onTap} role="button" tabIndex={0}
+        className={`greenie-avatar-anchor ${showDetail ? "greenie-avatar-anchor--pdp" : ""}`}
+        style={{ display: isEngaged ? "block" : "none", pointerEvents: "none" }}
       >
-        <video
-          ref={attractVideoRef} src="/videos/promo.mp4"
-          autoPlay loop muted playsInline preload="auto"
-          className="attract-video"
-        />
-        <div className="attract-gradient-overlay" />
-        <div className="attract-top-brand">
-          <span className="attract-brand-badge">🌾 GREENFIBRE</span>
-        </div>
-        <div className="attract-bottom-cta">
-          <div className="attract-tap-hint">✨ Touch Screen or Step Closer to Begin</div>
-        </div>
-      </div>
-
-      {/* ── GREENIE AVATAR SCREEN ── */}
-      <div className={`kiosk-layer greenie-layer ${isEngaged ? "kiosk-layer--active" : "kiosk-layer--hidden"}`}>
-        {showGrandLeaves && (
-          <div className="grand-opening-leaves-container" aria-hidden="true">
-            {[...Array(14)].map((_, i) => (
-              <span
-                key={i} className="floating-eco-leaf"
-                style={{
-                  left: `${(i * 7.5 + Math.random() * 5) % 95}%`,
-                  animationDelay: `${(i * 0.18).toFixed(2)}s`,
-                  animationDuration: `${(2.2 + (i % 4) * 0.4).toFixed(2)}s`,
-                  fontSize: `${18 + (i % 3) * 8}px`,
-                }}
-              >
-                {i % 3 === 0 ? "🍃" : i % 3 === 1 ? "🌿" : "✨"}
-              </span>
-            ))}
-          </div>
-        )}
-
-        {/* Live Speech Testing Monitor (visible in debug mode) */}
-        {debugOpen && (
-          <LiveSpeechTester
-            liveTranscript={liveTranscript}
-            lastUserSpeech={lastUserSpeech}
-            userSpeaking={userSpeaking}
-            vadSpeech={vadSpeech}
-            audioLevel={audioLevel}
-            evidence={evidence}
-            convState={convState}
-          />
-        )}
-
         <GreenieStage
           ref={stageCallbackRef}
           isEngaged={isEngaged}
@@ -280,34 +209,49 @@ export default function AvatarPanel({
           onBoundary={setSpokenCharIndex}
           onChunk={setActiveChunkText}
         />
-
-        {/* Unified Bottom Overlay for Subtitles & Voice HUD */}
-        {isEngaged && (
-          <div className="greenie-bottom-overlay">
-            {/* Dynamic Subtitles / Captions (Positioned neatly above the VoiceHUD) */}
-            <Captions
-              text={caption}
-              activeChunkText={activeChunkText}
-              speaking={isAvatarSpeaking || speaking}
-              status={isAvatarSpeaking ? "Explaining..." : convState === "LISTENING" ? "Listening..." : "Ready to chat"}
-              charIndex={spokenCharIndex}
-            />
-
-            {/* Integrated Voice HUD / Microphone Bar */}
-            <VoiceHUD
-              listening={listening}
-              speaking={isAvatarSpeaking || speaking}
-              liveTranscript={liveTranscript}
-              userSpeaking={userSpeaking}
-              convState={convState}
-              onToggleMic={onToggleMic}
-              micError={micError}
-              audioLevel={audioLevel}
-              onQuickPick={onQuickPick}
-            />
-          </div>
-        )}
       </div>
+
+      {/* Speech Bubble floating above Greenie */}
+      {isEngaged && (
+        <Captions
+          text={caption}
+          activeChunkText={activeChunkText}
+          speaking={isAvatarSpeaking || speaking}
+          status={isAvatarSpeaking ? "Explaining..." : convState === "LISTENING" ? "Listening..." : "Ready to chat"}
+          charIndex={spokenCharIndex}
+          showDetail={showDetail}
+        />
+      )}
+
+      {/* Voice HUD at bottom-left */}
+      {isEngaged && (
+        <div className="voice-hud-fixed-container">
+          <VoiceHUD
+            listening={listening}
+            speaking={isAvatarSpeaking || speaking}
+            liveTranscript={liveTranscript}
+            userSpeaking={userSpeaking}
+            convState={convState}
+            onToggleMic={onToggleMic}
+            micError={micError}
+            audioLevel={audioLevel}
+            onQuickPick={onQuickPick}
+          />
+        </div>
+      )}
+
+      {/* Live Speech Testing Monitor (visible in debug mode) */}
+      {debugOpen && (
+        <LiveSpeechTester
+          liveTranscript={liveTranscript}
+          lastUserSpeech={lastUserSpeech}
+          userSpeaking={userSpeaking}
+          vadSpeech={vadSpeech}
+          audioLevel={audioLevel}
+          evidence={evidence}
+          convState={convState}
+        />
+      )}
 
       {/* Debug Overlay (Ctrl+Shift+D) */}
       {debugOpen && (
@@ -327,6 +271,6 @@ export default function AvatarPanel({
           onClose={onCloseDebug}
         />
       )}
-    </section>
+    </div>
   );
 }

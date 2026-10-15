@@ -17,7 +17,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 28px;
+  height: 7vh;
+  min-height: 48px;
+  max-height: 84px;
+  padding: 0 3vw;
   background: #ffffff;
   border-bottom: 1px solid var(--line);
   box-shadow: 0 2px 10px rgba(25, 45, 32, 0.035);
@@ -131,7 +134,10 @@
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  padding: 8px 18px;
+  height: 4vh;
+  min-height: 36px;
+  max-height: 52px;
+  padding: 0 18px;
   border-radius: var(--radius-pill);
   background: #ffffff;
   border: 1.5px solid rgba(0, 166, 62, 0.35);

@@ -130,6 +130,7 @@ export default function ProductShowcase({
             onSelect={onCategory}
             categories={activeCats}
             products={catalog?.length ? catalog : products}
+            onOpenMore={() => setIsSidebarOpen(true)}
           />
 
           {/* Main Product Listing Grid */}

@@ -10,6 +10,7 @@ import { speechController, warmupSpeech } from "./SpeechController";
 export { speechController, warmupSpeech };
 
 export const ENABLE_SPEECH_SYNTH_FALLBACK = false;
+export const FLY_DIR = 1; // 1 = enter from right edge, -1 = enter from left edge
 
 /**
  * Helper to build a cute fairy wing geometry
@@ -227,10 +228,12 @@ export class GreenieAvatar {
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: true,
+      premultipliedAlpha: true,
       powerPreference: "high-performance",
     });
+    this.renderer.setClearColor(0x000000, 0);
     this.renderer.setPixelRatio(
-      typeof window !== "undefined" ? Math.min(window.devicePixelRatio, 1.25) : 1
+      typeof window !== "undefined" ? Math.min(window.devicePixelRatio, 2) : 1
     );
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -240,6 +243,7 @@ export class GreenieAvatar {
     container.appendChild(this.renderer.domElement);
 
     // 3. Lighting
+    this.scene.background = null;
     this.scene.add(new THREE.HemisphereLight(0xf9f4e7, 0x415b51, 3));
     const key = new THREE.DirectionalLight(0xfff5e5, 5);
     key.position.set(-3, 5, 5);
@@ -253,7 +257,7 @@ export class GreenieAvatar {
 
     const floor = new THREE.Mesh(
       new THREE.CircleGeometry(2.1, 80),
-      new THREE.ShadowMaterial({ opacity: 0.15 })
+      new THREE.ShadowMaterial({ opacity: 0.10 })
     );
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = 0.007;
@@ -342,7 +346,7 @@ export class GreenieAvatar {
             this._arrived = true;
           }
         } else {
-          scene.position.x = -10.0;
+          scene.position.x = 10.0 * FLY_DIR;
         }
 
         this.setStatus("Ready");
@@ -494,15 +498,15 @@ export class GreenieAvatar {
     this.leafParticles.forEach((p, i) => {
       p.active = true;
       p.mesh.visible = true;
-      // Start near left entry zone along Greenie's flight path
-      p.x = -4.0 + Math.random() * 2.5;
+      // Start near right entry zone along Greenie's flight path
+      p.x = (4.0 + Math.random() * 2.0) * FLY_DIR;
       p.y = 1.0 + Math.random() * 1.8;
       p.z = -1.0 + Math.random() * 2.0;
 
-      // Swirling outward velocities
+      // Swirling outward velocities (drift towards center)
       const angle = (i / 45) * Math.PI * 2 + Math.random() * 0.5;
       const speed = 1.2 + Math.random() * 2.4;
-      p.vx = Math.cos(angle) * speed + 1.2; // drift towards center
+      p.vx = Math.cos(angle) * speed - 1.2 * FLY_DIR; // drift towards center
       p.vy = Math.sin(angle) * speed * 0.8 + 0.6;
       p.vz = (Math.random() - 0.5) * 2.2;
 
@@ -606,7 +610,7 @@ export class GreenieAvatar {
       this._arrived = false;
       this.stop();
       if (this.model) {
-        this.model.position.x = -10.0;
+        this.model.position.x = 10.0 * FLY_DIR;
       }
     } else {
       if (!this._arrived && !this.flyingEntrance) {
@@ -615,7 +619,7 @@ export class GreenieAvatar {
     }
   }
 
-  // Flying entrance from the left like a fairy girl + leaf burst
+  // Flying entrance from the right like a fairy girl + leaf burst
   flyIn(duration = 1.8) {
     this._arrived = false;
     this.flyingEntrance = {
@@ -623,7 +627,7 @@ export class GreenieAvatar {
       duration: duration,
     };
     if (this.model) {
-      this.model.position.x = -6.0;
+      this.model.position.x = 6.0 * FLY_DIR;
     }
     this.burstGrandOpeningLeaves();
     this.setStatus("✨ Welcome to GreenFibre!");
@@ -695,7 +699,7 @@ export class GreenieAvatar {
   startTurn(turnId) {
     this.currentTurnId = turnId || "turn_default";
     this._arrived = true;
-    if (this.model && this.model.position.x < -2.0 && !this.flyingEntrance) {
+    if (this.model && Math.abs(this.model.position.x) > 2.0 && !this.flyingEntrance) {
       this.model.position.x = 0;
     }
   }
@@ -816,7 +820,7 @@ export class GreenieAvatar {
         this._arrived = true;
         this.model.position.x = 0;
       } else {
-        this.model.position.x = -10.0;
+        this.model.position.x = 10.0 * FLY_DIR;
       }
       this.model.position.y = 0;
       this.model.position.z = 0;
@@ -991,7 +995,7 @@ export class GreenieAvatar {
         const easeOut = 1 - Math.pow(1 - progress, 3);
         const invP = 1 - progress;
 
-        this.model.position.x = -5.6 * (1 - easeOut);
+        this.model.position.x = 5.6 * FLY_DIR * (1 - easeOut);
         const flightLift = Math.sin(invP * Math.PI * 0.9) * 1.4;
         const landingBounce =
           progress > 0.82
@@ -1000,8 +1004,8 @@ export class GreenieAvatar {
         this.model.position.y = flightLift + landingBounce;
 
         if (!this.reduced) {
-          this.model.rotation.z = -0.32 * invP;
-          this.model.rotation.y = 0.38 * invP;
+          this.model.rotation.z = 0.32 * invP * FLY_DIR;
+          this.model.rotation.y = -0.38 * invP * FLY_DIR;
           this.model.rotation.x = 0.16 * invP;
         }
 

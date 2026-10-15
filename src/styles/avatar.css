@@ -1,139 +1,130 @@
-/* Greenie 3D Avatar - Left Kiosk Stage */
-.avatar-immersive {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 100%;
-  background: #08160e;
-  overflow: hidden;
-  border-right: 1px solid rgba(22, 39, 28, 0.08);
-  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.06);
-  display: flex;
-  flex-direction: column;
-}
-
-/* Layer Base: Smooth Crossfade */
-.kiosk-layer {
-  position: absolute;
+/* Greenie 3D Avatar - Overlay & Sizing Rules */
+.avatar-immersive-root {
+  position: fixed;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  visibility: hidden;
+  width: 100vw;
+  height: 100vh;
   pointer-events: none;
-  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.5s ease;
-  display: flex;
-  flex-direction: column;
-  z-index: 1;
+  z-index: 50;
+  background: transparent !important;
 }
 
-.kiosk-layer--active {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  z-index: 10;
-}
-
-.kiosk-layer--hidden {
-  opacity: 0 !important;
-  visibility: hidden !important;
+/* ── Greenie Avatar Anchor: Small, Bottom-Right, Transparent Canvas ── */
+.greenie-avatar-anchor {
+  position: fixed;
+  right: 1vw;
+  bottom: 9vh;
+  width: min(22vw, 30vh);
+  height: 40vh;
+  aspect-ratio: 3 / 4;
   pointer-events: none !important;
-  z-index: 0 !important;
+  z-index: 40;
+  transition: bottom 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  background: transparent !important;
 }
 
-/* 1. Attract Mode (Video / Promo Loop) */
-.attract-layer {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  cursor: pointer;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  background: #08160e;
+.greenie-avatar-anchor--pdp {
+  bottom: 18vh !important;
 }
 
-.attract-video {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  z-index: 1;
+.greenie-avatar-anchor .greenie-stage-wrapper,
+.greenie-avatar-anchor .greenie-canvas-viewport,
+.greenie-avatar-anchor canvas {
+  background: transparent !important;
+  pointer-events: none !important;
 }
 
-.attract-gradient-overlay {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(6, 16, 10, 0.35) 0%,
-    rgba(6, 16, 10, 0.1) 40%,
-    rgba(6, 16, 10, 0.5) 70%,
-    rgba(4, 12, 7, 0.95) 100%
-  );
-  z-index: 2;
+/* ── Speech Bubble: Floating White Card Above Greenie's Head ── */
+.speech-bubble-card {
+  position: fixed;
+  right: 2vw;
+  bottom: calc(40vh + 10vh);
+  max-width: min(42vw, 480px);
+  background: #ffffff;
+  border-radius: 2vh;
+  padding: 1.8vh 2vw;
+  box-shadow: 0 12px 36px rgba(10, 30, 18, 0.12), 0 2px 8px rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(0, 166, 62, 0.18);
+  pointer-events: none;
+  z-index: 45;
+  transition: opacity 250ms ease, transform 250ms ease, bottom 0.3s ease;
+}
+
+.speech-bubble-card--pdp {
+  bottom: calc(40vh + 19vh) !important;
+}
+
+.speech-bubble-card--active {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.speech-bubble-card--hidden {
+  opacity: 0;
+  transform: translateY(8px) scale(0.96);
   pointer-events: none;
 }
 
-.attract-top-brand {
-  position: relative;
-  z-index: 5;
-  padding: 24px 20px;
-}
-
-.attract-brand-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(0, 166, 62, 0.92);
-  color: #ffffff;
-  padding: 8px 18px;
-  border-radius: var(--radius-pill);
-  font-family: var(--font-heading);
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 0.05em;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
-}
-
-.attract-bottom-cta {
-  position: relative;
-  z-index: 5;
-  padding: 30px 20px;
+.speech-bubble-content {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+  gap: 0.6vh;
 }
 
-.attract-tap-hint {
+.speech-bubble-line1 {
   font-family: var(--font-heading);
-  font-size: 15px;
+  font-size: clamp(18px, 2.6vh, 48px);
   font-weight: 800;
-  color: #ffffff;
-  background: rgba(0, 166, 62, 0.9);
-  backdrop-filter: blur(10px);
-  padding: 12px 24px;
-  border-radius: var(--radius-pill);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-  animation: pulse-hint 2s infinite ease-in-out;
-  letter-spacing: 0.02em;
+  color: #14271c;
+  line-height: 1.25;
 }
 
-@keyframes pulse-hint {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.04); }
+.speech-bubble-line2 {
+  font-family: var(--font-body);
+  font-size: clamp(14px, 1.8vh, 32px);
+  font-weight: 500;
+  color: #4b6354;
+  line-height: 1.4;
 }
 
-/* 2. 3D Greenie Stage Layer */
-.greenie-layer {
-  background: #f4efe6;
-  background: radial-gradient(circle at 50% 38%, #f8f5ee 0%, #ebe4d5 70%, #dfd6c4 100%);
+/* Diamond tail pointing to Greenie's head */
+.speech-bubble-tail {
+  position: absolute;
+  bottom: -7px;
+  right: 36px;
+  width: 14px;
+  height: 14px;
+  background: #ffffff;
+  border-bottom: 1px solid rgba(0, 166, 62, 0.18);
+  border-right: 1px solid rgba(0, 166, 62, 0.18);
+  transform: rotate(45deg);
+}
+
+/* ── Voice HUD: Bottom-Left Container ── */
+.voice-hud-fixed-container {
+  position: fixed;
+  bottom: 3.5vh;
+  left: 2.5vw;
+  width: min(55vw, 650px);
+  height: auto;
+  pointer-events: auto;
+  z-index: 45;
+}
+
+/* ── Camera Privacy Notice Fixed Centered at Bottom ── */
+.camera-privacy-notice-fixed {
+  position: fixed;
+  bottom: 0.8vh;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: var(--font-body);
+  font-size: clamp(12px, 1.2vh, 22px);
+  color: #475569;
+  opacity: 0.7;
+  pointer-events: none;
+  z-index: 60;
+  user-select: none;
 }
 
 /* Grand Opening Floating Eco Leaves */

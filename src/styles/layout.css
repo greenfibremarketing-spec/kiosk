@@ -1,24 +1,82 @@
 .kiosk {
-  display: grid;
-  grid-template-columns: 465px 1fr;
+  position: relative;
+  width: 100vw;
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
   background: var(--bg);
 }
 
-@media (max-width: 1200px) {
-  .kiosk {
-    grid-template-columns: 420px 1fr;
-  }
+/* ── Fullscreen Idle Video Layer (700ms crossfade) ── */
+.kiosk-idle-video-layer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 100;
+  transition: opacity 700ms cubic-bezier(0.16, 1, 0.3, 1), visibility 700ms;
 }
 
-@media (max-width: 860px) {
-  .kiosk {
-    grid-template-columns: 1fr;
-    height: auto;
-    overflow: auto;
-  }
+.kiosk-idle-video-layer--visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.kiosk-idle-video-layer--hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.kiosk-idle-video {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+.kiosk-idle-gradient-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(8, 24, 15, 0.25) 0%, rgba(8, 24, 15, 0.6) 100%);
+  pointer-events: none;
+}
+
+.kiosk-idle-cta-container {
+  position: absolute;
+  bottom: 8vh;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* ── Products Screen Full Width Layer (700ms fade + 24px upward slide) ── */
+.kiosk-right-pane {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  transition: opacity 700ms cubic-bezier(0.16, 1, 0.3, 1), transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.kiosk-right-pane--idle {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(24px);
+}
+
+.kiosk-right-pane--engaged {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .chips {

@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import AvatarPanel from "@/components/avatar/AvatarPanel";
 import ProductShowcase from "@/components/products/ProductShowcase";
 import RightOnboardingFlow from "@/components/kiosk/RightOnboardingFlow";
@@ -12,6 +12,65 @@ import SessionTimeoutBanner from "@/components/kiosk/SessionTimeoutBanner";
 import IdentityVerificationModal from "@/components/modals/IdentityVerificationModal";
 import { useKiosk } from "@/hooks/useKiosk";
 
+/**
+ * Fullscreen Idle Promo Video
+ * Fades out smoothly on ENGAGED (700ms), pauses, and hides.
+ * Resumes and fades in when returning to IDLE.
+ */
+function IdlePromoVideo({ isEngaged, onTap }) {
+  const videoRef = useRef(null);
+  const [visible, setVisible] = useState(!isEngaged);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (isEngaged) {
+      const timer = setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.pause();
+          setVisible(false);
+        }
+      }, 720);
+      return () => clearTimeout(timer);
+    } else {
+      setVisible(true);
+      video.currentTime = 0;
+      video.play().catch(() => {});
+    }
+  }, [isEngaged]);
+
+  if (!visible && isEngaged) return null;
+
+  return (
+    <div
+      className={`kiosk-idle-video-layer ${isEngaged ? "kiosk-idle-video-layer--hidden" : "kiosk-idle-video-layer--visible"}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onTap?.();
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label="Touch Screen to Begin"
+    >
+      <video
+        ref={videoRef}
+        src="/videos/promo.mp4"
+        autoPlay
+        loop
+        muted
+        playsInline
+        preload="auto"
+        className="kiosk-idle-video"
+      />
+      <div className="kiosk-idle-gradient-overlay" />
+      <div className="kiosk-idle-cta-container">
+        <div className="attract-tap-hint">✨ Touch Screen or Step Closer to Begin</div>
+      </div>
+    </div>
+  );
+}
+
 export default function KioskShell() {
   const k = useKiosk();
   const isEngaged = k.kioskMode === "ENGAGED";
@@ -22,6 +81,12 @@ export default function KioskShell() {
       onClick={() => k.presence.triggerTouchEngaged()}
       onTouchStart={() => k.presence.triggerTouchEngaged()}
     >
+      {/* ── Fullscreen Idle Video Layer (IDLE only, fades out 700ms) ── */}
+      <IdlePromoVideo
+        isEngaged={isEngaged}
+        onTap={() => k.presence.triggerTouchEngaged("screen_touch")}
+      />
+
       {/* ── Identity Verification Modal (Step 3: Short Gap Return) ── */}
       <IdentityVerificationModal
         isOpen={isEngaged && Boolean(k.identityPrompt?.active)}
@@ -32,7 +97,7 @@ export default function KioskShell() {
         onReject={() => k.resetSession("different_person")}
       />
 
-      {/* ── Top-Right Inactivity Warning Banner (15s not seeing -> 10s timer -> Reset to Step 1) ── */}
+      {/* ── Top-Right Inactivity Warning Banner ── */}
       <SessionTimeoutBanner
         isOpen={isEngaged && Boolean(k.sessionTimeoutWarning?.active)}
         secondsRemaining={k.sessionTimeoutWarning?.secondsRemaining}
@@ -48,7 +113,7 @@ export default function KioskShell() {
         />
       )}
 
-      {/* ── Left Column: Avatar & Stage ── */}
+      {/* ── Greenie Avatar, Captions, VoiceHUD, Camera Video Overlay ── */}
       <AvatarPanel
         caption={k.caption}
         speechId={k.speechId}
@@ -74,6 +139,7 @@ export default function KioskShell() {
         onSkipName={k.skipName}
         onSubmitName={k.submitName}
         setStageRef={k.setStageRef}
+        showDetail={k.showDetail}
         vadSpeech={k.vadSpeech}
         audioLevel={k.audioLevel}
         micError={k.micError}
@@ -91,8 +157,10 @@ export default function KioskShell() {
         />
       )}
 
-      {/* ── Right Column: Catalog + Right-Side Separate Onboarding Flow ── */}
-      <div className="kiosk-right-pane" style={{ position: "relative", width: "100%", height: "100%", overflow: "hidden" }}>
+      {/* ── Fullscreen Products Pane (Always mounted; fades in 700ms with 24px slide in ENGAGED) ── */}
+      <div
+        className={`kiosk-right-pane ${isEngaged ? "kiosk-right-pane--engaged" : "kiosk-right-pane--idle"}`}
+      >
         <ProductShowcase
           category={k.category}
           categories={k.categories}
@@ -112,7 +180,7 @@ export default function KioskShell() {
           onResetSession={k.resetSession}
         />
 
-        {/* ── Right-Side Onboarding Flow (Step 1: Ask Name, Step 2: Categories) ── */}
+        {/* ── Onboarding Flow (Step 1: Ask Name, Step 2: Categories) ── */}
         {isEngaged && (
           <RightOnboardingFlow
             isOpen={k.onboardingOpen}
