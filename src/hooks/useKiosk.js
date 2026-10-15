@@ -60,6 +60,7 @@ import { useMic } from "@/hooks/useMic";
 import { useUserSpeechState } from "@/hooks/useUserSpeechState";
 import { useSpeech } from "@/hooks/useSpeech";
 import speechConfig from "@/lib/speechConfig";
+import { returnFromDetail } from "@/lib/greetConfig";
 import { prefetchAudio, prewarmVoiceCache } from "@/lib/avatar/GreenieAvatar";
 import { speechController, warmupSpeech } from "@/lib/avatar/SpeechController";
 
@@ -99,6 +100,8 @@ export function useKiosk() {
   const [goodbyeData, setGoodbyeData] = useState(null);
   const [staffBanner, setStaffBanner] = useState(null);
   const [hintBubble, setHintBubble] = useState(null);
+  const [recommendationOpen, setRecommendationOpen] = useState(false);
+  const [recommendationData, setRecommendationData] = useState(null);
 
   // Guards & references
   const greetingDoneRef = useRef(false);
@@ -114,6 +117,11 @@ export function useKiosk() {
   const isSendingRef = useRef(false);
   const nameRef = useRef(name);
   nameRef.current = name;
+  const backFromDetailTimerRef = useRef(null);
+  const backNavSeqRef = useRef(0);
+  const isBackFromDetailPendingRef = useRef(false);
+  const productDetailOpenedRef = useRef(false);
+  const backTurnIdRef = useRef(null);
 
   // Preload catalog with retry backoff & pre-warm voice server cache
   useEffect(() => {
@@ -321,6 +329,7 @@ export function useKiosk() {
       setCategory(saved.category);
     }
     setShowDetail(Boolean(saved.showDetail));
+    productDetailOpenedRef.current = Boolean(saved.showDetail);
     setOnboardingOpen(false);
     setOnboardingStep(2);
 
@@ -497,6 +506,7 @@ export function useKiosk() {
         setCategory(s.category);
       }
       setShowDetail(Boolean(s.showDetail));
+      productDetailOpenedRef.current = Boolean(s.showDetail);
       setOnboardingOpen(false);
       setOnboardingStep(2);
 
@@ -516,6 +526,7 @@ export function useKiosk() {
         pendingTappedProductRef.current = null;
         setProductId(tapped.id);
         setShowDetail(true);
+        productDetailOpenedRef.current = true;
         setOnboardingOpen(false);
         KioskStepCache.setSelectedProduct(tapped);
         kioskWS.sendSelectProduct(tapped);
@@ -970,6 +981,71 @@ export function useKiosk() {
     latestRef.current._stageRef = stageRef;
   }, []);
 
+  const cancelPendingReturnFromDetail = useCallback((reason = "user_navigated") => {
+    if (backFromDetailTimerRef.current) {
+      clearTimeout(backFromDetailTimerRef.current);
+      backFromDetailTimerRef.current = null;
+    }
+    if (isBackFromDetailPendingRef.current) {
+      console.log(`[Kiosk] returnFromDetail cancelled (${reason})`);
+      isBackFromDetailPendingRef.current = false;
+      backNavSeqRef.current++;
+    }
+  }, []);
+
+  const triggerReturnFromDetail = useCallback((turnId = null) => {
+    if (!productDetailOpenedRef.current && !latestRef.current.showDetail) {
+      console.log("[Kiosk] triggerReturnFromDetail skipped: no product detail was open");
+      return;
+    }
+    productDetailOpenedRef.current = false;
+
+    if (backFromDetailTimerRef.current) {
+      clearTimeout(backFromDetailTimerRef.current);
+      backFromDetailTimerRef.current = null;
+    }
+
+    speechController.cancelAll("back_from_detail");
+    const stage = stageRef.current || latestRef.current._stageRef?.current;
+    stage?.stop?.("back_from_detail");
+    setSpeaking(false);
+    if (convStateRef.current === S.SPEAKING) setConv(S.ATTENTIVE);
+
+    const seq = ++backNavSeqRef.current;
+    isBackFromDetailPendingRef.current = true;
+    const tid = turnId || kioskWS.currentTurnId || "back_from_detail";
+    backTurnIdRef.current = tid;
+
+    backFromDetailTimerRef.current = setTimeout(() => {
+      backFromDetailTimerRef.current = null;
+      isBackFromDetailPendingRef.current = false;
+
+      if (backNavSeqRef.current !== seq) {
+        console.log("[Kiosk] returnFromDetail skipped: user navigated again during 400ms");
+        return;
+      }
+      if (kioskModeRef.current === "IDLE") {
+        console.log("[Kiosk] returnFromDetail skipped: kiosk in IDLE mode");
+        return;
+      }
+      if (latestRef.current.showDetail) {
+        console.log("[Kiosk] returnFromDetail skipped: product detail re-opened");
+        return;
+      }
+
+      const line = (Array.isArray(returnFromDetail) && returnFromDetail[0]) || "No rush! Take your time, there's lots more to explore.";
+      setCaption(line);
+
+      const activeTid = backTurnIdRef.current || tid || "back_from_detail";
+      if (speechController.getEnqueuedCount(activeTid) === 0) {
+        speechController.appendSentence(activeTid, line, { turnId: activeTid });
+        speechController.endReply(activeTid);
+      } else {
+        console.log(`[Kiosk] returnFromDetail already enqueued for turn=${activeTid}, skipping.`);
+      }
+    }, 400);
+  }, [setCaption, setConv]);
+
   // ── User did something: cut Greenie off immediately ──
   const stopSpeechForUserAction = useCallback((reason = "user_action") => {
     lastHandledActionRef.current = { key: null, t: 0 };
@@ -1035,6 +1111,8 @@ export function useKiosk() {
     nameSubmittedRef.current = false;
     turnsWithSentencesRef.current.clear();
     clearTimeout(categoriesFallbackTimerRef.current);
+    cancelPendingReturnFromDetail("session_reset");
+    productDetailOpenedRef.current = false;
 
     // Stop speech and clear audio queue immediately via single speechController
     speechController.cancelAll("session_reset");
@@ -1161,6 +1239,8 @@ export function useKiosk() {
     setGoodbyeData(null);
     setStaffBanner(null);
     setHintBubble(null);
+    setRecommendationOpen(false);
+    setRecommendationData(null);
     setShowDetail(false);
     setOnboardingOpen(false);
     setOnboardingStep(1);
@@ -1612,6 +1692,7 @@ export function useKiosk() {
       }
 
       case "SHOW_PRODUCTS": {
+        const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
         // Server actions must not close categories screen if user is currently selecting categories
         if (latestRef.current.onboardingStep !== 2) {
@@ -1643,14 +1724,20 @@ export function useKiosk() {
           setActionButtons(action.buttons);
         }
 
-        const msg = action?.message || action?.text;
-        if (msg && typeof msg === "string" && msg.trim().length > 0) {
-          const cleanMsg = msg.trim();
-          setCaption(cleanMsg);
-          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_products";
-          if (speechController.getEnqueuedCount(activeTid) === 0) {
-            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
-            speechController.endReply(activeTid);
+        if (wasInDetail) {
+          if (!isBackFromDetailPendingRef.current) {
+            triggerReturnFromDetail(actionTurnId);
+          }
+        } else {
+          const msg = action?.message || action?.text;
+          if (msg && typeof msg === "string" && msg.trim().length > 0) {
+            const cleanMsg = msg.trim();
+            setCaption(cleanMsg);
+            const activeTid = actionTurnId || kioskWS.currentTurnId || "show_products";
+            if (speechController.getEnqueuedCount(activeTid) === 0) {
+              speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+              speechController.endReply(activeTid);
+            }
           }
         }
         break;
@@ -1658,6 +1745,8 @@ export function useKiosk() {
 
       case "SHOW_PRODUCT_CARD":
       case "SHOW_PRODUCT": {
+        cancelPendingReturnFromDetail("server_show_product");
+        productDetailOpenedRef.current = true;
         KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
         setOnboardingOpen(false);
         setShowDetail(true);
@@ -1810,12 +1899,35 @@ export function useKiosk() {
       }
 
       case "NAVIGATE_BACK": {
+        const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
         setShowDetail(false);
+        if (wasInDetail && !isBackFromDetailPendingRef.current) {
+          triggerReturnFromDetail(actionTurnId);
+        }
         break;
       }
 
       case "RESTART": {
         latestRef.current.reset?.();
+        break;
+      }
+
+      case "SHOW_RECOMMENDATION": {
+        if (replayingRef.current) break;
+        if (kioskModeRef.current === "IDLE") break;
+        setRecommendationOpen(true);
+        setRecommendationData(action);
+        console.log("[Reco] shown");
+        const msg = action?.message;
+        if (msg && typeof msg === "string" && msg.trim().length > 0) {
+          const cleanMsg = msg.trim();
+          setCaption(cleanMsg);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_recommendation";
+          if (speechController.getEnqueuedCount(activeTid) === 0) {
+            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+            speechController.endReply(activeTid);
+          }
+        }
         break;
       }
 
@@ -1858,6 +1970,10 @@ export function useKiosk() {
         return;
       }
       const activeTurnKey = activeActionReplyIdRef.current || turnId || kioskWS.currentTurnId || "turn_default";
+      if (isBackFromDetailPendingRef.current || (backTurnIdRef.current && (turnId === backTurnIdRef.current || activeTurnKey === backTurnIdRef.current))) {
+        console.log(`[Kiosk] Dropping streamed sentence for back_from_detail turn=${activeTurnKey}`);
+        return;
+      }
       turnsWithSentencesRef.current.add(activeTurnKey);
       console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${activeTurnKey} text="${sentence.slice(0, 50)}"`);
       setConv(S.SPEAKING);
@@ -1879,6 +1995,10 @@ export function useKiosk() {
         handleServerAction(doneData.action, doneData.salesStage);
       }
       const turnId = activeActionReplyIdRef.current || doneData?.turnId || doneData?.meta?.turn_id || kioskWS.currentTurnId || "turn_default";
+      if (isBackFromDetailPendingRef.current || (backTurnIdRef.current && turnId === backTurnIdRef.current)) {
+        console.log(`[Kiosk] unsubDone: holding for returnFromDetail turn=${turnId}`);
+        return;
+      }
       speechController.endReply(turnId);
 
       if (doneData?.reply && typeof doneData.reply === "string" && doneData.reply.trim().length > 0) {
@@ -1987,6 +2107,25 @@ export function useKiosk() {
       console.log("[Kiosk] Spoken identity override detected:", trimmed);
       latestRef.current.resetSession?.("user_speech");
       return;
+    }
+
+    // ── Spoken recommendations intent ──
+    if (latestRef.current.cartModalOpen || latestRef.current.recommendationOpen) {
+      if (/^(?:yes|yeah|sure|show me|show suggestions|show me suggestions|suggestions|recommend|recommendations)\b/i.test(trimmed)) {
+        console.log("[Reco] voice shortcut: REQUEST_RECOMMENDATION");
+        latestRef.current.requestRecommendation?.();
+        return;
+      }
+      if (/^(?:add both|both|take both|add bundle|accept)\b/i.test(trimmed)) {
+        console.log("[Reco] voice shortcut: ACCEPT_RECOMMENDATION");
+        latestRef.current.acceptRecommendation?.();
+        return;
+      }
+      if (/^(?:no|no thanks|nope|nah|not now|skip|decline)\b/i.test(trimmed)) {
+        console.log("[Reco] voice shortcut: DECLINE_RECOMMENDATION");
+        latestRef.current.declineRecommendation?.();
+        return;
+      }
     }
 
     stopSpeechForUserAction("user_voice_turn");
@@ -2292,6 +2431,8 @@ export function useKiosk() {
 
   // ── Flow Actions ──────────────────────────────────────────────────────────
   const selectCategory = useCallback((cat) => {
+    cancelPendingReturnFromDetail("user_tap_category");
+    productDetailOpenedRef.current = false;
     stopSpeechForUserAction("user_tap_category");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
@@ -2312,9 +2453,11 @@ export function useKiosk() {
       category_id: cleanId,
       category_name: catName,
     });
-  }, [categories, presence, stopSpeechForUserAction]);
+  }, [categories, presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
 
   const selectProduct = useCallback((p) => {
+    cancelPendingReturnFromDetail("user_tap_product");
+    productDetailOpenedRef.current = true;
     stopSpeechForUserAction("user_tap_product");
     lastInputAtRef.current = Date.now();
     if (kioskModeRef.current === "IDLE") {
@@ -2326,9 +2469,11 @@ export function useKiosk() {
     setOnboardingOpen(false);
     KioskStepCache.setSelectedProduct(p);
     kioskWS.sendSelectProduct(p);
-  }, [presence, stopSpeechForUserAction]);
+  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
 
   const showAll = useCallback(() => {
+    cancelPendingReturnFromDetail("user_tap_show_all");
+    productDetailOpenedRef.current = false;
     stopSpeechForUserAction("user_tap_show_all");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
@@ -2336,15 +2481,23 @@ export function useKiosk() {
     setShowDetail(false);
     setOnboardingOpen(false);
     kioskWS.sendWsAction({ action: "SHOW_ALL" });
-  }, [presence, stopSpeechForUserAction]);
+  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
 
   const navigateBack = useCallback(() => {
-    stopSpeechForUserAction("user_tap_back");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
+    if (isBackFromDetailPendingRef.current) {
+      return;
+    }
+    const wasDetail = productDetailOpenedRef.current || latestRef.current.showDetail;
     setShowDetail(false);
-    kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
-  }, [presence, stopSpeechForUserAction]);
+    const turnId = kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
+    if (wasDetail) {
+      triggerReturnFromDetail(turnId);
+    } else {
+      stopSpeechForUserAction("user_tap_back");
+    }
+  }, [presence, stopSpeechForUserAction, triggerReturnFromDetail]);
 
   const restartSession = useCallback(() => {
     lastInputAtRef.current = Date.now();
@@ -2405,6 +2558,29 @@ export function useKiosk() {
 
     kioskWS.sendButtonClick(btn);
   }, [presence, restartSession, skipName, stopSpeechForUserAction]);
+
+  const requestRecommendation = useCallback(() => {
+    stopSpeechForUserAction("user_request_recommendation");
+    lastInputAtRef.current = Date.now();
+    console.log("[Reco] requested");
+    kioskWS.sendWsAction({ action: "REQUEST_RECOMMENDATION" });
+  }, [stopSpeechForUserAction]);
+
+  const acceptRecommendation = useCallback(() => {
+    stopSpeechForUserAction("user_accept_recommendation");
+    lastInputAtRef.current = Date.now();
+    console.log("[Reco] accepted");
+    setRecommendationOpen(false);
+    kioskWS.sendWsAction({ action: "ACCEPT_RECOMMENDATION" });
+  }, [stopSpeechForUserAction]);
+
+  const declineRecommendation = useCallback(() => {
+    stopSpeechForUserAction("user_decline_recommendation");
+    lastInputAtRef.current = Date.now();
+    console.log("[Reco] declined");
+    setRecommendationOpen(false);
+    kioskWS.sendWsAction({ action: "DECLINE_RECOMMENDATION" });
+  }, [stopSpeechForUserAction]);
 
   const products = useMemo(() => {
     if (liveTurnProducts.length > 0) {
@@ -2477,6 +2653,12 @@ export function useKiosk() {
     handleServerAction,
     stageRef,
     _stageRef: stageRef,
+    cartModalOpen,
+    recommendationOpen,
+    recommendationData,
+    requestRecommendation,
+    acceptRecommendation,
+    declineRecommendation,
   };
 
   return {
@@ -2554,5 +2736,15 @@ export function useKiosk() {
     sessionTimeoutWarning,
     continueSession,
     exitSession,
+    stopSpeechForUserAction,
+    recommendationOpen,
+    setRecommendationOpen,
+    recommendationData,
+    setRecommendationData,
+    requestRecommendation,
+    acceptRecommendation,
+    declineRecommendation,
+    kioskModeRef,
+    replayingRef,
   };
 }

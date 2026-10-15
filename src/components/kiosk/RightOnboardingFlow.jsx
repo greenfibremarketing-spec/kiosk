@@ -111,6 +111,15 @@ export default function RightOnboardingFlow({
     }, 260);
   };
 
+  // Dismiss handler for backdrop clicks
+  const handleBackdropClick = (e) => {
+    // When she asks for name (step 1), do NOT close unless user taps 'Skip' or '✕'
+    if (step === 1) return;
+    if (e.target === e.currentTarget) {
+      handleDismiss();
+    }
+  };
+
   const categoryMetaMap = {
     "kitchen-dining": { icon: "🍳", desc: "Cookware, bowls & dining sets" },
     kitchen: { icon: "🍳", desc: "Cookware, bowls & dining sets" },
@@ -142,7 +151,7 @@ export default function RightOnboardingFlow({
   return (
     <div
       className={`right-onboarding-backdrop ${animatingOut ? "right-onboarding--exit" : ""}`}
-      onClick={handleDismiss}
+      onClick={handleBackdropClick}
       aria-label="Welcome and Category Explorer"
     >
       <div

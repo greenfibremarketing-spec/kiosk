@@ -701,6 +701,9 @@ class KioskWebSocketClient {
       case "SHOW_ALL":
       case "NAVIGATE_BACK":
       case "RESTART":
+      case "REQUEST_RECOMMENDATION":
+      case "ACCEPT_RECOMMENDATION":
+      case "DECLINE_RECOMMENDATION":
         break;
     }
     return frame;

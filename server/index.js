@@ -94,6 +94,8 @@ const STATIC_PREWARM_LINES = [
   "Here are our handcrafted sustainable planters.",
   "Here are all our products.",
   "Here is our complete collection.",
+  // Return from product detail
+  "No rush! Take your time, there's lots more to explore.",
 ];
 
 const PORT = process.env.PORT || 4000;

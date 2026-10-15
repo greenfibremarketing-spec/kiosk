@@ -4,6 +4,7 @@ import AvatarPanel from "@/components/avatar/AvatarPanel";
 import ProductShowcase from "@/components/products/ProductShowcase";
 import RightOnboardingFlow from "@/components/kiosk/RightOnboardingFlow";
 import CartConfirmationModal from "@/components/modals/CartConfirmationModal";
+import RecommendationModal from "@/components/modals/RecommendationModal";
 import CheckoutQRModal from "@/components/modals/CheckoutQRModal";
 import GoodbyeOverlay from "@/components/modals/GoodbyeOverlay";
 import StaffAssistanceBanner from "@/components/kiosk/StaffAssistanceBanner";
@@ -173,11 +174,13 @@ export default function KioskShell() {
           onEnquire={k.enquire}
           onQuickPick={k.send}
           showDetail={k.showDetail}
-          onCloseDetail={() => k.setShowDetail(false)}
+          onCloseDetail={k.navigateBack}
           actionButtons={k.actionButtons}
           onButtonClick={k.handleButtonClick}
           name={k.name}
           onResetSession={k.resetSession}
+          kioskModeRef={k.kioskModeRef}
+          replayingRef={k.replayingRef}
         />
 
         {/* ── Onboarding Flow (Step 1: Ask Name, Step 2: Categories) ── */}
@@ -222,6 +225,15 @@ export default function KioskShell() {
             k.setCartModalOpen(false);
             k.setQrModalOpen(true);
           }}
+        />
+
+        {/* ── Recommendation Bundle Modal (SHOW_RECOMMENDATION) ── */}
+        <RecommendationModal
+          isOpen={isEngaged && Boolean(k.recommendationOpen)}
+          data={k.recommendationData}
+          onAccept={k.acceptRecommendation}
+          onDecline={k.declineRecommendation}
+          onClose={() => k.setRecommendationOpen(false)}
         />
 
         {/* ── Checkout & QR Screen (CHECKOUT_HANDOFF) ── */}

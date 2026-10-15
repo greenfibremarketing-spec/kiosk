@@ -116,6 +116,7 @@ export async function prewarmVoiceCache(catalog = []) {
     "What's your name?",
     "Which category would you like to explore today?",
     "Please select a category to view our sustainable products.",
+    "No rush! Take your time, there's lots more to explore.",
   ];
 
   if (Array.isArray(catalog) && catalog.length > 0) {

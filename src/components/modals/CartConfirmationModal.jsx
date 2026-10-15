@@ -1,6 +1,7 @@
 "use client";
 import React from "react";
 import ProductArt from "../products/ProductArt";
+import CartRecommendationStrip from "./CartRecommendationStrip";
 
 export default function CartConfirmationModal({
   isOpen,
@@ -10,6 +11,7 @@ export default function CartConfirmationModal({
   buttons = [],
   onButtonClick,
   onProceedToCheckout,
+  children,
 }) {
   if (!isOpen) return null;
 
@@ -73,6 +75,8 @@ export default function CartConfirmationModal({
           <span>🌱</span>
           <p>Choosing this product diverts <strong>~210g</strong> of crop straw from stubble burning.</p>
         </div>
+
+        {children || <CartRecommendationStrip />}
 
         {/* Action Buttons */}
         <div className="cart-modal-actions">

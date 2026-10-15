@@ -23,6 +23,8 @@ export default function ProductShowcase({
   onButtonClick,
   name = "",
   onResetSession,
+  kioskModeRef = null,
+  replayingRef = null,
 }) {
   const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success"
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -201,6 +203,8 @@ export default function ProductShowcase({
           onSelectProduct={handleSelectProduct}
           buttons={actionButtons}
           onButtonClick={onButtonClick}
+          kioskModeRef={kioskModeRef}
+          replayingRef={replayingRef}
         />
       )}
 

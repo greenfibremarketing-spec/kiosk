@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useFeedbackSpeech } from "@/hooks/useFeedbackSpeech";
 import {
   ChevronLeft,
   ChevronRight,
@@ -150,9 +151,12 @@ export default function ProductDetailPage({
   onSelectProduct,
   buttons = [],
   onButtonClick,
+  kioskModeRef = null,
+  replayingRef = null,
 }) {
   const [quantity, setQuantity] = useState(1);
   const [activeSlide, setActiveSlide] = useState(0);
+  const { speakFeedback } = useFeedbackSpeech({ kioskModeRef, replayingRef });
 
   // Derive variants and real color values from data
   const colors = useMemo(() => {
@@ -242,6 +246,7 @@ export default function ProductDetailPage({
   const handleColorSelect = (colorName) => {
     setSelectedColor(colorName);
     setActiveSlide(0);
+    speakFeedback("colour_change", { colour: colorName });
   };
 
   if (!product) return null;
@@ -569,6 +574,7 @@ export default function ProductDetailPage({
           <button
             type="button"
             className="pdp-stepper-touch-btn"
+            onClickCapture={() => speakFeedback("quantity_down", { qty: Math.max(1, quantity - 1) })}
             onClick={() => setQuantity((q) => Math.max(1, q - 1))}
             disabled={quantity <= 1}
             aria-label="Decrease quantity"
@@ -579,6 +585,7 @@ export default function ProductDetailPage({
           <button
             type="button"
             className="pdp-stepper-touch-btn"
+            onClickCapture={() => speakFeedback("quantity_up", { qty: quantity + 1 })}
             onClick={() => setQuantity((q) => q + 1)}
             aria-label="Increase quantity"
           >
@@ -596,6 +603,7 @@ export default function ProductDetailPage({
         <button
           type="button"
           className="pdp-primary-checkout-btn"
+          onClickCapture={() => speakFeedback("add_to_cart", { productName: product.name, qty: quantity })}
           onClick={() =>
             onProceedToCheckout?.({
               product,
