@@ -3,6 +3,20 @@ import React, { useState, useEffect } from "react";
 import ProductArt from "../products/ProductArt";
 import PriceTag from "../products/PriceTag";
 
+const STOP_NAME_WORDS = new Set([
+  "only", "just", "show", "me", "the", "yes", "no", "okay", "ok",
+  "bottle", "bottles", "mug", "mugs", "price", "cost", "plate", "plates",
+  "bowl", "bowls", "casserole", "canister", "canisters", "gift", "gifts", "gifting",
+  "hamper", "planter", "planters", "dining", "products", "product", "items",
+  "item", "all", "everything", "something", "anything", "please", "help",
+  "hi", "hello", "hey", "skip", "next", "pass", "what", "which", "where",
+  "how", "who", "why", "is", "are", "can", "will", "tell", "explore", "buy",
+  "cart", "checkout", "greenie", "greenfibre", "water", "cups", "set",
+  "collection", "sustainable", "eco", "good", "more", "cheaper", "glass",
+  "rice", "husk", "none", "nothing", "kitchen", "best", "cheap", "take", "bye",
+  "later", "never", "mind", "browse"
+]);
+
 export default function RightOnboardingFlow({
   isOpen,
   onClose,
@@ -40,7 +54,7 @@ export default function RightOnboardingFlow({
   useEffect(() => {
     if (step === 1 && liveTranscript) {
       const lower = liveTranscript.toLowerCase().trim();
-      if (/^(?:skip|skip name|no|pass|not now)$/i.test(lower)) {
+      if (/^(?:skip|skip name|no|pass|not now|no name|just browse|never mind)$/i.test(lower)) {
         handleSkipStep1();
         return;
       }
@@ -48,9 +62,10 @@ export default function RightOnboardingFlow({
         .replace(/^(?:my name is|i am|i'm|this is|call me|myself|it's|it is)\s+/i, "")
         .replace(/[.,!?]/g, "")
         .trim();
-      if (clean && clean.split(/\s+/).length <= 3 && !/^(?:skip|no|what|how|why|hello|hi|hey)\b/i.test(clean)) {
-        const formatted = clean
-          .split(/\s+/)
+      const words = clean.toLowerCase().split(/\s+/).filter(Boolean);
+      const containsStopWord = words.some((w) => STOP_NAME_WORDS.has(w));
+      if (clean && words.length >= 1 && words.length <= 3 && !containsStopWord) {
+        const formatted = words
           .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
           .join(" ");
         setInputName(formatted);

@@ -49,6 +49,7 @@ class KioskWebSocketClient {
     this.speechDoneTimer = null;
     this.inFlightTurnId = null;   // turn currently streaming from the backend
     this.staleTurns = new Set();  // turns the user cancelled; their frames are ignored
+    this.turnUserFinalTsMap = new Map(); // turnId -> performance.now() of user speech completion
   }
 
   generateTurnId() {
@@ -797,11 +798,22 @@ class KioskWebSocketClient {
   }
 
   // ── Standard Protocol v2 Sending API ──
-  sendWsMessage(text) {
-    const turnId = this.generateTurnId();
-    const frame = { message: String(text || ""), turn_id: turnId };
+  sendWsMessage(text, meta = {}) {
+    const turnId = meta?.turn_id || this.generateTurnId();
+    if (meta?.userFinalTs) {
+      this.turnUserFinalTsMap.set(turnId, meta.userFinalTs);
+    }
+    const frame = {
+      message: String(text || ""),
+      turn_id: turnId,
+      ...(meta || {}),
+    };
     this._dispatchUserFrame(frame, turnId, "message");
     return turnId;
+  }
+
+  getTurnUserFinalTs(turnId) {
+    return this.turnUserFinalTsMap.get(turnId);
   }
 
   sendWsAction(actionPayload = {}) {
@@ -869,6 +881,52 @@ class KioskWebSocketClient {
     }
     const val = button.id || button.label || button.name || "";
     return this.sendWsMessage(val);
+  }
+
+  // ── Session & Screen State Events ──
+  sendEvent(eventType, data = {}) {
+    const frame = {
+      v: 2,
+      type: eventType,
+      event: eventType,
+      data,
+      ...data,
+    };
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        console.log(`[KioskWS] Sending event ${eventType}:`, frame);
+        this.ws.send(JSON.stringify(frame));
+      } catch (err) {
+        console.warn(`[KioskWS] Failed to send event ${eventType}:`, err);
+      }
+    } else if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+      const onOpenHandler = () => {
+        this.ws?.removeEventListener?.("open", onOpenHandler);
+        try {
+          console.log(`[KioskWS] Sending queued event ${eventType}:`, frame);
+          this.ws?.send?.(JSON.stringify(frame));
+        } catch (_) {}
+      };
+      this.ws.addEventListener("open", onOpenHandler);
+    }
+  }
+
+  sendNameSubmitted(name) {
+    return this.sendEvent("name_submitted", { name: String(name || "").trim() });
+  }
+
+  sendNameSkipped() {
+    return this.sendEvent("name_skipped", {});
+  }
+
+  sendScreenChanged({ type, category = null, sku = null, skus = [] } = {}) {
+    return this.sendEvent("screen_changed", {
+      type: type || "home",
+      screen_type: type || "home",
+      category: category || null,
+      sku: sku || null,
+      skus: Array.isArray(skus) ? skus : (sku ? [sku] : []),
+    });
   }
 
   // ── Cancel Ongoing Inference Frame ──

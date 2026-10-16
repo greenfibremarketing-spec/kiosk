@@ -235,6 +235,9 @@ export default function KioskShell() {
             onRemoveItem={k.removeCartItem}
             showCheckout={k.showCheckout}
             onCloseCheckout={() => k.setShowCheckout(false)}
+            filtersApplied={k.filtersApplied}
+            onClearFilters={k.clearFilters}
+            highlightSku={k.highlightSku}
           />
         </ErrorBoundary>
 

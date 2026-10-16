@@ -72,6 +72,14 @@ const STATIC_PREWARM_LINES = [
   "I'm Greenie, your eco companion.",
   "Ask me anything or tap any product to explore!",
   "What would you like to explore today?",
+  // Friendly openers (Cached Acknowledgements)
+  "Sure!",
+  "Of course!",
+  "Lovely choice!",
+  "Let me show you.",
+  "Here you go!",
+  "Great pick!",
+  "One moment.",
   // ASK_NAME prompts
   "Hi!",
   "What's your name?",
@@ -132,12 +140,12 @@ app.listen(PORT, async () => {
   try {
     const test = await checkTtsHealth();
     if (test.ok) {
-      console.log(`[TTS Startup] Verified Deepgram model: ${test.model} (200 OK)`);
+      console.log("[TTS] format check OK");
     } else {
-      console.warn(`[TTS Startup Warning] Health test failed: ${test.error}`);
+      console.error(`[TTS] format check failed: ${test.error}`);
     }
   } catch (err) {
-    console.warn("[TTS Startup Warning] Health test exception:", err.message);
+    console.error(`[TTS] format check failed: ${err.message}`);
   }
 
   // Asynchronously pre-warm static lines & product lines into the persistent disk cache

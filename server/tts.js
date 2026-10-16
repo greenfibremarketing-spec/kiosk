@@ -2,6 +2,16 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { Agent, setGlobalDispatcher } from "undici";
+
+// Reuse one keep-alive connection dispatcher for Deepgram upstream requests
+const ttsDispatcher = new Agent({
+  keepAliveTimeout: 60000,
+  keepAliveMaxTimeout: 60000,
+  connections: 32,
+  pipelining: 1,
+});
+setGlobalDispatcher(ttsDispatcher);
 
 export const DEFAULT_MODEL = process.env.TTS_MODEL || "aura-2-luna-en";
 export const FALLBACK_MODEL = "aura-luna-en";
@@ -24,6 +34,8 @@ function getApiKey() {
   );
 }
 
+const CACHE_VERSION = "v2";
+
 /**
  * Synthesizes speech using Deepgram Aura TTS with retry backoff, disk caching,
  * and client disconnect cancellation via AbortSignal.
@@ -43,12 +55,13 @@ export async function synth(text, requestedModel, signal = null) {
     ? requestedModel.trim()
     : DEFAULT_MODEL;
 
-  const cacheKey = crypto.createHash("md5").update(`${model}:${clean}`).digest("hex") + ".mp3";
+  const cacheKey = crypto.createHash("md5").update(`${CACHE_VERSION}:${model}:${clean}`).digest("hex") + ".mp3";
   const file = path.join(CACHE_DIR, cacheKey);
 
   if (fs.existsSync(file)) {
     const stats = fs.statSync(file);
     if (stats.size > 100) {
+      console.log(`[TTS] synth_ms=0 chars=${clean.length} (cached)`);
       return { file, model };
     }
     // Remove corrupt/empty cache file
@@ -60,6 +73,7 @@ export async function synth(text, requestedModel, signal = null) {
     throw new Error("Deepgram API key not configured for TTS");
   }
 
+  const t0 = performance.now();
   let lastError = null;
   let attemptModel = model;
 
@@ -91,6 +105,8 @@ export async function synth(text, requestedModel, signal = null) {
 
         fs.writeFileSync(file, buffer);
         const resolvedModel = res.headers.get("dg-model-name") || attemptModel;
+        const synthMs = Math.round(performance.now() - t0);
+        console.log(`[TTS] synth_ms=${synthMs} chars=${clean.length}`);
         return { file, model: resolvedModel };
       }
 
@@ -100,9 +116,15 @@ export async function synth(text, requestedModel, signal = null) {
       lastError.status = status;
       lastError.body = errText;
 
-      // If requested model is not found, try fallback model
-      if ((status === 400 || status === 404) && attemptModel !== FALLBACK_MODEL) {
-        console.warn(`[TTS] Model ${attemptModel} returned ${status}, falling back to ${FALLBACK_MODEL}`);
+      // The fallback to aura-luna-en must only happen for a model error, not for a format error
+      const isFormatError = status === 400 && /bit_rate|encoding|sample_rate|container|format|parameter/i.test(errText);
+      const isModelError = !isFormatError && (
+        status === 404 ||
+        (status === 400 && /model/i.test(errText))
+      );
+
+      if (isModelError && attemptModel !== FALLBACK_MODEL) {
+        console.warn(`[TTS] Model ${attemptModel} returned ${status} (model error), falling back to ${FALLBACK_MODEL}`);
         attemptModel = FALLBACK_MODEL;
         continue;
       }
@@ -133,9 +155,12 @@ export async function synth(text, requestedModel, signal = null) {
  */
 export async function checkTtsHealth() {
   try {
-    const { file, model } = await synth("Hi", DEFAULT_MODEL);
+    const { file, model } = await synth("Format check test", DEFAULT_MODEL);
     const valid = fs.existsSync(file) && fs.statSync(file).size > 100;
-    return { ok: valid, model };
+    if (!valid) {
+      return { ok: false, model: DEFAULT_MODEL, error: "Synthesized audio buffer too small or file missing" };
+    }
+    return { ok: true, model };
   } catch (err) {
     return { ok: false, model: DEFAULT_MODEL, error: err.message };
   }
@@ -160,13 +185,17 @@ export async function prewarmTtsCache(lines, model = DEFAULT_MODEL) {
   const toSynth = [];
 
   for (const line of unique) {
-    const cacheKey = crypto.createHash("md5").update(`${model}:${line}`).digest("hex") + ".mp3";
+    const cacheKey = crypto.createHash("md5").update(`${CACHE_VERSION}:${model}:${line}`).digest("hex") + ".mp3";
     const file = path.join(CACHE_DIR, cacheKey);
-    if (fs.existsSync(file) && fs.statSync(file).size > 100) {
-      cachedCount++;
-    } else {
-      toSynth.push(line);
+    if (fs.existsSync(file)) {
+      const stats = fs.statSync(file);
+      if (stats.size > 100) {
+        cachedCount++;
+        continue;
+      }
+      try { fs.unlinkSync(file); } catch (_) {}
     }
+    toSynth.push(line);
   }
 
   // Synthesize missing lines with controlled concurrency (2 at a time)
@@ -176,8 +205,12 @@ export async function prewarmTtsCache(lines, model = DEFAULT_MODEL) {
     await Promise.all(
       batch.map(async (text) => {
         try {
-          await synth(text, model);
-          warmedCount++;
+          const res = await synth(text, model);
+          if (res && res.file && fs.existsSync(res.file) && fs.statSync(res.file).size > 100) {
+            warmedCount++;
+          } else {
+            errorCount++;
+          }
         } catch (e) {
           errorCount++;
           console.warn(`[TTS Pre-Warm] Notice: could not pre-warm line "${text.slice(0, 30)}":`, e.message);

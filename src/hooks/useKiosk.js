@@ -81,6 +81,20 @@ const S = {
   SPEAKING:   "SPEAKING",
 };
 
+const STOP_NAME_WORDS = new Set([
+  "only", "just", "show", "me", "the", "yes", "no", "okay", "ok",
+  "bottle", "bottles", "mug", "mugs", "price", "cost", "plate", "plates",
+  "bowl", "bowls", "casserole", "canister", "canisters", "gift", "gifts", "gifting",
+  "hamper", "planter", "planters", "dining", "products", "product", "items",
+  "item", "all", "everything", "something", "anything", "please", "help",
+  "hi", "hello", "hey", "skip", "next", "pass", "what", "which", "where",
+  "how", "who", "why", "is", "are", "can", "will", "tell", "explore", "buy",
+  "cart", "checkout", "greenie", "greenfibre", "water", "cups", "set",
+  "collection", "sustainable", "eco", "good", "more", "cheaper", "glass",
+  "rice", "husk", "none", "nothing", "kitchen", "best", "cheap", "take", "bye",
+  "later", "never", "mind", "browse"
+]);
+
 export function useKiosk() {
   // ── Core product/UI state ──────────────────────────────────────────────────
   const [name, setName]           = useState(() => KioskStepCache.getCustomerName());
@@ -98,6 +112,8 @@ export function useKiosk() {
   const [liveTurnProducts, setLiveTurnProducts] = useState([]);
   const liveTurnProductsRef = useRef(liveTurnProducts);
   liveTurnProductsRef.current = liveTurnProducts;
+  const [filtersApplied, setFiltersApplied] = useState(null);
+  const [highlightSku, setHighlightSku] = useState(null);
   const [sessionResetKey, setSessionResetKey] = useState(0);
   const [showDetail, setShowDetail]       = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
@@ -1390,6 +1406,8 @@ export function useKiosk() {
       : "catalog";
 
     setLiveTurnProducts([]);
+    setFiltersApplied(null);
+    setHighlightSku(null);
     clearCart();
     setCartItems([]);
     setShowCheckout(false);
@@ -1648,6 +1666,7 @@ export function useKiosk() {
     setOnboardingStep(2);
     setOnboardingOpen(true);
 
+    kioskWS.sendNameSubmitted(trimmed);
     kioskWS.sendSetName(trimmed);
 
     // 1.5s fallback timer: ensure categories are rendered even if server SHOW_CATEGORIES is delayed
@@ -1671,6 +1690,7 @@ export function useKiosk() {
     setOnboardingStep(2);
     setOnboardingOpen(true);
 
+    kioskWS.sendNameSkipped();
     kioskWS.sendSkipName();
 
     clearTimeout(categoriesFallbackTimerRef.current);
@@ -1685,6 +1705,7 @@ export function useKiosk() {
 
   // ── AI Screen Director: Handle structured server actions ────────────────
   const handleServerAction = useCallback((action, salesStage) => {
+    clearTimeout(categoriesFallbackTimerRef.current);
     if (replayingRef.current) {
       console.log("[Restore] replay: ignored action");
       return;
@@ -1721,7 +1742,9 @@ export function useKiosk() {
     // Backend re-sends the same action inside the "done" frame: ignore the repeat
     const spokenText = action?.message || action?.prompt || action?.text || action?.blurb || "";
     if (spokenText) {
-      const key = `${actionType}|${spokenText}`;
+      const skusKey = (action?.products?.map((p) => p.sku || p.id) || []).join(",");
+      const filtersKey = action?.filters_applied ? JSON.stringify(action.filters_applied) : "";
+      const key = `${actionType}|${spokenText}|${skusKey}|${filtersKey}`;
       const nowTs = Date.now();
       if (lastHandledActionRef.current.key === key && nowTs - lastHandledActionRef.current.t < 5000) {
         console.log(`[Kiosk] Ignoring repeated action ${actionType} (already handled)`);
@@ -1858,6 +1881,9 @@ export function useKiosk() {
         setShowDetail(false);
         setCartModalOpen(false);
         setQrModalOpen(false);
+        setLiveTurnProducts([]);
+        setFiltersApplied(null);
+        setHighlightSku(null);
         if (action?.buttons && Array.isArray(action.buttons)) {
           setActionButtons(action.buttons);
         }
@@ -1884,8 +1910,10 @@ export function useKiosk() {
       case "SHOW_PRODUCTS": {
         const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
-        // Server actions must not close categories screen if user is currently selecting categories
-        if (latestRef.current.onboardingStep !== 2) {
+        // Server actions must close onboarding card if products are returned
+        if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
+          setOnboardingOpen(false);
+        } else if (latestRef.current.onboardingStep !== 2) {
           setOnboardingOpen(false);
         }
         trace("showDetail=false", { caller: "SHOW_PRODUCTS" });
@@ -1909,6 +1937,18 @@ export function useKiosk() {
           setLiveTurnProducts(normTurnProducts);
         } else {
           setLiveTurnProducts([]);
+        }
+
+        if (action?.filters_applied) {
+          setFiltersApplied(action.filters_applied);
+        } else {
+          setFiltersApplied(null);
+        }
+
+        if (action?.highlight_sku) {
+          setHighlightSku(action.highlight_sku);
+        } else {
+          setHighlightSku(null);
         }
 
         if (action?.buttons && Array.isArray(action.buttons)) {
@@ -2105,6 +2145,8 @@ export function useKiosk() {
         setShowDetail(false);
         setCategory("all");
         setLiveTurnProducts([]);
+        setFiltersApplied(null);
+        setHighlightSku(null);
         break;
       }
 
@@ -2112,6 +2154,9 @@ export function useKiosk() {
         const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
         trace("showDetail=false", { caller: "NAVIGATE_BACK" });
         setShowDetail(false);
+        setLiveTurnProducts([]);
+        setFiltersApplied(null);
+        setHighlightSku(null);
         if (wasInDetail && !isBackFromDetailPendingRef.current) {
           triggerReturnFromDetail(actionTurnId);
         }
@@ -2189,7 +2234,13 @@ export function useKiosk() {
       console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${activeTurnKey} text="${sentence.slice(0, 50)}"`);
       setConv(S.SPEAKING);
       const textToSpeak = sanitizeForMultipleFaces(sentence);
-      speechController.appendSentence(activeTurnKey, textToSpeak, { turnId: activeTurnKey });
+      const userFinalTs = kioskWS.getTurnUserFinalTs(activeTurnKey);
+      const firstSentenceReceivedTs = typeof window !== "undefined" ? performance.now() : Date.now();
+      speechController.appendSentence(activeTurnKey, textToSpeak, {
+        turnId: activeTurnKey,
+        userFinalTs,
+        firstSentenceReceivedTs,
+      });
     });
 
     const unsubDone = kioskWS.on("done", (doneData) => {
@@ -2261,7 +2312,7 @@ export function useKiosk() {
 
 
   // ── Core: Send transcript to AI backend ───────────────────────────────────
-  const sendTranscript = useCallback(async (text, signalsSnap) => {
+  const sendTranscript = useCallback(async (text, signalsSnap, timing = {}) => {
     if (isSendingRef.current) {
       console.log("[Kiosk] Dropping duplicate in-flight chat request:", text);
       return;
@@ -2280,7 +2331,7 @@ export function useKiosk() {
     const hasExplicitIntro = /^(?:my name is|i am|i'm|this is|call me|myself)\s+/i.test(trimmed);
 
     if (isAwaitingName || (!hasNameAlready && !nameSubmittedRef.current && hasExplicitIntro)) {
-      if (/^(?:skip|skip name|skip for now|no thanks|later|pass|never mind)$/i.test(trimmed)) {
+      if (/^(?:skip|skip name|skip for now|no thanks|later|pass|never mind|no name|just browse)$/i.test(trimmed)) {
         console.log("[Kiosk] Spoken skip name detected:", trimmed);
         skipName();
         return;
@@ -2290,14 +2341,11 @@ export function useKiosk() {
         .replace(/[.,!?]/g, "")
         .trim();
 
-      const isReserved =
-        /^(?:what|where|how|why|who|help|hello|hi|good|can|buy|shop|shirt|shirts|t-shirt|tshirts|kurta|kurtas|jeans|trouser|trousers|linen|all|next|back|restart|checkout)\b/i.test(
-          candidate
-        );
+      const words = candidate.toLowerCase().split(/\s+/).filter(Boolean);
+      const containsStopWord = words.some((w) => STOP_NAME_WORDS.has(w));
 
-      if (candidate && candidate.split(/\s+/).length <= 3 && !isReserved) {
-        const formatted = candidate
-          .split(/\s+/)
+      if (candidate && words.length >= 1 && words.length <= 3 && !containsStopWord) {
+        const formatted = words
           .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
           .join(" ");
         console.log("[Kiosk] Spoken name detected:", formatted);
@@ -2386,63 +2434,22 @@ export function useKiosk() {
       return;
     }
 
-    isSendingRef.current = true;
     setConv(S.THINKING);
-    abortRef.current?.abort();
-    abortRef.current = new AbortController();
-
-    // Start a new turn on the stage: aborts any in-flight TTS from previous turn immediately
-    const stage = latestRef.current._stageRef?.current;
-    stage?.startTurn?.("turn_" + Date.now());
-
-    try {
-      const effectiveName = latestRef.current.multipleFaces ? "" : String(nameRef.current ?? "");
-      const data = await replyAsync({
-        text: String(text ?? ""),
-        name: effectiveName,
-        sessionId: sessionIdRef.current,
-        signals: signalsSnap,
-        signal: abortRef.current.signal,
-        onAction: (act) => {
-          if (act) handleServerAction(act);
-        },
-      });
-
-      if (!data || !data.message) {
-        setConv(S.ATTENTIVE);
-        return;
-      }
-
-      if (data.turnId) {
-        lastSpokenTurnIdRef.current = data.turnId;
-      }
-
-      if (data.name) setName(data.name);
-      if (data.sessionId) sessionIdRef.current = data.sessionId;
-
-      const a = data.action;
-      const textQuery = String(text ?? "").trim();
-      const localMatch = matchProductAction(textQuery);
-
-      if (a || localMatch) {
-        handleServerAction(a || localMatch, data.salesStage);
-      }
-
-      setConv(S.SPEAKING);
-      setCaption(data.message);
-    } catch (err) {
-      if (err?.name === "AbortError") return;
-      console.error("[Kiosk] AI backend error:", err);
-      setConv(S.ATTENTIVE);
-    } finally {
-      isSendingRef.current = false;
-    }
+    const uTs = timing?.userFinalTs || (typeof window !== "undefined" ? performance.now() : Date.now());
+    const sTs = timing?.sttFinalTs || Date.now();
+    kioskWS.sendWsMessage(trimmed, {
+      userFinalTs: uTs,
+      stt_final_ts: sTs,
+      client_sent_ts: Date.now(),
+    });
 
   }, [handleServerAction, say, setConv, skipName, stopSpeechForUserAction, submitName]);
 
   // ── End-of-turn finalization ──────────────────────────────────────────────
   const finaliseAndSend = useCallback((explicitText) => {
     clearTimeout(eotTimerRef.current);
+    const userFinalTs = typeof window !== "undefined" ? performance.now() : Date.now();
+    const sttFinalTs = Date.now();
     const text = (typeof explicitText === "string" ? explicitText : pendingTranscriptRef.current).trim();
     if (text) {
       setLastUserSpeech(text);
@@ -2458,7 +2465,7 @@ export function useKiosk() {
     }
 
     failureCountRef.current = 0;
-    sendTranscript(text, signals);
+    sendTranscript(text, signals, { userFinalTs, sttFinalTs });
   }, [sendTranscript, setConv, signals]);
 
   const finaliseAndSendRef = useRef(finaliseAndSend);
@@ -2699,6 +2706,8 @@ export function useKiosk() {
     setShowDetail(false);
     setOnboardingOpen(false);
     setLiveTurnProducts([]);
+    setFiltersApplied(null);
+    setHighlightSku(null);
 
     kioskWS.sendSelectCategory({
       category_id: cleanId,
@@ -2749,8 +2758,18 @@ export function useKiosk() {
     trace("showDetail=false", { caller: "showAll" });
     setShowDetail(false);
     setOnboardingOpen(false);
+    setLiveTurnProducts([]);
+    setFiltersApplied(null);
+    setHighlightSku(null);
     kioskWS.sendWsAction({ action: "SHOW_ALL" });
   }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
+
+  const clearFilters = useCallback(() => {
+    setLiveTurnProducts([]);
+    setFiltersApplied(null);
+    setHighlightSku(null);
+    kioskWS.sendWsAction({ action: "SHOW_ALL" });
+  }, []);
 
   const navigateBack = useCallback(() => {
     lastInputAtRef.current = Date.now();
@@ -2761,6 +2780,9 @@ export function useKiosk() {
     const wasDetail = productDetailOpenedRef.current || latestRef.current.showDetail;
     trace("showDetail=false", { caller: "navigateBack" });
     setShowDetail(false);
+    setLiveTurnProducts([]);
+    setFiltersApplied(null);
+    setHighlightSku(null);
     const turnId = kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
     if (wasDetail) {
       triggerReturnFromDetail(turnId);
@@ -3094,6 +3116,39 @@ export function useKiosk() {
     );
   }, [backendCatalog, productId, products]);
 
+  // ── Single Source of Truth: Current Screen State broadcast to backend ──
+  const currentScreenState = useMemo(() => {
+    if (cartModalOpen) {
+      return { type: "cart", category: null, sku: null, skus: [] };
+    }
+    if (showDetail && product) {
+      const sku = product.sku || product.id || null;
+      return { type: "product", category: product.category || (category !== "all" ? category : null), sku, skus: sku ? [sku] : [] };
+    }
+    if (onboardingOpen) {
+      if (onboardingStep === 1) {
+        return { type: "home", category: null, sku: null, skus: [] };
+      }
+      return { type: "categories", category: null, sku: null, skus: [] };
+    }
+    const skus = products.map((p) => p.sku || p.id).filter(Boolean);
+    return {
+      type: "list",
+      category: category && category !== "all" ? category : null,
+      sku: null,
+      skus,
+    };
+  }, [cartModalOpen, showDetail, product, onboardingOpen, onboardingStep, category, products]);
+
+  const lastBroadcastScreenRef = useRef(null);
+  useEffect(() => {
+    const screenKey = JSON.stringify(currentScreenState);
+    if (lastBroadcastScreenRef.current !== screenKey) {
+      lastBroadcastScreenRef.current = screenKey;
+      kioskWS.sendScreenChanged(currentScreenState);
+    }
+  }, [currentScreenState]);
+
   const maxFaceBox = presenceTracker.largestFace?.box;
   const currentFaceBox = maxFaceBox
     ? {
@@ -3324,5 +3379,8 @@ export function useKiosk() {
     sessionResetKey,
     clearCart,
     backendCatalog,
+    filtersApplied,
+    highlightSku,
+    clearFilters,
   };
 }

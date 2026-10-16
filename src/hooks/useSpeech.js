@@ -154,13 +154,15 @@ export function useSpeech({
       if (d.is_final) {
         bufferRef.current = full;
         clearTimeout(finalFlushTimerRef.current);
-        if (d.speech_final) {
+        const isTrailing = /[,;]\s*$|\b(?:and|or|but|because|with|ki|aur)\s*$/i.test(full);
+        if (d.speech_final && !isTrailing) {
           flush();
         } else {
           // Fallback debounce: if UtteranceEnd / speech_final doesn't arrive in 250ms, flush
+          const waitMs = isTrailing ? 1200 : 250;
           finalFlushTimerRef.current = setTimeout(() => {
             flush();
-          }, 250);
+          }, waitMs);
         }
       }
     };

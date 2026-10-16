@@ -9,6 +9,7 @@ import OrderSuccessPage from "../checkout/OrderSuccessPage";
 import RightNavbar from "@/components/navigation/RightNavbar";
 import PremiumSidebar from "@/components/navigation/PremiumSidebar";
 import ErrorBoundary from "@/components/debug/ErrorBoundary";
+import FilterChip from "./FilterChip";
 export default function ProductShowcase({
   category,
   categories = [],
@@ -33,6 +34,9 @@ export default function ProductShowcase({
   onRemoveItem,
   showCheckout = false,
   onCloseCheckout,
+  filtersApplied = null,
+  onClearFilters = null,
+  highlightSku = null,
 }) {
   const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success"
   const [selectedProduct, setSelectedProduct] = useState(null);
@@ -168,20 +172,33 @@ export default function ProductShowcase({
             onOpenMore={() => setIsSidebarOpen(true)}
           />
 
+          {/* Active Conversation Filter Chip */}
+          <FilterChip filtersApplied={filtersApplied} onClear={onClearFilters} />
+
           {/* Main Product Listing Grid */}
           <div className="products-grid-wrapper">
             {isLoading ? (
               <ProductSkeletonGrid count={8} />
             ) : displayProducts && displayProducts.length > 0 ? (
               <div className="products-grid">
-                {displayProducts.map((p) => (
-                  <ProductCard
-                    key={p.id}
-                    product={p}
-                    active={p.id === product?.id}
-                    onSelect={handleSelectProduct}
-                  />
-                ))}
+                {displayProducts.map((p) => {
+                  const isHighlighted = Boolean(
+                    highlightSku &&
+                      (p.sku === highlightSku ||
+                        p.id === highlightSku ||
+                        (p.sku &&
+                          String(p.sku).replace(/^GF:/, "") === String(highlightSku).replace(/^GF:/, "")))
+                  );
+                  return (
+                    <ProductCard
+                      key={p.id}
+                      product={p}
+                      active={p.id === product?.id}
+                      highlighted={isHighlighted}
+                      onSelect={handleSelectProduct}
+                    />
+                  );
+                })}
               </div>
             ) : (
               <div className="products-empty-state">

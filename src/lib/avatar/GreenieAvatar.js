@@ -118,6 +118,14 @@ export async function prewarmVoiceCache(catalog = []) {
     "Which category would you like to explore today?",
     "Please select a category to view our sustainable products.",
     "No rush! Take your time, there's lots more to explore.",
+    // Friendly cached acknowledgement openers (Requirement 5)
+    "Sure!",
+    "Of course!",
+    "Lovely choice!",
+    "Let me show you.",
+    "Here you go!",
+    "Great pick!",
+    "One moment.",
     // Pair-up suggestion lines (no-name & static remainders)
     "Psst! Pick any one pair-up from here and unlock an extra 5% off your whole order!",
     "Psst! Pick any one pair-up from here and unlock an extra 5 percent off your whole order!",

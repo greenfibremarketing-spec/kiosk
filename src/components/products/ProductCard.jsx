@@ -1,10 +1,21 @@
+"use client";
+import React, { useEffect, useRef } from "react";
 import ProductArt from "./ProductArt";
 import PriceTag from "./PriceTag";
 
-export default function ProductCard({ product, active, onSelect }) {
+export default function ProductCard({ product, active, highlighted, onSelect }) {
+  const cardRef = useRef(null);
+
+  useEffect(() => {
+    if (highlighted && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [highlighted]);
+
   return (
     <article
-      className={`luxury-card ${active ? "luxury-card--active" : ""}`}
+      ref={cardRef}
+      className={`luxury-card ${active ? "luxury-card--active" : ""} ${highlighted ? "luxury-card--highlight" : ""}`}
       onClick={() => onSelect(product)}
       role="button"
       tabIndex={0}
