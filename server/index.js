@@ -1,3 +1,4 @@
+import "./loadEnv.js";
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
@@ -144,8 +145,12 @@ app.listen(PORT, async () => {
     try {
       const lines = [...STATIC_PREWARM_LINES];
 
-      // Try fetching verified product lines from backend (port 5007 or remote)
-      const backendUrl = process.env.BACKEND_URL || "http://localhost:5007";
+      // Try fetching verified product lines from backend (production or configured URL)
+      const backendUrl =
+        process.env.BACKEND_URL ||
+        process.env.NEXT_PUBLIC_BACKEND_URL ||
+        process.env.NEXT_PUBLIC_PROD_BACKEND_URL ||
+        "https://kioskai.greenfibre.org";
       try {
         const prodRes = await fetch(`${backendUrl}/products`, { signal: AbortSignal.timeout(3000) });
         if (prodRes.ok) {

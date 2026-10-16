@@ -8,12 +8,14 @@ import CheckoutPage from "../checkout/CheckoutPage";
 import OrderSuccessPage from "../checkout/OrderSuccessPage";
 import RightNavbar from "@/components/navigation/RightNavbar";
 import PremiumSidebar from "@/components/navigation/PremiumSidebar";
+import ErrorBoundary from "@/components/debug/ErrorBoundary";
 export default function ProductShowcase({
   category,
   categories = [],
   product,
   products = [],
   catalog = [],
+  backendCatalog = [],
   isLoading = false,
   onCategory,
   onSelect,
@@ -37,6 +39,24 @@ export default function ProductShowcase({
   const [orderData, setOrderData] = useState(null);
   const [orderResult, setOrderResult] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  // If products list is empty but backendCatalog has items, show backendCatalog (Requirement 3)
+  const catalogList = (backendCatalog && backendCatalog.length > 0)
+    ? backendCatalog
+    : (catalog && catalog.length > 0 ? catalog : []);
+
+  const displayProducts = (products && products.length > 0)
+    ? products
+    : (catalogList && catalogList.length > 0 ? catalogList : []);
+
+  // If view === "detail" and selectedProduct is null, fall back to the catalog view (Requirement 3)
+  useEffect(() => {
+    if (view === "detail" && !selectedProduct) {
+      setView("catalog");
+    }
+  }, [view, selectedProduct]);
+
+  const effectiveView = (view === "detail" && !selectedProduct) ? "catalog" : view;
 
   const activeCats = categories && categories.length > 0 ? categories : [{ id: "all", label: "All Products" }];
   const currentCategory = activeCats.find((c) => c.id === category || c.id === String(category).toLowerCase());
@@ -105,7 +125,7 @@ export default function ProductShowcase({
       {/* ── Top Sticky Navbar: Logo on left, Menubar on right ── */}
       <RightNavbar
         activeCategory={category}
-        productCount={products?.length || 0}
+        productCount={displayProducts?.length || 0}
         onOpenMenu={() => setIsSidebarOpen(true)}
         onSelectCategory={handleSidebarCategory}
         name={name}
@@ -119,11 +139,11 @@ export default function ProductShowcase({
         activeCategory={category}
         onSelectCategory={handleSidebarCategory}
         categories={activeCats}
-        products={products}
+        products={displayProducts}
       />
 
       {/* ── View 1: All Products Catalog Grid ── */}
-      {view === "catalog" && (
+      {effectiveView === "catalog" && (
         <section className="showcase" aria-label="Product Catalog">
           {/* Top Header & Counter Bar */}
           <header className="showcase__header">
@@ -134,8 +154,8 @@ export default function ProductShowcase({
               </p>
             </div>
             <div className="showcase__counter-badge">
-              <span className={isLoading ? "dot-pulsing" : (products?.length > 0 ? "dot-green" : "dot-gray")} />
-              <span>{isLoading ? "Loading collection..." : `${products?.length || 0} Products`}</span>
+              <span className={isLoading ? "dot-pulsing" : (displayProducts?.length > 0 ? "dot-green" : "dot-gray")} />
+              <span>{isLoading ? "Loading collection..." : `${displayProducts?.length || 0} Products`}</span>
             </div>
           </header>
 
@@ -144,7 +164,7 @@ export default function ProductShowcase({
             active={category}
             onSelect={onCategory}
             categories={activeCats}
-            products={catalog?.length ? catalog : products}
+            products={catalogList?.length ? catalogList : displayProducts}
             onOpenMore={() => setIsSidebarOpen(true)}
           />
 
@@ -152,9 +172,9 @@ export default function ProductShowcase({
           <div className="products-grid-wrapper">
             {isLoading ? (
               <ProductSkeletonGrid count={8} />
-            ) : products && products.length > 0 ? (
+            ) : displayProducts && displayProducts.length > 0 ? (
               <div className="products-grid">
-                {products.map((p) => (
+                {displayProducts.map((p) => (
                   <ProductCard
                     key={p.id}
                     product={p}
@@ -207,23 +227,25 @@ export default function ProductShowcase({
       )}
 
       {/* ── View 2: Product Detail Page (PDP) ── */}
-      {view === "detail" && selectedProduct && (
-        <ProductDetailPage
-          product={selectedProduct}
-          products={products}
-          onBack={handleReturnToCatalog}
-          onProceedToCheckout={handleProceedToCheckout}
-          onAddToCart={onAddToCart}
-          onSelectProduct={handleSelectProduct}
-          buttons={actionButtons}
-          onButtonClick={onButtonClick}
-          kioskModeRef={kioskModeRef}
-          replayingRef={replayingRef}
-        />
+      {effectiveView === "detail" && selectedProduct && (
+        <ErrorBoundary name="ProductDetailPage">
+          <ProductDetailPage
+            product={selectedProduct}
+            products={displayProducts}
+            onBack={handleReturnToCatalog}
+            onProceedToCheckout={handleProceedToCheckout}
+            onAddToCart={onAddToCart}
+            onSelectProduct={handleSelectProduct}
+            buttons={actionButtons}
+            onButtonClick={onButtonClick}
+            kioskModeRef={kioskModeRef}
+            replayingRef={replayingRef}
+          />
+        </ErrorBoundary>
       )}
 
       {/* ── View 3: Checkout Page (Shipping & Payment) ── */}
-      {view === "checkout" && (orderData || (cartItems && cartItems.length > 0)) && (
+      {effectiveView === "checkout" && (orderData || (cartItems && cartItems.length > 0)) && (
         <CheckoutPage
           order={
             orderData
@@ -244,7 +266,7 @@ export default function ProductShowcase({
       )}
 
       {/* ── View 4: Order Confirmation & Celebration ── */}
-      {view === "success" && orderResult && (
+      {effectiveView === "success" && orderResult && (
         <OrderSuccessPage
           orderResult={orderResult}
           onReturnToCatalog={handleReturnToCatalog}

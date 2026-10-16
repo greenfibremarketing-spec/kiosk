@@ -2,12 +2,13 @@
   "name": "greenfibre-kiosk",
   "version": "1.0.0",
   "private": true,
-  "main": "main.js",
+  "main": "electron/main.js",
   "scripts": {
     "build": "next build",
+    "electron": "electron .",
     "start": "electron .",
     "dev": "next build && electron . --dev",
-    "dist": "next build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.2.5",
@@ -32,10 +33,14 @@
       "output": "dist"
     },
     "files": [
-      "main.js",
-      "preload.js",
-      "config.json",
-      "out/**/*"
+      "out/**",
+      "electron/**",
+      "server/**",
+      "package.json",
+      "config.json"
+    ],
+    "asarUnpack": [
+      "server/**"
     ],
     "win": {
       "target": [
@@ -48,9 +53,8 @@
       ]
     },
     "nsis": {
-      "oneClick": true,
-      "perMachine": true,
-      "allowToChangeInstallationDirectory": false,
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "runAfterFinish": true
     }
   }

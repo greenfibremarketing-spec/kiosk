@@ -13,4 +13,7 @@ export const TTS_CONFIG = {
   container: "none",
 };
 
+export const TTS_ENDPOINT =
+  process.env.NEXT_PUBLIC_TTS_URL || "http://localhost:4000/api/tts";
+
 export default TTS_CONFIG;

@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { trace } from "@/lib/debugTrace";
 
 import {
   GREETING,
@@ -32,6 +33,7 @@ import {
   fetchBackendProducts,
   normalizeBackendProduct,
 } from "@/lib/agent";
+import { BACKEND_URL } from "@/lib/apiConfig";
 import { kioskWS } from "@/lib/kioskWebSocket";
 import KioskStepCache, { KIOSK_STEPS } from "@/lib/kioskStepCache";
 import { usePresenceDetection } from "@/lib/presence/usePresenceDetection";
@@ -94,6 +96,9 @@ export function useKiosk() {
   const [backendCatalog, setBackendCatalog] = useState([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
   const [liveTurnProducts, setLiveTurnProducts] = useState([]);
+  const liveTurnProductsRef = useRef(liveTurnProducts);
+  liveTurnProductsRef.current = liveTurnProducts;
+  const [sessionResetKey, setSessionResetKey] = useState(0);
   const [showDetail, setShowDetail]       = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
@@ -113,6 +118,10 @@ export function useKiosk() {
   const [cartItems, setCartItems] = useState([]);
   const cartItemsRef = useRef(cartItems);
   cartItemsRef.current = cartItems;
+
+  const clearCart = useCallback(() => {
+    setCartItems([]);
+  }, []);
 
   const [pairUpPromptOpen, setPairUpPromptOpen] = useState(false);
   const [pairUpModalOpen, setPairUpModalOpen] = useState(false);
@@ -453,6 +462,7 @@ export function useKiosk() {
     if (saved.category) {
       setCategory(saved.category);
     }
+    if (!saved.showDetail) trace("showDetail=false", { caller: "restoreSavedSession" });
     setShowDetail(Boolean(saved.showDetail));
     productDetailOpenedRef.current = Boolean(saved.showDetail);
     setOnboardingOpen(false);
@@ -519,6 +529,7 @@ export function useKiosk() {
     console.log(`[Kiosk] Entering ENGAGED mode (reason=${reason})`);
 
     // a. set kioskModeRef.current = "ENGAGED" synchronously (and state) BEFORE connecting
+    trace("kioskMode", { from: kioskModeRef.current, to: "ENGAGED", reason });
     kioskModeRef.current = "ENGAGED";
     setKioskMode("ENGAGED");
 
@@ -538,6 +549,12 @@ export function useKiosk() {
       greetingDoneRef.current = false;
       nameDoneRef.current = false;
       introPlayedRef.current = false;
+
+      // On entering ENGAGED for a new session, make sure onboardingOpen is true and onboardingStep is 1 (Requirement 4)
+      setOnboardingOpen(true);
+      setOnboardingStep(1);
+      latestRef.current.onboardingStep = 1;
+      console.log("[Session] engage state", { onboardingOpen: true, onboardingStep: 1 });
 
       // Connect WebSocket with auto_greet = 1
       kioskWS.connect(sessId, true);
@@ -630,6 +647,7 @@ export function useKiosk() {
       if (s.category) {
         setCategory(s.category);
       }
+      if (!s.showDetail) trace("showDetail=false", { caller: "restoreFromMemory" });
       setShowDetail(Boolean(s.showDetail));
       productDetailOpenedRef.current = Boolean(s.showDetail);
       setOnboardingOpen(false);
@@ -1196,6 +1214,14 @@ export function useKiosk() {
   // ── Reset session to Step 1 (presence-based or manual) ───────────────────
   const resetSession = useCallback((reason = "unknown") => {
     const now = Date.now();
+    trace("resetSession", {
+      reason,
+      faceAbsentMs: now - (lastFaceAtRef.current || now),
+      touchIdleMs: now - (lastInputAtRef.current || now),
+      presenceState: presence?.presenceState || presence?.state || cameraPresenceRef.current?.state || kioskModeRef.current,
+      multipleFaces: Boolean(presenceTrackerRef.current?.multipleFaces || presence?.multipleFaces),
+      cameraError: Boolean(presence?.cameraError || cameraPresenceRef.current?.cameraError),
+    });
     if (now - lastResetAtRef.current < RESET_DEBOUNCE_MS) {
       console.log(`[Session] reset debounced (<${RESET_DEBOUNCE_MS}ms since last reset, reason=${reason})`);
       return;
@@ -1346,6 +1372,7 @@ export function useKiosk() {
 
     // Close WebSocket and transition back to IDLE mode (do NOT reconnect with auto_greet!)
     kioskWS.disconnect();
+    trace("kioskMode", { from: kioskModeRef.current, to: "IDLE", reason });
     setKioskMode("IDLE");
     kioskModeRef.current = "IDLE";
     engagingRef.current = false;
@@ -1353,6 +1380,21 @@ export function useKiosk() {
       window.kiosk.sendPresenceState("IDLE");
     }
     resetBackendSession(oldSession);
+
+    const clearedLiveTurn = liveTurnProductsRef.current?.length ?? 0;
+    const clearedCart = cartItemsRef.current?.length ?? 0;
+    const currentView = latestRef.current.showCheckout
+      ? "checkout"
+      : latestRef.current.showDetail
+      ? "detail"
+      : "catalog";
+
+    setLiveTurnProducts([]);
+    clearCart();
+    setCartItems([]);
+    setShowCheckout(false);
+    setSessionResetKey((prev) => prev + 1);
+    console.log(`[Session] reset cleared liveTurn=${clearedLiveTurn} cart=${clearedCart} view=${currentView}`);
 
     setBackendAction(null);
     setActionButtons([]);
@@ -1370,13 +1412,12 @@ export function useKiosk() {
     setPairUpModalOpen(false);
     setPairUpProducts([]);
     setPairUpCaption("Psst! Pick any one pair-up from here and unlock an extra 5% off your whole order!");
-    setCartItems([]);
-    setShowCheckout(false);
     sessionPairUpAskCountRef.current = 0;
     consecutiveNoCountRef.current = 0;
     askedProductIdsRef.current.clear();
     pairupCacheRef.current.clear();
     if (pairUpTimerRef.current) clearTimeout(pairUpTimerRef.current);
+    trace("showDetail=false", { caller: "reset" });
     setShowDetail(false);
     setOnboardingOpen(false);
     setOnboardingStep(1);
@@ -1457,7 +1498,7 @@ export function useKiosk() {
     onDifferent: (reason, gap) => {
       identityCutSpeechRef.current = false;
       setIdentityMasked(false);
-      resetSession("different_person_swap");
+      resetSession(`different_person_swap (reason=${reason}, gap=${gap}ms)`);
     },
     onUnsure: () => {
       identityCutSpeechRef.current = false;
@@ -1511,7 +1552,7 @@ export function useKiosk() {
         console.log(`[Kiosk] Face absent ${Math.round(faceAbsentMs / 1000)}s with an active session. Hard reset.`);
         warningDeadlineRef.current = null;
         setSessionTimeoutWarning({ active: false, secondsRemaining: 10 });
-        latestRef.current.reset?.("face_absent_hard_timeout");
+        latestRef.current.reset?.(`face_absent_hard_timeout (faceAbsentMs=${faceAbsentMs}, touchIdleMs=${touchIdleMs}, threshold=${ABSENT_LONG_MS + 2000}ms, hasSession=${hasSession})`);
         return;
       }
 
@@ -1743,6 +1784,7 @@ export function useKiosk() {
         greetingDoneRef.current = true;
         introPlayedRef.current = true;
         setOnboardingOpen(false);
+        trace("showDetail=false", { caller: "SHOW_GREETING" });
         setShowDetail(false);
         setCartModalOpen(false);
         setQrModalOpen(false);
@@ -1787,6 +1829,7 @@ export function useKiosk() {
         nameDoneRef.current = true;
         setOnboardingStep(1);
         setOnboardingOpen(true);
+        trace("showDetail=false", { caller: "ASK_NAME" });
         setShowDetail(false);
         setCartModalOpen(false);
         setQrModalOpen(false);
@@ -1811,6 +1854,7 @@ export function useKiosk() {
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
         setOnboardingStep(2);
         setOnboardingOpen(true);
+        trace("showDetail=false", { caller: "SHOW_CATEGORIES" });
         setShowDetail(false);
         setCartModalOpen(false);
         setQrModalOpen(false);
@@ -1844,6 +1888,7 @@ export function useKiosk() {
         if (latestRef.current.onboardingStep !== 2) {
           setOnboardingOpen(false);
         }
+        trace("showDetail=false", { caller: "SHOW_PRODUCTS" });
         setShowDetail(false);
         setCartModalOpen(false);
         setQrModalOpen(false);
@@ -2056,6 +2101,7 @@ export function useKiosk() {
         if (latestRef.current.onboardingStep !== 2) {
           setOnboardingOpen(false);
         }
+        trace("showDetail=false", { caller: "SHOW_ALL" });
         setShowDetail(false);
         setCategory("all");
         setLiveTurnProducts([]);
@@ -2064,6 +2110,7 @@ export function useKiosk() {
 
       case "NAVIGATE_BACK": {
         const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
+        trace("showDetail=false", { caller: "NAVIGATE_BACK" });
         setShowDetail(false);
         if (wasInDetail && !isBackFromDetailPendingRef.current) {
           triggerReturnFromDetail(actionTurnId);
@@ -2181,13 +2228,23 @@ export function useKiosk() {
     });
 
     const unsubPingSilence = kioskWS.on("ping_silence", (msg) => {
+      trace("backend_frame", { type: "ping_silence", data: msg });
       setHintBubble(typeof msg === "string" ? msg : "Still there? Tap or speak to continue.");
     });
 
     const unsubAutoReset = kioskWS.on("auto_reset", (msg) => {
+      trace("backend_frame", { type: "auto_reset", data: msg });
       if (kioskModeRef.current === "IDLE" && !onboardingOpen && !nameRef.current && !KioskStepCache.getCustomerName()) {
         latestRef.current.resetSession?.("auto_reset");
       }
+    });
+
+    const unsubCancelled = kioskWS.on("cancelled", (data) => {
+      trace("backend_frame", { type: "cancelled", data });
+    });
+
+    const unsubError = kioskWS.on("error", (data) => {
+      trace("backend_frame", { type: "error", data });
     });
 
     return () => {
@@ -2197,6 +2254,8 @@ export function useKiosk() {
       unsubDone();
       unsubPingSilence();
       unsubAutoReset();
+      unsubCancelled();
+      unsubError();
     };
   }, [handleServerAction, say, onboardingOpen]);
 
@@ -2256,7 +2315,7 @@ export function useKiosk() {
       }
       if (/^(?:no|nope|nah|not me|i am not|i'm not|someone new|different person|new customer|new)\b/i.test(trimmed)) {
         console.log("[Presence] Voice rejection / different person received:", trimmed);
-        latestRef.current.resetSession?.("different_person");
+        latestRef.current.resetSession?.(`different_person (voice_rejection="${trimmed}")`);
         return;
       }
     }
@@ -2636,6 +2695,7 @@ export function useKiosk() {
         : (catObj?.label || catObj?.name || cleanId.replace("-", " ").replace(/\b\w/g, (l) => l.toUpperCase()));
 
     setCategory(cleanId);
+    trace("showDetail=false", { caller: "selectCategory" });
     setShowDetail(false);
     setOnboardingOpen(false);
     setLiveTurnProducts([]);
@@ -2665,7 +2725,7 @@ export function useKiosk() {
     const pid = p?.id || p?.sku;
     if (pid && !pairupCacheRef.current.has(pid)) {
       const cartSkus = cartItemsRef.current.map((i) => i.sku || i.id).join(",");
-      fetch(`http://localhost:5007/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`)
+      fetch(`${BACKEND_URL}/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`)
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (Array.isArray(data?.products)) {
@@ -2686,6 +2746,7 @@ export function useKiosk() {
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
     setCategory("all");
+    trace("showDetail=false", { caller: "showAll" });
     setShowDetail(false);
     setOnboardingOpen(false);
     kioskWS.sendWsAction({ action: "SHOW_ALL" });
@@ -2698,6 +2759,7 @@ export function useKiosk() {
       return;
     }
     const wasDetail = productDetailOpenedRef.current || latestRef.current.showDetail;
+    trace("showDetail=false", { caller: "navigateBack" });
     setShowDetail(false);
     const turnId = kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
     if (wasDetail) {
@@ -2913,7 +2975,7 @@ export function useKiosk() {
         try {
           const cartSkus = cartItemsRef.current.map((i) => i.sku || i.id).join(",");
           const res = await fetch(
-            `http://localhost:5007/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`
+            `${BACKEND_URL}/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`
           );
           if (res.ok) {
             const data = await res.json();
@@ -3095,6 +3157,63 @@ export function useKiosk() {
     cartTotals,
   };
 
+  // ── Diagnostic: 5-second State Snapshot (Requirement 2e) ──────────────────
+  const snapshotDataRef = useRef();
+  snapshotDataRef.current = {
+    kioskMode,
+    showDetail,
+    onboardingOpen,
+    onboardingStep,
+    category,
+    productsLength: products?.length ?? 0,
+    liveTurnProductsLength: liveTurnProducts?.length ?? 0,
+    backendCatalogLength: backendCatalog?.length ?? 0,
+    productId,
+    productIsNull: product === null,
+    goodbyeOpen,
+    cartModalOpen,
+    qrModalOpen,
+    recommendationOpen,
+    identityMasked,
+    identityPromptActive: Boolean(identityPrompt?.active),
+    speaking,
+    convState,
+    wsReadyState: kioskWS?.ws?.readyState ?? -1,
+  };
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const snap = snapshotDataRef.current;
+      if (!snap) return;
+      const now = Date.now();
+      trace("snapshot", {
+        kioskMode: snap.kioskMode,
+        showDetail: snap.showDetail,
+        onboardingOpen: snap.onboardingOpen,
+        onboardingStep: snap.onboardingStep,
+        category: snap.category,
+        productsLength: snap.productsLength,
+        liveTurnProductsLength: snap.liveTurnProductsLength,
+        backendCatalogLength: snap.backendCatalogLength,
+        productId: snap.productId,
+        productIsNull: snap.productIsNull,
+        goodbyeOpen: snap.goodbyeOpen,
+        cartModalOpen: snap.cartModalOpen,
+        qrModalOpen: snap.qrModalOpen,
+        recommendationOpen: snap.recommendationOpen,
+        identityMasked: snap.identityMasked,
+        identityPromptActive: snap.identityPromptActive,
+        speaking: snap.speaking,
+        convState: snap.convState,
+        wsReadyState: snap.wsReadyState,
+        faceAbsentMs: now - (lastFaceAtRef.current || now),
+        lastInputAgoMs: now - (lastInputAtRef.current || now),
+        lastAttentionAgoMs: now - (lastAttentionAtRef.current || now),
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
   return {
     kioskMode,
     isEngaged,
@@ -3202,5 +3321,8 @@ export function useKiosk() {
     handlePairUpProceed,
     handlePairUpClose,
     handlePairUpDone,
+    sessionResetKey,
+    clearCart,
+    backendCatalog,
   };
 }

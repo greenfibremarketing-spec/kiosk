@@ -2,7 +2,7 @@
 // Single Speech Controller (one source of truth) for Greenie Kiosk.
 // Manages audio synthesis, queueing, decoding, playback and subtitles.
 
-import { TTS_CONFIG } from "../ttsConfig";
+import { TTS_CONFIG, TTS_ENDPOINT } from "../ttsConfig";
 import { sanitizeTtsText, splitIntoTtsChunks } from "../ttsTextSanitizer";
 import { getAudioContext, attachLipSync, resetLipSync } from "../lipSync";
 
@@ -36,7 +36,7 @@ export async function warmupSpeech() {
       ctx.resume().catch(() => {});
     }
     const model = TTS_CONFIG.model || "aura-2-luna-en";
-    fetch(`http://localhost:4000/api/tts?text=hi&model=${encodeURIComponent(model)}`)
+    fetch(`${TTS_ENDPOINT}?text=hi&model=${encodeURIComponent(model)}`)
       .then(async (res) => {
         if (res.ok && ctx) {
           const ab = await res.arrayBuffer();
@@ -380,7 +380,7 @@ export class SpeechController {
     try {
       const audioCtx = getAudioContext();
       if (!audioCtx) return null;
-      const res = await fetch(`http://localhost:4000/api/tts?text=${encodeURIComponent(sanitized)}&model=${encodeURIComponent(model)}`);
+      const res = await fetch(`${TTS_ENDPOINT}?text=${encodeURIComponent(sanitized)}&model=${encodeURIComponent(model)}`);
       if (res.ok) {
         const ab = await res.arrayBuffer();
         const decoded = await decodeAudioBuffer(audioCtx, ab);
@@ -431,7 +431,7 @@ export class SpeechController {
     try {
       const audioCtx = getAudioContext();
       const res = await fetch(
-        `http://localhost:4000/api/tts?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(model)}`,
+        `${TTS_ENDPOINT}?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(model)}`,
         { signal: abortCtrl.signal }
       );
       if (gen !== this.generation) return null;

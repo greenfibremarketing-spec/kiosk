@@ -3,9 +3,10 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { preferredVoice } from "./voice";
 import { attachLipSync, getMouth, resetLipSync } from "../lipSync";
-import { TTS_CONFIG } from "../ttsConfig";
+import { TTS_CONFIG, TTS_ENDPOINT } from "../ttsConfig";
 import { sanitizeTtsText, splitIntoSentences, splitIntoTtsChunks } from "../ttsTextSanitizer";
 import { speechController, warmupSpeech } from "./SpeechController";
+import { trace } from "../debugTrace";
 
 export { speechController, warmupSpeech };
 
@@ -85,7 +86,7 @@ export async function prefetchAudio(text, model = TTS_CONFIG.model) {
   }
   try {
     const res = await fetch(
-      `http://localhost:4000/api/tts?text=${encodeURIComponent(clean)}&model=${encodeURIComponent(model)}`
+      `${TTS_ENDPOINT}?text=${encodeURIComponent(clean)}&model=${encodeURIComponent(model)}`
     );
     if (res.ok) {
       const blob = await res.blob();
@@ -272,6 +273,11 @@ export class GreenieAvatar {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.35;
     container.appendChild(this.renderer.domElement);
+    const canvas = this.renderer.domElement;
+    if (canvas) {
+      canvas.addEventListener("webglcontextlost", (e) => trace("webglcontextlost", { timeStamp: e?.timeStamp }));
+      canvas.addEventListener("webglcontextrestored", (e) => trace("webglcontextrestored", { timeStamp: e?.timeStamp }));
+    }
 
     // 3. Lighting
     this.scene.background = null;

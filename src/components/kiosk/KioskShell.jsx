@@ -14,6 +14,12 @@ import IdentityVerificationModal from "@/components/modals/IdentityVerificationM
 import PairUpPromptCard from "@/components/modals/PairUpPromptCard";
 import PairUpModal from "@/components/modals/PairUpModal";
 import { useKiosk } from "@/hooks/useKiosk";
+import ErrorBoundary from "@/components/debug/ErrorBoundary";
+import TranscriptDebug from "@/components/debug/TranscriptDebug";
+import { trace } from "@/lib/debugTrace";
+
+// TEST ONLY: set to false before shipping to the kiosk
+const SHOW_TRANSCRIPT_DEBUG = true;
 
 /**
  * Fullscreen Idle Promo Video
@@ -78,12 +84,48 @@ export default function KioskShell() {
   const k = useKiosk();
   const isEngaged = k.kioskMode === "ENGAGED";
 
+  // Diagnostic: 5-second Blank Area / Layout Health Check (Requirement 5)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (typeof window === "undefined" || typeof document === "undefined") return;
+      const pane = document.querySelector(".kiosk-right-pane");
+      const paneStyle = pane ? window.getComputedStyle(pane) : null;
+      const grid = document.querySelector(".products-grid");
+      const detailPage = document.querySelector(".pdp-redesign-wrapper");
+      const idleVideo = document.querySelector(".kiosk-idle-video") || document.querySelector(".kiosk-idle-video-layer video");
+      const idleLayer = document.querySelector(".kiosk-idle-video-layer");
+      const idleStyle = idleLayer ? window.getComputedStyle(idleLayer) : (idleVideo ? window.getComputedStyle(idleVideo) : null);
+
+      trace("layout", {
+        productPaneOpacity: paneStyle?.opacity ?? null,
+        productPaneVisibility: paneStyle?.visibility ?? null,
+        productPaneHeight: paneStyle?.height ?? null,
+        productGridChildCount: grid ? grid.children.length : 0,
+        detailPageMounted: Boolean(detailPage),
+        idleVideoOpacity: idleStyle?.opacity ?? null,
+        idleVideoPaused: idleVideo ? Boolean(idleVideo.paused) : null,
+        idleVideoVisibility: idleStyle?.visibility ?? null,
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <main
       className="kiosk"
       onClick={() => k.presence.triggerTouchEngaged()}
       onTouchStart={() => k.presence.triggerTouchEngaged()}
     >
+      {SHOW_TRANSCRIPT_DEBUG && (
+        <TranscriptDebug
+          liveTranscript={k.liveTranscript}
+          lastUserSpeech={k.lastUserSpeech}
+          userSpeaking={k.userSpeaking}
+          vadSpeech={k.vadSpeech}
+          audioLevel={k.audioLevel}
+        />
+      )}
+
       {/* ── Fullscreen Idle Video Layer (IDLE only, fades out 700ms) ── */}
       <IdlePromoVideo
         isEngaged={isEngaged}
@@ -165,61 +207,68 @@ export default function KioskShell() {
       <div
         className={`kiosk-right-pane ${isEngaged ? "kiosk-right-pane--engaged" : "kiosk-right-pane--idle"}`}
       >
-        <ProductShowcase
-          category={k.category}
-          categories={k.categories}
-          product={k.product}
-          products={k.products}
-          catalog={k.catalog}
-          isLoading={k.isLoadingCatalog}
-          onCategory={k.selectCategory}
-          onSelect={k.selectProduct}
-          onEnquire={k.enquire}
-          onQuickPick={k.send}
-          showDetail={k.showDetail}
-          onCloseDetail={k.navigateBack}
-          actionButtons={k.actionButtons}
-          onButtonClick={k.handleButtonClick}
-          name={k.name}
-          onResetSession={k.resetSession}
-          kioskModeRef={k.kioskModeRef}
-          replayingRef={k.replayingRef}
-          onAddToCart={k.handleAddToCart}
-          cartItems={k.cartItems}
-          cartTotals={k.cartTotals}
-          onRemoveItem={k.removeCartItem}
-          showCheckout={k.showCheckout}
-          onCloseCheckout={() => k.setShowCheckout(false)}
-        />
+        <ErrorBoundary name="ProductShowcase">
+          <ProductShowcase
+            key={k.sessionResetKey}
+            category={k.category}
+            categories={k.categories}
+            product={k.product}
+            products={k.products}
+            catalog={k.catalog}
+            backendCatalog={k.backendCatalog || k.catalog}
+            isLoading={k.isLoadingCatalog}
+            onCategory={k.selectCategory}
+            onSelect={k.selectProduct}
+            onEnquire={k.enquire}
+            onQuickPick={k.send}
+            showDetail={k.showDetail}
+            onCloseDetail={k.navigateBack}
+            actionButtons={k.actionButtons}
+            onButtonClick={k.handleButtonClick}
+            name={k.name}
+            onResetSession={k.resetSession}
+            kioskModeRef={k.kioskModeRef}
+            replayingRef={k.replayingRef}
+            onAddToCart={k.handleAddToCart}
+            cartItems={k.cartItems}
+            cartTotals={k.cartTotals}
+            onRemoveItem={k.removeCartItem}
+            showCheckout={k.showCheckout}
+            onCloseCheckout={() => k.setShowCheckout(false)}
+          />
+        </ErrorBoundary>
 
         {/* ── Onboarding Flow (Step 1: Ask Name, Step 2: Categories) ── */}
         {isEngaged && (
-          <RightOnboardingFlow
-            isOpen={k.onboardingOpen}
-            step={k.onboardingStep}
-            backendAction={k.backendAction}
-            categories={k.categories}
-            products={k.products}
-            onClose={() => k.setOnboardingOpen(false)}
-            name={k.name}
-            liveTranscript={k.liveTranscript}
-            onSubmitName={(name) => {
-              k.submitName(name);
-            }}
-            onSkipName={() => {
-              k.skipName();
-            }}
-            onSelectCategory={(catId) => {
-              k.selectCategory(catId);
-            }}
-            onSelectProduct={(p) => {
-              k.selectProduct(p);
-            }}
-            onGoToAllProducts={() => {
-              k.showAll();
-            }}
-            onResetSession={k.resetSession}
-          />
+          <ErrorBoundary name="RightOnboardingFlow">
+            <RightOnboardingFlow
+              key={k.sessionResetKey}
+              isOpen={k.onboardingOpen}
+              step={k.onboardingStep}
+              backendAction={k.backendAction}
+              categories={k.categories}
+              products={k.products}
+              onClose={() => k.setOnboardingOpen(false)}
+              name={k.name}
+              liveTranscript={k.liveTranscript}
+              onSubmitName={(name) => {
+                k.submitName(name);
+              }}
+              onSkipName={() => {
+                k.skipName();
+              }}
+              onSelectCategory={(catId) => {
+                k.selectCategory(catId);
+              }}
+              onSelectProduct={(p) => {
+                k.selectProduct(p);
+              }}
+              onGoToAllProducts={() => {
+                k.showAll();
+              }}
+              onResetSession={k.resetSession}
+            />
+          </ErrorBoundary>
         )}
 
         {/* ── Cart Confirmation Modal (CONFIRM_BUY) ── */}

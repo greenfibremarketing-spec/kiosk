@@ -113,14 +113,41 @@ function createWindow() {
 
   // Self-recovery (expanded in Step 8)
   win.webContents.on("render-process-gone", (e, details) => {
+    log.error("[Main] [DIAGNOSTIC] webContents render-process-gone:", details);
     log.warn("Render process gone, reloading...", details);
     win.reload();
   });
+  win.webContents.on("unresponsive", () => {
+    log.warn("[Main] [DIAGNOSTIC] webContents unresponsive");
+  });
+  win.webContents.on("responsive", () => {
+    log.info("[Main] [DIAGNOSTIC] webContents responsive");
+  });
   win.on("unresponsive", () => {
+    log.warn("[Main] [DIAGNOSTIC] Window unresponsive event, reloading...");
     log.warn("Window unresponsive, reloading...");
     win.reload();
   });
+  win.on("responsive", () => {
+    log.info("[Main] [DIAGNOSTIC] Window responsive event");
+  });
 }
+
+// Diagnostic: App-level process lifecycle & GPU crash monitoring (Requirement 6)
+app.on("render-process-gone", (event, webContents, details) => {
+  log.error("[Main] [DIAGNOSTIC] app render-process-gone:", details);
+});
+
+app.on("child-process-gone", (event, details) => {
+  log.warn("[Main] [DIAGNOSTIC] app child-process-gone:", details);
+  if (details && details.type === "GPU") {
+    log.error("[Main] [DIAGNOSTIC] GPU process crash reason:", details.reason, "exitCode:", details.exitCode);
+  }
+});
+
+app.on("gpu-process-crashed", (event, killed) => {
+  log.error("[Main] [DIAGNOSTIC] GPU process crashed (gpu-process-crashed), killed:", killed);
+});
 
 // Nightly 4 AM refresh if IDLE
 setInterval(() => {

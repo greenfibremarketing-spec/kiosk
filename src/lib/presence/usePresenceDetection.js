@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
+import { trace } from "@/lib/debugTrace";
 import {
   PRESENCE_CONFIG,
   ENTER_DISTANCE_CM,
@@ -228,6 +229,14 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
         }
 
         streamRef.current = stream;
+        stream.getVideoTracks().forEach((track) => {
+          track.addEventListener("ended", () => {
+            trace("camera_track_ended", { id: track.id, label: track.label, readyState: track.readyState });
+          });
+          track.addEventListener("mute", () => {
+            trace("camera_track_mute", { id: track.id, label: track.label, muted: track.muted });
+          });
+        });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
@@ -253,6 +262,48 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
       }
     };
   }, [config.cameraLabel]);
+
+  // Listen for video stalled and waiting events (Requirement 3)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onStalled = () => trace("video_stalled", { readyState: video.readyState, currentTime: video.currentTime });
+    const onWaiting = () => trace("video_waiting", { readyState: video.readyState, currentTime: video.currentTime });
+    video.addEventListener("stalled", onStalled);
+    video.addEventListener("waiting", onWaiting);
+    return () => {
+      video.removeEventListener("stalled", onStalled);
+      video.removeEventListener("waiting", onWaiting);
+    };
+  }, [videoRef.current]);
+
+  // Periodic Camera & Presence Health Monitoring (Requirement 3: every 5s)
+  const prevVideoCurrentTimeRef = useRef(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const video = videoRef.current;
+      const track = streamRef.current?.getVideoTracks()?.[0];
+      const curTime = video ? video.currentTime : 0;
+      const currentTimeAdvanced = curTime > prevVideoCurrentTimeRef.current;
+      prevVideoCurrentTimeRef.current = curTime;
+      const now = Date.now();
+      const lastFaceResultAgoMs = lastFaceAtRef.current > 0 ? now - lastFaceAtRef.current : null;
+      const detectionFps = fpsCountRef.current?.currentFps || debugStatsRef.current?.fps || 0;
+
+      trace("camera", {
+        trackReadyState: track?.readyState ?? null,
+        trackMuted: track?.muted ?? null,
+        trackEnabled: track?.enabled ?? null,
+        videoPaused: video ? Boolean(video.paused) : null,
+        videoReadyState: video ? video.readyState : null,
+        videoCurrentTime: curTime,
+        currentTimeAdvanced,
+        lastFaceResultAgoMs,
+        detectionFps,
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Main presence detection loop (~8 FPS)
   useEffect(() => {

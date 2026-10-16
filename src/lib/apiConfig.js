@@ -43,7 +43,8 @@ export const BACKEND_URL =
 
 export const WS_BASE_URL =
   process.env.NEXT_PUBLIC_WS_BASE_URL ||
-  BACKEND_URL.replace(/^http/, "ws");
+  activePreset.wsBaseUrl ||
+  BACKEND_URL.replace(/^https:/i, "wss:").replace(/^http:/i, "ws:");
 
 export const KIOSK_ID =
   process.env.NEXT_PUBLIC_KIOSK_ID || "kiosk-01";
@@ -68,6 +69,7 @@ export const ENDPOINTS = {
   sessionReset: `${BACKEND_URL}/session/reset`,
   token: `${BACKEND_URL}/auth/kiosk/token`,
   wsStatus: `${BACKEND_URL}/ws/status`,
+  pairups: `${BACKEND_URL}/pairups`,
 };
 
 // Backward-compatible exports
