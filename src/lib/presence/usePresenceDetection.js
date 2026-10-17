@@ -198,7 +198,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
       if (detectorRef.current) {
         try {
           detectorRef.current.close();
-        } catch (_) {}
+        } catch (_) { }
       }
     };
   }, []);

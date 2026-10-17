@@ -247,6 +247,7 @@ export default function ProductShowcase({
       {effectiveView === "detail" && selectedProduct && (
         <ErrorBoundary name="ProductDetailPage">
           <ProductDetailPage
+            key={selectedProduct.sku || selectedProduct.id || selectedProduct.name}
             product={selectedProduct}
             products={displayProducts}
             onBack={handleReturnToCatalog}

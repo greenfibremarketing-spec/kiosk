@@ -35,29 +35,36 @@ function IdlePromoVideo({ isEngaged, onTap }) {
     if (!video) return;
 
     if (isEngaged) {
+      if (videoRef.current) {
+        videoRef.current.pause();
+      }
       const timer = setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.pause();
-          setVisible(false);
-        }
+        setVisible(false);
       }, 720);
       return () => clearTimeout(timer);
     } else {
       setVisible(true);
       video.currentTime = 0;
-      video.play().catch(() => {});
+      video.play().catch(() => { });
     }
   }, [isEngaged]);
+
+  const handleTap = (e) => {
+    e?.stopPropagation?.();
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
+    onTap?.();
+  };
 
   if (!visible && isEngaged) return null;
 
   return (
     <div
       className={`kiosk-idle-video-layer ${isEngaged ? "kiosk-idle-video-layer--hidden" : "kiosk-idle-video-layer--visible"}`}
-      onClick={(e) => {
-        e.stopPropagation();
-        onTap?.();
-      }}
+      onClick={handleTap}
+      onTouchStart={handleTap}
+      onPointerDown={handleTap}
       role="button"
       tabIndex={0}
       aria-label="Touch Screen to Begin"
@@ -127,8 +134,18 @@ export default function KioskShell() {
   return (
     <main
       className="kiosk"
-      onClick={() => k.presence.triggerTouchEngaged()}
-      onTouchStart={() => k.presence.triggerTouchEngaged()}
+      onClick={() => {
+        if (!isEngaged) k.enterEngaged("screen_touch");
+        k.presence?.triggerTouchEngaged?.();
+      }}
+      onTouchStart={() => {
+        if (!isEngaged) k.enterEngaged("screen_touch");
+        k.presence?.triggerTouchEngaged?.();
+      }}
+      onPointerDown={() => {
+        if (!isEngaged) k.enterEngaged("screen_touch");
+        k.presence?.triggerTouchEngaged?.();
+      }}
     >
       {SHOW_TRANSCRIPT_DEBUG && (
         <TranscriptDebug
@@ -143,7 +160,10 @@ export default function KioskShell() {
       {/* ── Fullscreen Idle Video Layer (IDLE only, fades out 700ms) ── */}
       <IdlePromoVideo
         isEngaged={isEngaged}
-        onTap={() => k.presence.triggerTouchEngaged("screen_touch")}
+        onTap={() => {
+          k.enterEngaged("screen_touch");
+          k.presence?.triggerTouchEngaged?.("screen_touch");
+        }}
       />
 
       {/* ── Identity Verification Modal (Step 3: Short Gap Return) ── */}
@@ -192,7 +212,7 @@ export default function KioskShell() {
         listening={k.listening}
         liveTranscript={k.liveTranscript}
         lastUserSpeech={k.lastUserSpeech}
-        onToggleMic={() => {}}
+        onToggleMic={() => { }}
         signals={k.signals}
         backendAction={k.backendAction}
         onSkipName={k.skipName}

@@ -75,11 +75,11 @@ import { buildProductSpeech, getGreetingFlowLines } from "@/lib/productSpeech.mj
 
 // Conversation states
 const S = {
-  IDLE:       "IDLE",
-  ATTENTIVE:  "ATTENTIVE",
-  LISTENING:  "LISTENING",
-  THINKING:   "THINKING",
-  SPEAKING:   "SPEAKING",
+  IDLE: "IDLE",
+  ATTENTIVE: "ATTENTIVE",
+  LISTENING: "LISTENING",
+  THINKING: "THINKING",
+  SPEAKING: "SPEAKING",
 };
 
 const STOP_NAME_WORDS = new Set([
@@ -98,11 +98,11 @@ const STOP_NAME_WORDS = new Set([
 
 export function useKiosk() {
   // ── Core product/UI state ──────────────────────────────────────────────────
-  const [name, setName]           = useState(() => KioskStepCache.getCustomerName());
-  const [category, setCategory]   = useState("all");
+  const [name, setName] = useState(() => KioskStepCache.getCustomerName());
+  const [category, setCategory] = useState("all");
   const [productId, setProductId] = useState(null);
-  const [caption, setCaption]     = useState("");
-  const [speechId, setSpeechId]   = useState(1);
+  const [caption, setCaption] = useState("");
+  const [speechId, setSpeechId] = useState(1);
   const sessionIdRef = useRef(KioskStepCache.getOrCreateSessionId());
   const pendingSpeechAckRef = useRef(null);
   const speechAckTimerRef = useRef(null);
@@ -116,7 +116,7 @@ export function useKiosk() {
   const [filtersApplied, setFiltersApplied] = useState(null);
   const [highlightSku, setHighlightSku] = useState(null);
   const [sessionResetKey, setSessionResetKey] = useState(0);
-  const [showDetail, setShowDetail]       = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
   const [onboardingDone, setOnboardingDone] = useState(false);
@@ -276,6 +276,7 @@ export function useKiosk() {
   const productDetailOpenedRef = useRef(false);
   const backTurnIdRef = useRef(null);
   const lastProductSpokenRef = useRef(null);
+  const selectProductRef = useRef(null);
 
   const markOnboardingDone = useCallback((reason) => {
     if (!onboardingDoneRef.current) {
@@ -360,7 +361,7 @@ export function useKiosk() {
             setIsLoadingCatalog(false);
             return;
           }
-        } catch (_) {}
+        } catch (_) { }
         if (!active) return;
         await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
       }
@@ -397,20 +398,20 @@ export function useKiosk() {
   }, []);
 
   // ── Transcript accumulation ────────────────────────────────────────────────
-  const [liveTranscript, setLiveTranscript]   = useState("");
-  const [lastUserSpeech, setLastUserSpeech]   = useState("");
-  const [listening, setListening]             = useState(false);
-  const [speaking, setSpeaking]               = useState(false); // avatar speaking
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [lastUserSpeech, setLastUserSpeech] = useState("");
+  const [listening, setListening] = useState(false);
+  const [speaking, setSpeaking] = useState(false); // avatar speaking
   const pendingTranscriptRef = useRef("");       // words heard in this turn
-  const eotTimerRef          = useRef(null);     // end-of-turn countdown
-  const failureCountRef      = useRef(0);
+  const eotTimerRef = useRef(null);     // end-of-turn countdown
+  const failureCountRef = useRef(0);
   const [showPTT, setShowPTT] = useState(false); // push-to-talk buttons
 
   // ── Fused Human Evidence Tracker ──────────────────────────────────────────
-  const lastFaceAtRef      = useRef(Date.now());
+  const lastFaceAtRef = useRef(Date.now());
   const lastAttentionAtRef = useRef(Date.now());
-  const lastVoiceAtRef     = useRef(Date.now());
-  const lastInputAtRef     = useRef(Date.now());
+  const lastVoiceAtRef = useRef(Date.now());
+  const lastInputAtRef = useRef(Date.now());
   const warningDeadlineRef = useRef(null);
   const lastEvidenceLogRef = useRef(0);
 
@@ -1006,18 +1007,18 @@ export function useKiosk() {
   const signals = useUserSignals({
     videoRef: cameraPresence.videoRef,
     isEngaged,
-    onSpeechStart: useCallback(() => {}, []),
-    onSpeechEnd:   useCallback(() => {}, []),
-    onFaceResult:  presenceTracker.handleFaceLandmarks,
+    onSpeechStart: useCallback(() => { }, []),
+    onSpeechEnd: useCallback(() => { }, []),
+    onFaceResult: presenceTracker.handleFaceLandmarks,
   });
   signalsRef.current = signals;
 
   // Build the face object expected by useUserSpeechState (reads facePx from ref to avoid re-renders)
   const face = {
-    present:        signals.present,
-    jawOpen:        signals.jawOpen,
+    present: signals.present,
+    jawOpen: signals.jawOpen,
     lookingAtScreen: signals.attention === "screen",
-    faceSizeRatio:  (presence.debugStatsRef?.current?.facePx ?? presence.debugStats?.facePx ?? 0) / 640,
+    faceSizeRatio: (presence.debugStatsRef?.current?.facePx ?? presence.debugStats?.facePx ?? 0) / 640,
   };
 
   // ── Face Identity Enrollment (1.5s stable looking at screen after name/greeting) ─
@@ -1400,7 +1401,7 @@ export function useKiosk() {
     abortRef.current?.abort();
     abortRef.current = null;
     if (typeof window !== "undefined") {
-      try { window.speechSynthesis?.cancel(); } catch (_) {}
+      try { window.speechSynthesis?.cancel(); } catch (_) { }
     }
     setSpeaking(false);
     convStateRef.current = S.IDLE;
@@ -1432,7 +1433,7 @@ export function useKiosk() {
             localStorage.removeItem(k);
           }
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const absenceReasons = [
@@ -1514,8 +1515,8 @@ export function useKiosk() {
     const currentView = latestRef.current.showCheckout
       ? "checkout"
       : latestRef.current.showDetail
-      ? "detail"
-      : "catalog";
+        ? "detail"
+        : "catalog";
 
     setLiveTurnProducts([]);
     setFiltersApplied(null);
@@ -1751,7 +1752,7 @@ export function useKiosk() {
 
     abortRef.current?.abort();
     if (typeof window !== "undefined") {
-      try { window.speechSynthesis?.cancel(); } catch (_) {}
+      try { window.speechSynthesis?.cancel(); } catch (_) { }
     }
     const stage = stageRef.current || latestRef.current._stageRef?.current;
     stage?.stop?.("user_barge_in");
@@ -1875,8 +1876,8 @@ export function useKiosk() {
       (salesStage === "ASK_NAME"
         ? "ASK_NAME"
         : salesStage === "ASK_CATEGORY" || salesStage === "SELECT_CATEGORY"
-        ? "SHOW_CATEGORIES"
-        : null);
+          ? "SHOW_CATEGORIES"
+          : null);
 
     // Backend re-sends the same action inside the "done" frame: ignore the repeat
     const spokenText = action?.message || action?.prompt || action?.text || action?.blurb || "";
@@ -2113,36 +2114,13 @@ export function useKiosk() {
 
       case "SHOW_PRODUCT_CARD":
       case "SHOW_PRODUCT": {
-        cancelPendingReturnFromDetail("server_show_product");
-        productDetailOpenedRef.current = true;
-        KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
-        markOnboardingDone("SHOW_PRODUCT");
-        setOnboardingOpen(false);
-        setShowDetail(true);
-        setCartModalOpen(false);
-        setQrModalOpen(false);
-
         const prodData = action?.product || (action?.products && action.products[0]);
         const currentCatalog = latestRef.current.backendCatalog || [];
         const target =
           (prodData && findMatchingLocalProduct(prodData, currentCatalog)) ||
           (action?.sku && findMatchingLocalProduct(action.sku, currentCatalog)) ||
           (prodData && normalizeBackendProduct(prodData)) ||
-          currentCatalog[0] ||
           null;
-
-        if (target) {
-          setProductId(target.id || target.sku);
-          KioskStepCache.setSelectedProduct(target);
-          setBackendCatalog((prev) => {
-            if (prev.some((p) => p.id === target.id || p.sku === target.sku)) return prev;
-            return [target, ...prev];
-          });
-          if (target.categories) {
-            const bestCat = target.categories.find((c) => c !== "all") || "all";
-            setCategory(bestCat);
-          }
-        }
 
         if (action?.buttons && Array.isArray(action.buttons)) {
           setActionButtons(action.buttons);
@@ -2150,30 +2128,8 @@ export function useKiosk() {
           setActionButtons(["Next", "Cheaper", "Compare", "I'll take it"]);
         }
 
-        const msg = action?.message || action?.blurb || action?.text;
-        const targetKey = target?.sku || target?.id || action?.sku || action?.id;
-        const alreadySpoken = Boolean(targetKey && lastProductSpokenRef.current === targetKey);
-
-        if (alreadySpoken) {
-          console.log(`[Kiosk] SHOW_PRODUCT: speech already triggered for ${targetKey}, skipping duplicate speech`);
-        } else if (target) {
-          lastProductSpokenRef.current = targetKey;
-          speechController.cancelAll("show_product");
-          const speech = buildProductSpeech(target, { customerName: nameRef.current });
-          setCaption(speech.chunks[0] || speech.fullText);
-          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_product";
-          speechController.beginReply(activeTid, { source: "show_product" });
-          for (const chunk of speech.chunks) {
-            speechController.appendSentence(activeTid, chunk, { turnId: activeTid, speechId: action?.speech_id });
-          }
-          speechController.endReply(activeTid);
-        } else if (msg && typeof msg === "string" && msg.trim().length > 0) {
-          const cleanMsg = msg.trim();
-          setCaption(cleanMsg);
-          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_product";
-          speechController.cancelAll("show_product_msg");
-          speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
-          speechController.endReply(activeTid);
+        if (target) {
+          selectProductRef.current?.(target, { fromServer: true, actionTurnId, speechId: action?.speech_id });
         }
         break;
       }
@@ -2788,19 +2744,19 @@ export function useKiosk() {
       if (!stopped) {
         restartTimer = setTimeout(() => {
           if (!stopped) {
-            try { rec.start(); } catch (_) {}
+            try { rec.start(); } catch (_) { }
           }
         }, 150);
       }
     };
 
-    try { rec.start(); } catch (_) {}
+    try { rec.start(); } catch (_) { }
 
     return () => {
       stopped = true;
       clearTimeout(restartTimer);
       clearTimeout(webSpeechTimerRef.current);
-      try { rec.stop(); } catch (_) {}
+      try { rec.stop(); } catch (_) { }
     };
   }, [isEngaged, setConv]);
 
@@ -2918,11 +2874,11 @@ export function useKiosk() {
     });
   }, [categories, backendCatalog, presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer, getCategoryNaturalLine, setCaption]);
 
-  const selectProduct = useCallback((p) => {
-    cancelPendingReturnFromDetail("user_tap_product");
+  const selectProduct = useCallback((p, options = {}) => {
+    cancelPendingReturnFromDetail("select_product");
     productDetailOpenedRef.current = true;
-    stopSpeechForUserAction("user_tap_product");
-    speechController.cancelAll("user_tap_product");
+    stopSpeechForUserAction("select_product");
+    speechController.cancelAll("select_product");
     lastInputAtRef.current = Date.now();
     if (kioskModeRef.current === "IDLE") {
       pendingTappedProductRef.current = p;
@@ -2932,16 +2888,35 @@ export function useKiosk() {
     markOnboardingDone("selectProduct");
 
     // Look up the full product from backendCatalog to ensure verified pricing and fields
-    const fullProd = (backendCatalog || []).find(
+    const currentCatalog = latestRef.current.backendCatalog || backendCatalog || [];
+    const fullProd = (currentCatalog || []).find(
       (item) =>
         (p?.sku && (item.sku === p.sku || item.id === p.sku)) ||
         (p?.id && (item.id === p.id || item.sku === p.id))
-    ) || p;
+    ) || (typeof p === "object" ? p : findMatchingLocalProduct(p, currentCatalog));
+
+    if (!fullProd) return;
 
     const sku = fullProd?.sku || fullProd?.id || p?.sku || p?.id;
-    setProductId(fullProd?.id || p.id);
+    const prodId = fullProd?.id || fullProd?.sku || p?.id || p?.sku;
+    setProductId(prodId);
     setShowDetail(true);
     setOnboardingOpen(false);
+    setCartModalOpen(false);
+    setQrModalOpen(false);
+
+    setBackendCatalog((prev) => {
+      if (prev.some((item) => item.id === prodId || item.sku === sku)) return prev;
+      return [fullProd, ...prev];
+    });
+
+    if (fullProd.categories) {
+      const bestCat = fullProd.categories.find((c) => c !== "all") || "all";
+      setCategory(bestCat);
+    }
+
+    KioskStepCache.setSelectedProduct(fullProd);
+    KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
 
     // Track single trigger for this product open
     lastProductSpokenRef.current = sku;
@@ -2949,25 +2924,26 @@ export function useKiosk() {
     // Immediately update avatar caption and speech to reflect selected product
     const speech = buildProductSpeech(fullProd, { customerName: nameRef.current });
     setCaption(speech.chunks[0] || speech.fullText);
-    const activeTid = `prod_${sku}_${Date.now()}`;
+    const activeTid = options.actionTurnId || `prod_${sku}_${Date.now()}`;
     speechController.beginReply(activeTid, { source: "select_product" });
     for (const chunk of speech.chunks) {
-      speechController.appendSentence(activeTid, chunk, { turnId: activeTid });
+      speechController.appendSentence(activeTid, chunk, { turnId: activeTid, speechId: options.speechId });
     }
     speechController.endReply(activeTid);
-    console.log(`[DebugTiming] selectProduct click: sku=${sku} at=${Math.round(typeof window !== "undefined" ? performance.now() : Date.now())}`);
+    console.log(`[DebugTiming] selectProduct: sku=${sku} fromServer=${Boolean(options.fromServer)}`);
 
-    KioskStepCache.setSelectedProduct(fullProd);
-    kioskWS.sendSelectProduct(fullProd);
-    kioskWS.sendScreenChanged({
-      type: "product",
-      category: fullProd?.category || null,
-      sku,
-      skus: sku ? [sku] : [],
-    });
+    if (!options.fromServer) {
+      kioskWS.sendSelectProduct(fullProd);
+      kioskWS.sendScreenChanged({
+        type: "product",
+        category: fullProd?.category || null,
+        sku,
+        skus: sku ? [sku] : [],
+      });
+    }
 
     // Prefetch pair-up suggestions in background
-    const pid = fullProd?.id || fullProd?.sku || p?.id || p?.sku;
+    const pid = prodId;
     if (pid && !pairupCacheRef.current.has(pid)) {
       const cartSkus = cartItemsRef.current.map((i) => i.sku || i.id).join(",");
       fetch(`${BACKEND_URL}/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`)
@@ -2983,6 +2959,8 @@ export function useKiosk() {
         });
     }
   }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer, setCaption, backendCatalog]);
+
+  selectProductRef.current = selectProduct;
 
   const showAll = useCallback(() => {
     cancelPendingReturnFromDetail("user_tap_show_all");
@@ -3276,7 +3254,7 @@ export function useKiosk() {
               setPairUpProducts(list);
             }
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     },
     [backendCatalog, cancelPendingReturnFromDetail, getPairUpSuggestions, speakPairUpLine]
@@ -3421,10 +3399,10 @@ export function useKiosk() {
   const maxFaceBox = presenceTracker.largestFace?.box;
   const currentFaceBox = maxFaceBox
     ? {
-        cx: (maxFaceBox.minX + maxFaceBox.maxX) / 2,
-        cy: (maxFaceBox.minY + maxFaceBox.maxY) / 2,
-        w: maxFaceBox.width,
-      }
+      cx: (maxFaceBox.minX + maxFaceBox.maxX) / 2,
+      cy: (maxFaceBox.minY + maxFaceBox.maxY) / 2,
+      w: maxFaceBox.width,
+    }
     : null;
 
   // Keep latestRef synchronized every render

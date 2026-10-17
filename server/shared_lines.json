@@ -86,5 +86,28 @@
     "Welcome back!",
     "Say what you're looking for, or tap any category to explore!",
     "Still there? Tap or speak to continue."
+  ],
+  "small_talk": [
+    "I'm doing great, thank you for asking! How can I help you today?",
+    "I'm having a wonderful day, thank you! What can I help you find today?",
+    "Doing very well, thank you! What would you like to explore today?",
+    "You're most welcome! I'm right here if you need anything.",
+    "Always happy to help! Let me know if you'd like to see more items.",
+    "Anytime! Feel free to tap the screen or ask me about any product.",
+    "I'm Greeny, your shopping guide. I can show you products, prices and colours, just ask me.",
+    "I'm Greeny, your store assistant. You can ask me about our sustainable collection, prices, or tap the screen to explore.",
+    "I'm Greeny! I help you find eco-friendly tableware, bottles and gifts. Tell me what you need, or tap any category.",
+    "Thank you for visiting Green Fibre! Have a lovely day.",
+    "Goodbye! Thank you for stopping by Green Fibre. Have a wonderful day ahead.",
+    "Take care! Thank you for exploring Green Fibre. See you soon.",
+    "I couldn't find that here, but you can browse our categories on the screen, or tap the item you like. You can try the touch navigation too.",
+    "We don't have that in our collection today, but you can check our categories on the screen or tap any item to explore.",
+    "That item isn't available with us, but you can explore our eco-friendly products on the screen or ask me about our bottles and tableware.",
+    "I'm best at helping with our eco-friendly products. Please tell me what you're looking for, or tap on the screen to explore.",
+    "I'm here to help you shop our sustainable collection. Tell me what you'd like to see, or browse the screen.",
+    "I specialize in our Green Fibre products. Feel free to ask about our tableware, bottles, or tap the screen.",
+    "Sorry, I couldn't catch that, it may be some noise around. Please say it again, or use the touch screen.",
+    "I didn't quite get that through the background sound. Please try saying it again, or tap on the screen.",
+    "Pardon me, I couldn't hear that clearly. Could you please repeat, or explore using the touch screen."
   ]
 }

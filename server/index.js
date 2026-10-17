@@ -68,7 +68,7 @@ app.get("/health", async (req, res) => {
 
 // Static lines to pre-warm into the persistent disk cache
 // Load shared lines configuration (single source of truth)
-let SHARED_LINES = { first_visit: [], name_clauses: [], openers: [], pair_up: [], cart_and_common: [] };
+let SHARED_LINES = { first_visit: [], name_clauses: [], openers: [], pair_up: [], cart_and_common: [], small_talk: [] };
 try {
   const sharedPath = new URL("./shared_lines.json", import.meta.url);
   SHARED_LINES = JSON.parse(fs.readFileSync(sharedPath, "utf-8"));
@@ -82,6 +82,7 @@ const STATIC_PREWARM_LINES = [
   ...(SHARED_LINES.openers || []),
   ...(SHARED_LINES.pair_up || []),
   ...(SHARED_LINES.cart_and_common || []),
+  ...(SHARED_LINES.small_talk || []),
 ];
 
 const PORT = process.env.PORT || 4000;

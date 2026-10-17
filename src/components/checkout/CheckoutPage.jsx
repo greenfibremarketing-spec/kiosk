@@ -13,6 +13,7 @@ export default function CheckoutPage({
   const [qty, setQty] = useState(order.quantity || 1);
   const [includeGiftWrap, setIncludeGiftWrap] = useState(true);
   const [isRazorpayOpen, setIsRazorpayOpen] = useState(false);
+  const [deliveryConfirmed, setDeliveryConfirmed] = useState(false);
 
   // Customer form state
   const [formData, setFormData] = useState({
@@ -46,13 +47,58 @@ export default function CheckoutPage({
     : qty;
 
   const handleInputChange = (field, value) => {
+    if (field === "phone") {
+      // Keep only digits and prevent exceeding 10 digits
+      const numeric = value.replace(/\D/g, "").slice(0, 10);
+      setFormData((prev) => ({ ...prev, phone: numeric }));
+      return;
+    }
+    if (field === "pincode") {
+      // Keep only digits and prevent exceeding 6 digits
+      const numeric = value.replace(/\D/g, "").slice(0, 6);
+      setFormData((prev) => ({ ...prev, pincode: numeric }));
+      return;
+    }
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
   const handleProceedToPay = (e) => {
     e.preventDefault();
-    if (!formData.fullName || !formData.phone || !formData.address) {
-      alert("Please enter your name, mobile number, and delivery address.");
+    if (!formData.fullName.trim() || !formData.address.trim()) {
+      alert("Please enter your full name and delivery address.");
+      return;
+    }
+
+    // Phone validation: exactly 10 digits (standard Indian mobile starting with 6-9)
+    const cleanPhone = (formData.phone || "").replace(/\D/g, "");
+    if (!cleanPhone || cleanPhone.length !== 10) {
+      alert("Please enter a valid 10-digit mobile number.");
+      return;
+    }
+    if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+      alert("Please enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.");
+      return;
+    }
+
+    // Email validation: proper user@domain.com format
+    const email = (formData.email || "").trim();
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!email) {
+      alert("Please enter your email address.");
+      return;
+    }
+    if (!emailRegex.test(email)) {
+      alert("Please enter a valid email address (e.g. yourname@gmail.com).");
+      return;
+    }
+
+    if (!formData.city.trim() || !formData.state.trim() || !formData.pincode.trim()) {
+      alert("Please fill in your city, state, and PIN code.");
+      return;
+    }
+
+    if (!deliveryConfirmed) {
+      alert("Please confirm that you understand your order will be delivered on 28th–29th.");
       return;
     }
     // Automatically open the Razorpay payment popup!
@@ -262,19 +308,22 @@ export default function CheckoutPage({
                 <input
                   type="tel"
                   required
+                  maxLength={10}
+                  inputMode="numeric"
                   value={formData.phone}
                   onChange={(e) => handleInputChange("phone", e.target.value)}
-                  placeholder="e.g. 98765 43210"
+                  placeholder="e.g. 9876543210"
                 />
               </div>
 
               <div className="form-field form-field--full">
-                <label>Email Address</label>
+                <label>Email Address *</label>
                 <input
                   type="email"
+                  required
                   value={formData.email}
                   onChange={(e) => handleInputChange("email", e.target.value)}
-                  placeholder="name@example.com"
+                  placeholder="e.g. aarav.sharma@gmail.com"
                 />
               </div>
 
@@ -314,8 +363,11 @@ export default function CheckoutPage({
                 <input
                   type="text"
                   required
+                  maxLength={6}
+                  inputMode="numeric"
                   value={formData.pincode}
                   onChange={(e) => handleInputChange("pincode", e.target.value)}
+                  placeholder="e.g. 380054"
                 />
               </div>
             </div>
@@ -336,6 +388,57 @@ export default function CheckoutPage({
                 <span className="pay-tag">CARDS</span>
                 <span className="pay-tag">NETBANKING</span>
               </div>
+            </div>
+
+            {/* Delivery Notice Box */}
+            <div
+              className="delivery-notice-box"
+              style={{
+                background: "#fdfaf3",
+                border: "1.5px solid #ebdfce",
+                borderRadius: "14px",
+                padding: "16px",
+                display: "flex",
+                flexDirection: "column",
+                gap: "8px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <strong style={{ fontSize: "14px", fontWeight: "800", color: "#14271c" }}>
+                  📦 Important Delivery Information
+                </strong>
+              </div>
+              <p style={{ margin: 0, fontSize: "12.5px", color: "#4a6153", lineHeight: "1.4" }}>
+                Our B2B store goes live on the 25th. Orders placed now will be delivered between 28th – 29th.
+              </p>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  marginTop: "4px",
+                  paddingTop: "10px",
+                  borderTop: "1px solid #ebdfce",
+                  cursor: "pointer",
+                  fontSize: "12.5px",
+                  fontWeight: "700",
+                  color: "#14271c",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={deliveryConfirmed}
+                  onChange={(e) => setDeliveryConfirmed(e.target.checked)}
+                  style={{
+                    width: "18px",
+                    height: "18px",
+                    accentColor: "#00A63E",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                />
+                <span>I understand my order will be delivered on 28th–29th. *</span>
+              </label>
             </div>
 
             {/* Direct Proceed to Pay Button */}

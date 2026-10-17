@@ -59,8 +59,25 @@ export function extractKeyFeature(product) {
 export function normalizeForSpeech(text) {
   if (!text || typeof text !== "string") return "";
   let t = String(text);
-  t = t.replace(/₹\s*([\d,]+(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, "$1 rupees ");
-  t = t.replace(/(?:rs\.?|inr)\s*([\d,]+(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, "$1 rupees ");
+
+  t = t.replace(/₹\s*([\d,]+(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, (m, p1) => {
+    const num = Math.round(Number(String(p1).replace(/,/g, "")) || 0);
+    return num > 0 ? `${num.toLocaleString("en-IN")} rupees ` : "";
+  });
+  t = t.replace(/(?:rs\.?|inr)\s*([\d,]+(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, (m, p1) => {
+    const num = Math.round(Number(String(p1).replace(/,/g, "")) || 0);
+    return num > 0 ? `${num.toLocaleString("en-IN")} rupees ` : "";
+  });
+  t = t.replace(/\b(\d{3,5})\s*rupees\b/gi, (m, p1) => {
+    const num = Math.round(Number(p1) || 0);
+    return num > 0 ? `${num.toLocaleString("en-IN")} rupees` : m;
+  });
+  // Plain price numbers like 1199 or 1499 that match catalog item prices without 'rupees'
+  t = t.replace(/\b(799|899|999|1199|1299|1499|1599|1699|3199|6999|7999)\b(?!\s*(?:millilitres|ml|percent|%|cm|mm|inches|gm|g|kg))/gi, (m, p1) => {
+    const num = Math.round(Number(p1) || 0);
+    return `${num.toLocaleString("en-IN")} rupees`;
+  });
+
   t = t.replace(/(\d+)\s*%/g, "$1 percent");
   t = t.replace(/\s*&\s*/g, " and ");
   t = t.replace(/\s+[–—\-]\s+/g, ", ");
@@ -85,7 +102,7 @@ export function chunkText(text) {
   const normalized = normalizeForSpeech(text);
   if (!normalized) return [];
 
-  // Split on sentence boundaries (. ? !)
+  // Split ONLY on sentence boundaries (. ? !) - never at commas
   const rawSentences = normalized
     .split(/(?<=[.?!])\s+(?=[A-Z0-9"'])/)
     .map((s) => s.trim())
@@ -112,7 +129,7 @@ export function chunkText(text) {
     }
   }
 
-  // Handle sentences that exceed 80 characters
+  // Handle sentences that exceed 80 characters: split ONLY at word spaces, NEVER at commas
   const finalChunks = [];
   for (const c of chunks) {
     if (c.length <= 80) {
@@ -122,22 +139,9 @@ export function chunkText(text) {
 
     let remaining = c;
     while (remaining.length > 80) {
-      let splitIdx = -1;
-      const commaMatch = [...remaining.slice(0, 80).matchAll(/(?<!\d),(?!\d)\s+/g)];
-      if (commaMatch.length > 0) {
-        const lastComma = commaMatch[commaMatch.length - 1];
-        if (lastComma.index >= 20) {
-          splitIdx = lastComma.index + 1;
-        }
-      }
-      if (splitIdx === -1) {
-        const spaceIdx = remaining.slice(0, 80).lastIndexOf(" ");
-        if (spaceIdx >= 20) {
-          splitIdx = spaceIdx;
-        } else {
-          splitIdx = 80;
-        }
-      }
+      const spaceIdx = remaining.slice(0, 80).lastIndexOf(" ");
+      const splitIdx = spaceIdx >= 20 ? spaceIdx : 80;
+
       const part = remaining.slice(0, splitIdx).trim();
       if (part) finalChunks.push(part);
       remaining = remaining.slice(splitIdx).trim();
@@ -247,6 +251,28 @@ export function getAllProductSpeechLines(catalog = []) {
     "Choose any category to start exploring. We have a lovely variety of eco-friendly products.",
     "If you have any questions, just ask me, I'm here to help.",
     "I'm Greeny, your shopping guide. If you have any questions, just ask me, I'm here to help.",
+    // Static Small Talk & Out-of-Context variants (excluding customer name)
+    "I'm doing great, thank you for asking! How can I help you today?",
+    "I'm having a wonderful day, thank you! What can I help you find today?",
+    "Doing very well, thank you! What would you like to explore today?",
+    "You're most welcome! I'm right here if you need anything.",
+    "Always happy to help! Let me know if you'd like to see more items.",
+    "Anytime! Feel free to tap the screen or ask me about any product.",
+    "I'm Greeny, your shopping guide. I can show you products, prices and colours, just ask me.",
+    "I'm Greeny, your store assistant. You can ask me about our sustainable collection, prices, or tap the screen to explore.",
+    "I'm Greeny! I help you find eco-friendly tableware, bottles and gifts. Tell me what you need, or tap any category.",
+    "Thank you for visiting Green Fibre! Have a lovely day.",
+    "Goodbye! Thank you for stopping by Green Fibre. Have a wonderful day ahead.",
+    "Take care! Thank you for exploring Green Fibre. See you soon.",
+    "I couldn't find that here, but you can browse our categories on the screen, or tap the item you like. You can try the touch navigation too.",
+    "We don't have that in our collection today, but you can check our categories on the screen or tap any item to explore.",
+    "That item isn't available with us, but you can explore our eco-friendly products on the screen or ask me about our bottles and tableware.",
+    "I'm best at helping with our eco-friendly products. Please tell me what you're looking for, or tap on the screen to explore.",
+    "I'm here to help you shop our sustainable collection. Tell me what you'd like to see, or browse the screen.",
+    "I specialize in our Green Fibre products. Feel free to ask about our tableware, bottles, or tap the screen.",
+    "Sorry, I couldn't catch that, it may be some noise around. Please say it again, or use the touch screen.",
+    "I didn't quite get that through the background sound. Please try saying it again, or tap on the screen.",
+    "Pardon me, I couldn't hear that clearly. Could you please repeat, or explore using the touch screen.",
   ];
   for (const l of staticGreetingLines) {
     lines.add(normalizeForSpeech(l));

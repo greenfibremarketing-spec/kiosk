@@ -92,11 +92,11 @@ export function useMic({ isEngaged = false } = {}) {
 
     return () => {
       cancelled = true;
-      try { node && (node.port.onmessage = null); } catch (_) {}
-      try { source && source.disconnect(); } catch (_) {}
-      try { node && node.disconnect(); } catch (_) {}
-      try { zero && zero.disconnect(); } catch (_) {}
-      try { ctx && ctx.close(); } catch (_) {}
+      try { node && (node.port.onmessage = null); } catch (_) { }
+      try { source && source.disconnect(); } catch (_) { }
+      try { node && node.disconnect(); } catch (_) { }
+      try { zero && zero.disconnect(); } catch (_) { }
+      try { ctx && ctx.close(); } catch (_) { }
       stream && stream.getTracks().forEach((t) => t.stop());
       ring.current = [];
       setVadSpeech(false);
