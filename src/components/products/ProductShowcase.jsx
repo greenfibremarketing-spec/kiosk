@@ -6,6 +6,7 @@ import ProductDetailPage from "./ProductDetailPage";
 import ProductSkeletonGrid from "./ProductSkeletonGrid";
 import CheckoutPage from "../checkout/CheckoutPage";
 import OrderSuccessPage from "../checkout/OrderSuccessPage";
+import OrderErrorPage from "../checkout/OrderErrorPage";
 import RightNavbar from "@/components/navigation/RightNavbar";
 import PremiumSidebar from "@/components/navigation/PremiumSidebar";
 import ErrorBoundary from "@/components/debug/ErrorBoundary";
@@ -37,11 +38,13 @@ export default function ProductShowcase({
   filtersApplied = null,
   onClearFilters = null,
   highlightSku = null,
+  sessionId = null,
 }) {
-  const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success"
+  const [view, setView] = useState("catalog"); // "catalog" | "detail" | "checkout" | "success" | "error"
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [orderData, setOrderData] = useState(null);
   const [orderResult, setOrderResult] = useState(null);
+  const [orderError, setOrderError] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // If products list is empty but backendCatalog has items, show backendCatalog (Requirement 3)
@@ -106,13 +109,23 @@ export default function ProductShowcase({
   // When user successfully completes payment
   const handleOrderSuccess = (result) => {
     setOrderResult(result);
+    setOrderError(null);
     setView("success");
+  };
+
+  // When payment verification or order placement fails
+  const handleOrderError = (errorDetails) => {
+    setOrderError(errorDetails);
+    setView("error");
   };
 
   // Return back to All Products catalog
   const handleReturnToCatalog = () => {
     setView("catalog");
     setSelectedProduct(null);
+    setOrderResult(null);
+    setOrderError(null);
+    setOrderData(null);
     onCloseDetail?.();
   };
 
@@ -274,11 +287,14 @@ export default function ProductShowcase({
                   cartTotals,
                 }
           }
+          catalog={displayProducts}
+          sessionId={sessionId}
           onBack={() => {
             setView(selectedProduct ? "detail" : "catalog");
             onCloseCheckout?.();
           }}
           onOrderSuccess={handleOrderSuccess}
+          onOrderError={handleOrderError}
           onRemoveItem={onRemoveItem}
         />
       )}
@@ -287,6 +303,17 @@ export default function ProductShowcase({
       {effectiveView === "success" && orderResult && (
         <OrderSuccessPage
           orderResult={orderResult}
+          onReturnToCatalog={handleReturnToCatalog}
+        />
+      )}
+
+      {/* ── View 5: Order Failure & Verification Error Screen ── */}
+      {effectiveView === "error" && orderError && (
+        <OrderErrorPage
+          orderError={orderError}
+          onRetry={() => {
+            setView("checkout");
+          }}
           onReturnToCatalog={handleReturnToCatalog}
         />
       )}

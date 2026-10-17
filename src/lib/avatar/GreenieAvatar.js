@@ -262,8 +262,8 @@ export class GreenieAvatar {
 
     // 1. Scene & Camera Setup
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(32, 1, 0.1, 50);
-    this.camera.position.set(0, 1.8, 7.4);
+    this.camera = new THREE.PerspectiveCamera(34, 1, 0.1, 50);
+    this.camera.position.set(0, 1.75, 7.6);
 
     // 2. WebGL Renderer (Optimized for butter-smooth 60 FPS)
     this.renderer = new THREE.WebGLRenderer({
@@ -321,14 +321,36 @@ export class GreenieAvatar {
     this.controls.maxAzimuthAngle = 0.7;
     this.controls.enableDamping = true;
 
-    // 5. Dynamic Resize Observer
+    // 5. Dynamic Resize Observer with adaptive framing for portrait kiosk screens (e.g. 1080x1920)
+    const updateCameraFraming = (width, height) => {
+      if (!width || !height) return;
+      this.renderer.setSize(width, height);
+      const aspect = width / height;
+      this.camera.aspect = aspect;
+
+      // Keep Greenie fully framed horizontally and vertically without clipping:
+      // When viewport aspect is narrow (e.g. portrait screens), dynamically expand vertical FOV
+      // so the horizontal visible field preserves a minimum width of at least targetAspect (0.80):
+      const targetAspect = 0.80;
+      if (aspect < targetAspect) {
+        const baseFovRad = (34 * Math.PI) / 180;
+        const newFovRad = 2 * Math.atan(Math.tan(baseFovRad / 2) * (targetAspect / aspect));
+        this.camera.fov = (newFovRad * 180) / Math.PI;
+      } else {
+        this.camera.fov = 34;
+      }
+      this.camera.updateProjectionMatrix();
+    };
+
+    const initialRect = container.getBoundingClientRect();
+    if (initialRect.width > 0 && initialRect.height > 0) {
+      updateCameraFraming(initialRect.width, initialRect.height);
+    }
+
     this.resizeObserver = new ResizeObserver(() => {
       if (!this.container) return;
       const { width, height } = this.container.getBoundingClientRect();
-      if (width === 0 || height === 0) return;
-      this.renderer.setSize(width, height);
-      this.camera.aspect = width / height;
-      this.camera.updateProjectionMatrix();
+      updateCameraFraming(width, height);
     });
     this.resizeObserver.observe(container);
 

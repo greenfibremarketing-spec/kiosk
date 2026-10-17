@@ -272,6 +272,7 @@ export default function KioskShell() {
             filtersApplied={k.filtersApplied}
             onClearFilters={k.clearFilters}
             highlightSku={k.highlightSku}
+            sessionId={k.sessionId}
           />
         </ErrorBoundary>
 

@@ -9,14 +9,13 @@
   background: transparent !important;
 }
 
-/* ── Greenie Avatar Anchor: Small, Bottom-Right, Transparent Canvas ── */
+/* ── Greenie Avatar Anchor: Bottom-Right, Transparent Canvas ── */
 .greenie-avatar-anchor {
   position: fixed;
-  right: 1vw;
-  bottom: 9vh;
-  width: min(22vw, 30vh);
-  height: 40vh;
-  aspect-ratio: 3 / 4;
+  right: 2vw;
+  bottom: 8vh;
+  width: min(32vw, 420px);
+  height: min(45vh, 620px);
   pointer-events: none !important;
   z-index: 40;
   transition: bottom 0.3s cubic-bezier(0.16, 1, 0.3, 1);
@@ -25,6 +24,30 @@
 
 .greenie-avatar-anchor--pdp {
   bottom: 18vh !important;
+}
+
+/* Specific optimization for Portrait Kiosk Displays (1080x1920) */
+@media (orientation: portrait), (max-aspect-ratio: 1/1) {
+  .greenie-avatar-anchor {
+    right: 3vw;
+    bottom: 5vh;
+    width: clamp(340px, 36vw, 440px);
+    height: clamp(520px, 38vh, 680px);
+  }
+
+  .greenie-avatar-anchor--pdp {
+    bottom: 15vh !important;
+  }
+
+  .speech-bubble-card {
+    right: 3.5vw !important;
+    bottom: calc(clamp(520px, 38vh, 680px) + 6vh) !important;
+    max-width: min(60vw, 500px) !important;
+  }
+
+  .speech-bubble-card--pdp {
+    bottom: calc(clamp(520px, 38vh, 680px) + 16vh) !important;
+  }
 }
 
 .greenie-avatar-anchor .greenie-stage-wrapper,
@@ -38,7 +61,7 @@
 .speech-bubble-card {
   position: fixed;
   right: 2vw;
-  bottom: calc(40vh + 10vh);
+  bottom: calc(45vh + 9vh);
   max-width: min(42vw, 480px);
   background: #ffffff;
   border-radius: 2vh;
@@ -51,7 +74,7 @@
 }
 
 .speech-bubble-card--pdp {
-  bottom: calc(40vh + 19vh) !important;
+  bottom: calc(45vh + 19vh) !important;
 }
 
 .speech-bubble-card--active {
@@ -174,7 +197,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* Ambient Radial Aura Halo */

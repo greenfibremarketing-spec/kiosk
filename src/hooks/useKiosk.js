@@ -72,6 +72,7 @@ import {
 import { prefetchAudio, prewarmVoiceCache } from "@/lib/avatar/GreenieAvatar";
 import { speechController, warmupSpeech } from "@/lib/avatar/SpeechController";
 import { buildProductSpeech, getGreetingFlowLines } from "@/lib/productSpeech.mjs";
+import { getPaymentApi } from "@/lib/paymentApi";
 
 // Conversation states
 const S = {
@@ -1351,6 +1352,13 @@ export function useKiosk() {
       return;
     }
     lastResetAtRef.current = now;
+
+    // Inactivity/presence resets must not clear an unresolved checkout
+    const pendingPayment = getPaymentApi().getPendingReference();
+    if (pendingPayment && pendingPayment.database_order_id) {
+      console.log(`[Session] reset skipped: unresolved checkout pending (order=${pendingPayment.order_number || pendingPayment.database_order_id})`);
+      return;
+    }
 
     const oldSession = sessionIdRef.current;
     const newSession = "sess_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
