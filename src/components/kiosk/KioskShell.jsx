@@ -22,40 +22,215 @@ import { trace } from "@/lib/debugTrace";
 const SHOW_TRANSCRIPT_DEBUG = process.env.NEXT_PUBLIC_DEBUG_TRANSCRIPT === "true";
 
 /**
- * Fullscreen Idle Promo Video
- * Fades out smoothly on ENGAGED (700ms), pauses, and hides.
- * Resumes and fades in when returning to IDLE.
+ * Dynamic Intro Video Playlist & Fallback Player
+ *
+ * Loops backend playlist indefinitely (video 1 -> ... -> N -> 1) via remote playKioskIntro.
+ * Re-fetches the playlist on each iteration so added/removed videos take effect.
+ * If API fails or backend is unreachable, gracefully falls back to local /videos/promo.mp4
+ * and retries with backoff (30s, 60s cap) without ever showing a blank or black screen.
+ * Exits cleanly upon user presence, touch, or clicking "Meet Greeny", aborting the active player.
  */
+
+// Module cache to avoid re-fetching intro-player.js on every playlist loop iteration
+let cachedPlayerModule = null;
+let cachedApiBase = null;
+
+async function getIntroPlayer(apiBase) {
+  const normalizedBase = (apiBase || "https://kioskai.greenfibre.org").replace(/\/$/, "");
+  if (cachedPlayerModule && cachedApiBase === normalizedBase) {
+    return cachedPlayerModule;
+  }
+  const moduleUrl = `${normalizedBase}/media/intro-player.js`;
+  try {
+    const loadModule = new Function("u", "return import(u)");
+    const mod = await loadModule(moduleUrl);
+    if (mod && typeof mod.playKioskIntro === "function") {
+      cachedPlayerModule = mod;
+      cachedApiBase = normalizedBase;
+      return mod;
+    }
+    return mod;
+  } catch (err) {
+    console.warn("[IdlePromoVideo] Failed to import remote intro-player.js:", err);
+    return null;
+  }
+}
+
+function interruptibleSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
 function IdlePromoVideo({ isEngaged, onTap }) {
-  const videoRef = useRef(null);
+  const fallbackVideoRef = useRef(null);
+  const containerRef = useRef(null);
+  const activeControllerRef = useRef(null);
   const [visible, setVisible] = useState(!isEngaged);
+  const hasTriggeredRef = useRef(false);
+
+  const triggerEngaged = () => {
+    if (hasTriggeredRef.current) return;
+    hasTriggeredRef.current = true;
+    if (activeControllerRef.current) {
+      activeControllerRef.current.abort();
+    }
+    if (fallbackVideoRef.current) {
+      fallbackVideoRef.current.pause();
+    }
+    onTap?.();
+  };
+
+  const handleTap = (e) => {
+    e?.stopPropagation?.();
+    triggerEngaged();
+  };
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
     if (isEngaged) {
-      if (videoRef.current) {
-        videoRef.current.pause();
+      hasTriggeredRef.current = true;
+      if (activeControllerRef.current) {
+        activeControllerRef.current.abort();
+      }
+      if (fallbackVideoRef.current) {
+        fallbackVideoRef.current.pause();
       }
       const timer = setTimeout(() => {
         setVisible(false);
       }, 720);
       return () => clearTimeout(timer);
-    } else {
-      setVisible(true);
-      video.currentTime = 0;
-      video.play().catch(() => { });
     }
-  }, [isEngaged]);
 
-  const handleTap = (e) => {
-    e?.stopPropagation?.();
-    if (videoRef.current) {
-      videoRef.current.pause();
+    // Entering or returning to IDLE mode
+    setVisible(true);
+    hasTriggeredRef.current = false;
+
+    let isActive = true;
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+    let retryDelay = 30000; // 30s initial retry backoff
+
+    // Ensure fallback video plays initially so there is never a blank screen
+    if (fallbackVideoRef.current) {
+      fallbackVideoRef.current.currentTime = 0;
+      fallbackVideoRef.current.play().catch(() => {});
     }
-    onTap?.();
-  };
+
+    const apiBase =
+      process.env.NEXT_PUBLIC_INTRO_API_BASE || "https://kioskai.greenfibre.org";
+
+    const runLoop = async () => {
+      while (isActive && !controller.signal.aborted) {
+        const container = containerRef.current;
+        if (!container) break;
+
+        try {
+          const mod = await getIntroPlayer(apiBase);
+          if (!isActive || controller.signal.aborted) break;
+
+          if (!mod || typeof mod.playKioskIntro !== "function") {
+            throw new Error("playKioskIntro not available");
+          }
+
+          // Clean container before starting new playlist round
+          container.innerHTML = "";
+
+          // Ensure any video rendered inside container fills full 1080x1920 with object-fit: cover
+          const enforceFullscreenCover = () => {
+            const v = container.querySelector("video");
+            if (v) {
+              v.style.setProperty("object-fit", "cover", "important");
+              v.style.setProperty("width", "100vw", "important");
+              v.style.setProperty("height", "100vh", "important");
+            }
+          };
+
+          const observer = new MutationObserver(enforceFullscreenCover);
+          observer.observe(container, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ["style", "src"],
+          });
+          enforceFullscreenCover();
+
+          // Once remote video begins playing, pause the fallback video to save resources
+          const onRemotePlaying = () => {
+            enforceFullscreenCover();
+            if (fallbackVideoRef.current) {
+              fallbackVideoRef.current.pause();
+            }
+          };
+          container.addEventListener("playing", onRemotePlaying, { capture: true, once: true });
+
+          // Start the remote player
+          const playPromise = mod.playKioskIntro(container, {
+            apiBase,
+            signal: controller.signal,
+          });
+
+          const result = await playPromise;
+          observer.disconnect();
+          container.removeEventListener("playing", onRemotePlaying, { capture: true });
+
+          if (!isActive || controller.signal.aborted) break;
+
+          if (result === "intro_skipped") {
+            // "Meet Greeny" button clicked or abort signal resolved
+            triggerEngaged();
+            break;
+          } else if (result === "intro_done") {
+            // Finished playing all videos in playlist -> reset delay & loop to video 1
+            retryDelay = 30000;
+            continue;
+          } else {
+            // "intro_failed" -> fallback to local video and wait before retry
+            if (fallbackVideoRef.current) {
+              fallbackVideoRef.current.play().catch(() => {});
+            }
+            await interruptibleSleep(retryDelay, controller.signal);
+            retryDelay = Math.min(retryDelay * 2, 60000);
+          }
+        } catch (err) {
+          if (!isActive || controller.signal.aborted) break;
+          // Exception -> fallback to local video and wait before retry
+          if (fallbackVideoRef.current) {
+            fallbackVideoRef.current.play().catch(() => {});
+          }
+          await interruptibleSleep(retryDelay, controller.signal);
+          retryDelay = Math.min(retryDelay * 2, 60000);
+        }
+      }
+    };
+
+    runLoop();
+
+    return () => {
+      isActive = false;
+      controller.abort();
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
+      if (fallbackVideoRef.current) {
+        fallbackVideoRef.current.pause();
+      }
+      if (containerRef.current) {
+        containerRef.current.innerHTML = "";
+      }
+    };
+  }, [isEngaged]);
 
   if (!visible && isEngaged) return null;
 
@@ -69,8 +244,9 @@ function IdlePromoVideo({ isEngaged, onTap }) {
       tabIndex={0}
       aria-label="Touch Screen to Begin"
     >
+      {/* ── Fallback local promo video: remains active during initial load or API outage ── */}
       <video
-        ref={videoRef}
+        ref={fallbackVideoRef}
         src="/videos/promo.mp4"
         autoPlay
         loop
@@ -79,6 +255,20 @@ function IdlePromoVideo({ isEngaged, onTap }) {
         preload="auto"
         className="kiosk-idle-video"
       />
+
+      {/* ── Dedicated host container for remote intro-player.js ── */}
+      <div
+        ref={containerRef}
+        className="kiosk-idle-intro-player-container"
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          zIndex: 1,
+        }}
+      />
+
       <div className="kiosk-idle-gradient-overlay" />
       <div className="kiosk-idle-cta-container">
         <div className="attract-tap-hint">✨ Touch Screen or Step Closer to Begin</div>

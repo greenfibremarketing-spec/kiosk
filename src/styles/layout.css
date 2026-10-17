@@ -38,6 +38,42 @@
   pointer-events: none;
 }
 
+/* ── Remote Intro Player Container & Video (Cover full 1080x1920 kiosk screen) ── */
+.kiosk-idle-intro-player-container {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.kiosk-idle-intro-player-container div {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100vw !important;
+  max-height: 100vh !important;
+  background: transparent !important;
+}
+
+.kiosk-idle-intro-player-container video {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  min-width: 100% !important;
+  min-height: 100% !important;
+  object-fit: cover !important;
+  object-position: center !important;
+}
+
+.kiosk-idle-intro-player-container button {
+  position: absolute !important;
+  bottom: 24px !important;
+  right: 24px !important;
+  z-index: 10 !important;
+}
+
 .kiosk-idle-gradient-overlay {
   position: absolute;
   inset: 0;

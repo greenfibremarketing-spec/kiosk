@@ -8,7 +8,8 @@
     "electron": "electron .",
     "start": "electron .",
     "dev": "next build && electron . --dev",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win",
+    "mock:intro": "node scripts/mock-intro-api.js"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.2.5",
