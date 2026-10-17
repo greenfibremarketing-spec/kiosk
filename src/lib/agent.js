@@ -106,8 +106,12 @@ export function normalizeBackendProduct(p) {
     p.images?.[0] ||
     "";
 
-  const numPrice = Number(p.price) || 999;
-  const numMrp = Number(p.mrp) || Math.round(numPrice * 1.35);
+  const rawPrice = p.salePrice ?? p.price ?? 0;
+  const parsedPrice = typeof rawPrice === "number" ? rawPrice : Number(String(rawPrice).replace(/[^\d.]/g, "")) || 0;
+  const numPrice = parsedPrice > 0 ? parsedPrice : 0;
+  const rawMrp = p.mrp ?? 0;
+  const parsedMrp = typeof rawMrp === "number" ? rawMrp : Number(String(rawMrp).replace(/[^\d.]/g, "")) || 0;
+  const numMrp = parsedMrp > 0 ? parsedMrp : (numPrice > 0 ? Math.round(numPrice * 1.35) : 0);
   const rawCat = String(p.category || "all").toLowerCase().trim();
 
   let shape = "bottle";

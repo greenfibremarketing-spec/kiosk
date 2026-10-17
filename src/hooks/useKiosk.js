@@ -71,6 +71,7 @@ import {
 } from "@/lib/greetConfig";
 import { prefetchAudio, prewarmVoiceCache } from "@/lib/avatar/GreenieAvatar";
 import { speechController, warmupSpeech } from "@/lib/avatar/SpeechController";
+import { buildProductSpeech, getGreetingFlowLines } from "@/lib/productSpeech.mjs";
 
 // Conversation states
 const S = {
@@ -274,6 +275,7 @@ export function useKiosk() {
   const isBackFromDetailPendingRef = useRef(false);
   const productDetailOpenedRef = useRef(false);
   const backTurnIdRef = useRef(null);
+  const lastProductSpokenRef = useRef(null);
 
   const markOnboardingDone = useCallback((reason) => {
     if (!onboardingDoneRef.current) {
@@ -308,8 +310,12 @@ export function useKiosk() {
 
   const hintIdleTimerRef = useRef(null);
   const resetHintIdleTimer = useCallback(() => {
-    clearTimeout(hintIdleTimerRef.current);
-    if (kioskModeRef.current !== "ENGAGED") return;
+    if (hintIdleTimerRef.current) {
+      clearTimeout(hintIdleTimerRef.current);
+      hintIdleTimerRef.current = null;
+    }
+    if (kioskModeRef.current !== "ENGAGED" || latestRef.current.speaking) return;
+    console.log(`[DebugTiming] hintIdleTimer armed at=${Math.round(typeof window !== "undefined" ? performance.now() : Date.now())}`);
     hintIdleTimerRef.current = setTimeout(() => {
       if (
         kioskModeRef.current === "ENGAGED" &&
@@ -319,6 +325,7 @@ export function useKiosk() {
         !latestRef.current.showCheckout &&
         !latestRef.current.speaking
       ) {
+        console.log(`[DebugTiming] hintIdleTimer fired at=${Math.round(typeof window !== "undefined" ? performance.now() : Date.now())}`);
         setHintBubble("Say what you're looking for, or tap any category to explore!");
       }
     }, 18000);
@@ -327,7 +334,10 @@ export function useKiosk() {
   useEffect(() => {
     return () => {
       clearTimeout(categoriesFallbackTimerRef.current);
-      clearTimeout(hintIdleTimerRef.current);
+      if (hintIdleTimerRef.current) {
+        clearTimeout(hintIdleTimerRef.current);
+        hintIdleTimerRef.current = null;
+      }
     };
   }, []);
 
@@ -1110,6 +1120,45 @@ export function useKiosk() {
     }
   }, [speaking, convState, setConv]);
 
+  // Idle timer cancellation while speaking & re-arming when done
+  useEffect(() => {
+    if (speaking) {
+      if (hintIdleTimerRef.current) {
+        clearTimeout(hintIdleTimerRef.current);
+        hintIdleTimerRef.current = null;
+        console.log(`[DebugTiming] hintIdleTimer cancelled: avatar speaking at=${Math.round(typeof window !== "undefined" ? performance.now() : Date.now())}`);
+      }
+    } else {
+      resetHintIdleTimer();
+    }
+  }, [speaking, resetHintIdleTimer]);
+
+  // Reset idle timer on any user interaction (touch, pointer, click, keydown)
+  useEffect(() => {
+    const onUserInteraction = () => {
+      lastInputAtRef.current = Date.now();
+      resetHintIdleTimer();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("pointerdown", onUserInteraction, { passive: true });
+      window.addEventListener("touchstart", onUserInteraction, { passive: true });
+      window.addEventListener("keydown", onUserInteraction, { passive: true });
+      return () => {
+        window.removeEventListener("pointerdown", onUserInteraction);
+        window.removeEventListener("touchstart", onUserInteraction);
+        window.removeEventListener("keydown", onUserInteraction);
+      };
+    }
+  }, [resetHintIdleTimer]);
+
+  // Voice activity resets idle timer
+  useEffect(() => {
+    if (userSpeaking || vadSpeech) {
+      lastInputAtRef.current = Date.now();
+      resetHintIdleTimer();
+    }
+  }, [userSpeaking, vadSpeech, resetHintIdleTimer]);
+
 
   // Read by useSpeech on every audio chunk
   const getGate = useCallback(() => {
@@ -1343,7 +1392,9 @@ export function useKiosk() {
     productDetailOpenedRef.current = false;
 
     // Stop speech and clear audio queue immediately via single speechController
+    lastProductSpokenRef.current = null;
     speechController.cancelAll("session_reset");
+    setCaption("");
     const stage = stageRef.current || latestRef.current._stageRef?.current;
     stage?.stop?.("session_reset");
     abortRef.current?.abort();
@@ -1723,15 +1774,34 @@ export function useKiosk() {
     KioskStepCache.setCustomerName(trimmed);
     setName(trimmed);
 
-    // If onboarding is not done, open categories and arm 1.5s fallback timer
+    kioskWS.sendNameSubmitted(trimmed);
+
+    // Part C: Greeting Flow (Name provided)
+    // 1. Say: "Nice to meet you," + "${name}!"
+    // 2. Open category tab after greeting
+    // 3. Say category line
+    // 4. Say help line
+    const vIdx = trimmed.length % 3;
+    const flow = getGreetingFlowLines({ name: trimmed, isSkipped: false, variantIndex: vIdx });
+
+    const tid = `greeting_name_${Date.now()}`;
+    speechController.beginReply(tid, { source: "greeting_flow" });
+    for (const chunk of flow.introChunks) {
+      speechController.appendSentence(tid, chunk, { turnId: tid });
+    }
+    speechController.appendSentence(tid, flow.categoryChunk, { turnId: tid });
+    speechController.appendSentence(tid, flow.helpChunk, { turnId: tid });
+    speechController.endReply(tid);
+    setCaption(flow.allChunks.join(" "));
+
+    // Switch to category screen right after greeting (Step 2)
     if (!onboardingDoneRef.current) {
-      openCategoryPicker("submitName_optimistic");
       clearTimeout(categoriesFallbackTimerRef.current);
       categoriesFallbackTimerRef.current = setTimeout(() => {
-        if (!onboardingDoneRef.current && latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
-          openCategoryPicker("1.5s_categories_fallback_timer");
+        if (!onboardingDoneRef.current) {
+          openCategoryPicker("submitName_greeting_flow");
         }
-      }, 1500);
+      }, 1100);
     }
   }, [stopSpeechForUserAction, openCategoryPicker]);
 
@@ -1744,15 +1814,31 @@ export function useKiosk() {
     kioskWS.sendNameSkipped();
     kioskWS.sendSkipName();
 
-    // If onboarding is not done, open categories and arm 1.5s fallback timer
+    // Part C: Greeting Flow (Name skipped)
+    // 1. Say: "Hello, welcome to Green Fibre!"
+    // 2. Open category tab
+    // 3. Say category line
+    // 4. Say help line
+    const flow = getGreetingFlowLines({ isSkipped: true, variantIndex: 0 });
+
+    const tid = `greeting_skip_${Date.now()}`;
+    speechController.beginReply(tid, { source: "greeting_flow" });
+    for (const chunk of flow.introChunks) {
+      speechController.appendSentence(tid, chunk, { turnId: tid });
+    }
+    speechController.appendSentence(tid, flow.categoryChunk, { turnId: tid });
+    speechController.appendSentence(tid, flow.helpChunk, { turnId: tid });
+    speechController.endReply(tid);
+    setCaption(flow.allChunks.join(" "));
+
+    // Open category tab (Step 2)
     if (!onboardingDoneRef.current) {
-      openCategoryPicker("skipName_optimistic");
       clearTimeout(categoriesFallbackTimerRef.current);
       categoriesFallbackTimerRef.current = setTimeout(() => {
-        if (!onboardingDoneRef.current && latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
-          openCategoryPicker("1.5s_categories_fallback_timer");
+        if (!onboardingDoneRef.current) {
+          openCategoryPicker("skipName_greeting_flow");
         }
-      }, 1500);
+      }, 600);
     }
   }, [stopSpeechForUserAction, openCategoryPicker]);
 
@@ -1942,11 +2028,14 @@ export function useKiosk() {
         const msg = action?.message || action?.text;
         if (msg && typeof msg === "string" && msg.trim().length > 0) {
           const cleanMsg = msg.trim();
-          setCaption(cleanMsg);
-          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_categories";
-          if (speechController.getEnqueuedCount(activeTid) === 0) {
-            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
-            speechController.endReply(activeTid);
+          const isOldDup = /which category would you like|please select a category to view/i.test(cleanMsg);
+          if (!isOldDup) {
+            setCaption(cleanMsg);
+            const activeTid = actionTurnId || kioskWS.currentTurnId || "show_categories";
+            if (speechController.getEnqueuedCount(activeTid) === 0) {
+              speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+              speechController.endReply(activeTid);
+            }
           }
         }
         break;
@@ -2062,14 +2151,29 @@ export function useKiosk() {
         }
 
         const msg = action?.message || action?.blurb || action?.text;
-        if (msg && typeof msg === "string" && msg.trim().length > 0) {
+        const targetKey = target?.sku || target?.id || action?.sku || action?.id;
+        const alreadySpoken = Boolean(targetKey && lastProductSpokenRef.current === targetKey);
+
+        if (alreadySpoken) {
+          console.log(`[Kiosk] SHOW_PRODUCT: speech already triggered for ${targetKey}, skipping duplicate speech`);
+        } else if (target) {
+          lastProductSpokenRef.current = targetKey;
+          speechController.cancelAll("show_product");
+          const speech = buildProductSpeech(target, { customerName: nameRef.current });
+          setCaption(speech.chunks[0] || speech.fullText);
+          const activeTid = actionTurnId || kioskWS.currentTurnId || "show_product";
+          speechController.beginReply(activeTid, { source: "show_product" });
+          for (const chunk of speech.chunks) {
+            speechController.appendSentence(activeTid, chunk, { turnId: activeTid, speechId: action?.speech_id });
+          }
+          speechController.endReply(activeTid);
+        } else if (msg && typeof msg === "string" && msg.trim().length > 0) {
           const cleanMsg = msg.trim();
           setCaption(cleanMsg);
           const activeTid = actionTurnId || kioskWS.currentTurnId || "show_product";
-          if (speechController.getEnqueuedCount(activeTid) === 0) {
-            speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
-            speechController.endReply(activeTid);
-          }
+          speechController.cancelAll("show_product_msg");
+          speechController.appendSentence(activeTid, cleanMsg, { turnId: activeTid, speechId: action?.speech_id });
+          speechController.endReply(activeTid);
         }
         break;
       }
@@ -2705,11 +2809,12 @@ export function useKiosk() {
     resetHintIdleTimer();
     setSpeaking(isSpeaking);
     if (!isSpeaking) {
+      setCaption("");
       if (convStateRef.current === S.SPEAKING) {
         setConv(S.ATTENTIVE);
       }
     }
-  }, [setConv, resetHintIdleTimer]);
+  }, [setConv, resetHintIdleTimer, setCaption]);
 
 
   // ── Attentive state: face present but not speaking ────────────────────────
@@ -2751,6 +2856,20 @@ export function useKiosk() {
     return Array.from(catMap.values());
   }, [backendAction, backendCatalog]);
 
+  // ── Natural category phrase mapper ─────────────────────────────────────────
+  const getCategoryNaturalLine = useCallback((id, name) => {
+    const cl = ((name || id || "") + "").toLowerCase();
+    if (cl.includes("bottle") || cl.includes("tumbler")) return "Here are our bottles.";
+    if (cl.includes("gift") || cl.includes("hamper")) return "Here are our gifting picks.";
+    if (cl.includes("drinkware") || cl.includes("mug") || cl.includes("cup")) return "Here are our drinkware picks.";
+    if (cl.includes("kitchen") || cl.includes("dining") || cl.includes("casserole") || cl.includes("bowl")) return "Here are our kitchen and dining essentials.";
+    if (cl.includes("planter")) return "Here are our planters.";
+    if (cl.includes("tableware") || cl.includes("plate")) return "Here are our tableware pieces.";
+    if (cl.includes("storage") || cl.includes("canister")) return "Here are our storage canisters.";
+    if (cl.includes("office") || cl.includes("stationery") || cl.includes("desk")) return "Here are our desk essentials.";
+    return "Here are all our products.";
+  }, []);
+
   // ── Flow Actions ──────────────────────────────────────────────────────────
   const selectCategory = useCallback((cat) => {
     cancelPendingReturnFromDetail("user_tap_category");
@@ -2777,6 +2896,11 @@ export function useKiosk() {
     setFiltersApplied(null);
     setHighlightSku(null);
 
+    // Immediately update avatar caption to reflect selected category
+    const catCaption = getCategoryNaturalLine(cleanId, catName);
+    setCaption(catCaption);
+    console.log(`[DebugTiming] selectCategory click: id=${cleanId} at=${Math.round(typeof window !== "undefined" ? performance.now() : Date.now())}`);
+
     const catProds = (backendCatalog || []).filter((p) => {
       const pCat = normalizeCategory(p.category || "");
       return cleanId === "all" || pCat === cleanId;
@@ -2792,12 +2916,13 @@ export function useKiosk() {
       sku: null,
       skus: catProds.map((p) => p.sku || p.id).filter(Boolean),
     });
-  }, [categories, backendCatalog, presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer]);
+  }, [categories, backendCatalog, presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer, getCategoryNaturalLine, setCaption]);
 
   const selectProduct = useCallback((p) => {
     cancelPendingReturnFromDetail("user_tap_product");
     productDetailOpenedRef.current = true;
     stopSpeechForUserAction("user_tap_product");
+    speechController.cancelAll("user_tap_product");
     lastInputAtRef.current = Date.now();
     if (kioskModeRef.current === "IDLE") {
       pendingTappedProductRef.current = p;
@@ -2806,21 +2931,43 @@ export function useKiosk() {
     resetHintIdleTimer();
     markOnboardingDone("selectProduct");
 
-    const sku = p?.sku || p?.id;
-    setProductId(p.id);
+    // Look up the full product from backendCatalog to ensure verified pricing and fields
+    const fullProd = (backendCatalog || []).find(
+      (item) =>
+        (p?.sku && (item.sku === p.sku || item.id === p.sku)) ||
+        (p?.id && (item.id === p.id || item.sku === p.id))
+    ) || p;
+
+    const sku = fullProd?.sku || fullProd?.id || p?.sku || p?.id;
+    setProductId(fullProd?.id || p.id);
     setShowDetail(true);
     setOnboardingOpen(false);
-    KioskStepCache.setSelectedProduct(p);
-    kioskWS.sendSelectProduct(p);
+
+    // Track single trigger for this product open
+    lastProductSpokenRef.current = sku;
+
+    // Immediately update avatar caption and speech to reflect selected product
+    const speech = buildProductSpeech(fullProd, { customerName: nameRef.current });
+    setCaption(speech.chunks[0] || speech.fullText);
+    const activeTid = `prod_${sku}_${Date.now()}`;
+    speechController.beginReply(activeTid, { source: "select_product" });
+    for (const chunk of speech.chunks) {
+      speechController.appendSentence(activeTid, chunk, { turnId: activeTid });
+    }
+    speechController.endReply(activeTid);
+    console.log(`[DebugTiming] selectProduct click: sku=${sku} at=${Math.round(typeof window !== "undefined" ? performance.now() : Date.now())}`);
+
+    KioskStepCache.setSelectedProduct(fullProd);
+    kioskWS.sendSelectProduct(fullProd);
     kioskWS.sendScreenChanged({
       type: "product",
-      category: p?.category || null,
+      category: fullProd?.category || null,
       sku,
       skus: sku ? [sku] : [],
     });
 
     // Prefetch pair-up suggestions in background
-    const pid = p?.id || p?.sku;
+    const pid = fullProd?.id || fullProd?.sku || p?.id || p?.sku;
     if (pid && !pairupCacheRef.current.has(pid)) {
       const cartSkus = cartItemsRef.current.map((i) => i.sku || i.id).join(",");
       fetch(`${BACKEND_URL}/pairups?product_id=${encodeURIComponent(pid)}&cart=${encodeURIComponent(cartSkus)}`)
@@ -2835,7 +2982,7 @@ export function useKiosk() {
           console.warn("[PairUp] Prefetch notice:", err?.message || err);
         });
     }
-  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer]);
+  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer, setCaption, backendCatalog]);
 
   const showAll = useCallback(() => {
     cancelPendingReturnFromDetail("user_tap_show_all");
@@ -2853,6 +3000,10 @@ export function useKiosk() {
     setLiveTurnProducts([]);
     setFiltersApplied(null);
     setHighlightSku(null);
+
+    setCaption("Here are all our products.");
+    console.log(`[DebugTiming] showAll click at=${Math.round(typeof window !== "undefined" ? performance.now() : Date.now())}`);
+
     kioskWS.sendWsAction({ action: "SHOW_ALL" });
     kioskWS.sendScreenChanged({
       type: "list",
@@ -2860,7 +3011,7 @@ export function useKiosk() {
       sku: null,
       skus: (backendCatalog || []).map((p) => p.sku || p.id).filter(Boolean),
     });
-  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, backendCatalog, resetHintIdleTimer]);
+  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, backendCatalog, resetHintIdleTimer, setCaption]);
 
   const clearFilters = useCallback(() => {
     setLiveTurnProducts([]);
@@ -2877,6 +3028,9 @@ export function useKiosk() {
       return;
     }
     const wasDetail = productDetailOpenedRef.current || latestRef.current.showDetail;
+    lastProductSpokenRef.current = null;
+    speechController.cancelAll("navigate_back");
+    setCaption("");
     trace("showDetail=false", { caller: "navigateBack" });
     setShowDetail(false);
     setLiveTurnProducts([]);
@@ -2897,7 +3051,7 @@ export function useKiosk() {
       openCategoryPicker("navigate_back");
       stopSpeechForUserAction("user_tap_back");
     }
-  }, [presence, stopSpeechForUserAction, triggerReturnFromDetail, category, backendCatalog, resetHintIdleTimer, openCategoryPicker]);
+  }, [presence, stopSpeechForUserAction, triggerReturnFromDetail, category, backendCatalog, resetHintIdleTimer, openCategoryPicker, setCaption]);
 
   const restartSession = useCallback(() => {
     lastInputAtRef.current = Date.now();

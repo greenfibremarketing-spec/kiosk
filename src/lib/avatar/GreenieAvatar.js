@@ -6,6 +6,7 @@ import { attachLipSync, getMouth, resetLipSync } from "../lipSync";
 import { TTS_CONFIG, TTS_ENDPOINT } from "../ttsConfig";
 import { sanitizeTtsText, splitIntoSentences, splitIntoTtsChunks } from "../ttsTextSanitizer";
 import { speechController, warmupSpeech } from "./SpeechController";
+import { getAllProductSpeechLines } from "../productSpeech.mjs";
 import { trace } from "../debugTrace";
 
 export { speechController, warmupSpeech };
@@ -115,8 +116,15 @@ export async function prewarmVoiceCache(catalog = []) {
     "Welcome to Green Fibre. I am Greenie, your AI styling assistant.",
     "May I know your name so I can assist you better?",
     "What's your name?",
-    "Which category would you like to explore today?",
-    "Please select a category to view our sustainable products.",
+    "Nice to meet you,",
+    "Wonderful to meet you,",
+    "Great to meet you,",
+    "Hello, welcome to Green Fibre!",
+    "You can pick a category here. We have a lovely variety of eco-friendly products.",
+    "Take a look at our categories above. We have a lovely variety of eco-friendly products.",
+    "Choose any category to start exploring. We have a lovely variety of eco-friendly products.",
+    "If you have any questions, just ask me, I'm here to help.",
+    "I'm Greeny, your shopping guide. If you have any questions, just ask me, I'm here to help.",
     "No rush! Take your time, there's lots more to explore.",
     // Friendly cached acknowledgement openers (Requirement 5)
     "Sure!",
@@ -155,14 +163,7 @@ export async function prewarmVoiceCache(catalog = []) {
   ];
 
   if (Array.isArray(catalog) && catalog.length > 0) {
-    for (const p of catalog) {
-      if (p?.name && p?.price) {
-        staticLines.push(`Great choice! Here is our ${p.name} for ${p.price} rupees.`);
-      }
-      if (p?.description && typeof p.description === "string" && p.description.trim()) {
-        staticLines.push(p.description.trim());
-      }
-    }
+    staticLines.push(...getAllProductSpeechLines(catalog));
   }
 
   const uniqueLines = Array.from(new Set(staticLines.filter(Boolean)));

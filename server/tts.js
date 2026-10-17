@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { Agent, setGlobalDispatcher } from "undici";
+import { normalizeForSpeech } from "../src/lib/productSpeech.mjs";
 
 // Reuse one keep-alive connection dispatcher for Deepgram upstream requests
 const ttsDispatcher = new Agent({
@@ -58,7 +59,11 @@ export function isLiveRequestActive() {
  * @returns {Promise<{ file: string, model: string }>}
  */
 export async function synth(text, requestedModel, signal = null, isLive = true) {
-  const clean = String(text || "").trim().slice(0, 1000);
+  const raw = String(text || "").trim().slice(0, 1000);
+  if (!raw) {
+    throw new Error("Text is required for TTS synthesis");
+  }
+  const clean = normalizeForSpeech(raw);
   if (!clean) {
     throw new Error("Text is required for TTS synthesis");
   }
@@ -202,8 +207,8 @@ export async function checkTtsHealth() {
 export async function prewarmTtsCache(lines, model = DEFAULT_MODEL, firstVisitLines = []) {
   if (!Array.isArray(lines) || lines.length === 0) return { total: 0, warmed: 0, cached: 0 };
 
-  const firstVisitSet = new Set((firstVisitLines || []).map((l) => String(l || "").trim()).filter(Boolean));
-  const uniqueAll = Array.from(new Set(lines.map((l) => String(l || "").trim()).filter(Boolean)));
+  const firstVisitSet = new Set((firstVisitLines || []).map((l) => normalizeForSpeech(String(l || "").trim())).filter(Boolean));
+  const uniqueAll = Array.from(new Set(lines.map((l) => normalizeForSpeech(String(l || "").trim())).filter(Boolean)));
 
   // Separate into first-visit priority lines and background lines
   const tier1 = uniqueAll.filter((l) => firstVisitSet.has(l));

@@ -100,6 +100,16 @@
   transform: rotate(45deg);
 }
 
+/* ── Voice HUD: Bottom-Left Container ── */
+.voice-hud-fixed-container {
+  position: fixed;
+  bottom: 3.5vh;
+  left: 2.5vw;
+  width: min(55vw, 650px);
+  height: auto;
+  pointer-events: none;
+  z-index: 45;
+}
 
 /* ── Camera Privacy Notice Fixed Centered at Bottom ── */
 .camera-privacy-notice-fixed {

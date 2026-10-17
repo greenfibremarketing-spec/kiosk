@@ -374,6 +374,24 @@ export class SpeechController {
       }
     }
 
+    // When the user intentionally interacts or navigates, clear recent deduplication history so new responses are not blocked!
+    const isUserNavigation = [
+      "user_tap_category",
+      "user_tap_product",
+      "user_tap_show_all",
+      "user_tap_back",
+      "user_action",
+      "user_submit_name",
+      "user_skip_name",
+      "session_reset",
+    ].includes(reason);
+
+    if (isUserNavigation) {
+      this.recentEnqueued = [];
+      this.seenReplyKeys.clear();
+      console.log(`[SpeechController] Deduplication history cleared for ${reason}`);
+    }
+
     // Reset queue state
     this.queue.length = 0;
     this.recentEnqueued.length = 0;
@@ -464,34 +482,56 @@ export class SpeechController {
       meta.hasLoggedFirstReq = true;
       console.log(`[SpeechController] first TTS request replyId=${item.replyId} text="${item.sanitized.slice(0, 50)}"`);
     }
-    try {
-      const audioCtx = getAudioContext();
-      const res = await fetch(
-        `${TTS_ENDPOINT}?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(model)}`,
-        { signal: abortCtrl.signal }
-      );
-      if (gen !== this.generation) return null;
 
-      if (meta && !meta.firstByteTs) {
-        meta.firstByteTs = typeof window !== "undefined" ? performance.now() : Date.now();
-      }
-      if (meta && !meta.hasLoggedFirstByte) {
-        meta.hasLoggedFirstByte = true;
-        console.log(`[SpeechController] first byte replyId=${item.replyId} status=${res.status}`);
-      }
-      if (res.ok && audioCtx) {
-        const ab = await res.arrayBuffer();
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (gen !== this.generation || abortCtrl.signal.aborted) return null;
+      try {
+        const tStart = typeof window !== "undefined" ? performance.now() : Date.now();
+        const audioCtx = getAudioContext();
+        const res = await fetch(
+          `${TTS_ENDPOINT}?text=${encodeURIComponent(item.sanitized)}&model=${encodeURIComponent(model)}`,
+          { signal: abortCtrl.signal }
+        );
         if (gen !== this.generation) return null;
-        const decoded = await decodeAudioBuffer(audioCtx, ab);
-        if (gen === this.generation) {
-          audioBufferCache.set(cacheKey, decoded);
-          item.audioBuffer = decoded;
-          return decoded;
+
+        if (meta && !meta.firstByteTs) {
+          meta.firstByteTs = typeof window !== "undefined" ? performance.now() : Date.now();
         }
-      }
-    } catch (err) {
-      if (err?.name !== "AbortError") {
-        console.warn(`[SpeechController] TTS fetch failed: "${item.sanitized.slice(0, 40)}"`, err?.message || err);
+        if (meta && !meta.hasLoggedFirstByte) {
+          meta.hasLoggedFirstByte = true;
+          console.log(`[SpeechController] first byte replyId=${item.replyId} status=${res.status}`);
+        }
+
+        const tFetch = typeof window !== "undefined" ? performance.now() : Date.now();
+        console.log(`[DebugTiming] TTS fetch replyId=${item.replyId} attempt=${attempt + 1} status=${res.status} ms=${Math.round(tFetch - tStart)}`);
+
+        if (res.ok && audioCtx) {
+          const ab = await res.arrayBuffer();
+          if (gen !== this.generation) return null;
+          const tDecodeStart = typeof window !== "undefined" ? performance.now() : Date.now();
+          const decoded = await decodeAudioBuffer(audioCtx, ab);
+          const tDecode = typeof window !== "undefined" ? performance.now() : Date.now();
+          console.log(`[DebugTiming] Audio decode replyId=${item.replyId} ms=${Math.round(tDecode - tDecodeStart)}`);
+          if (gen === this.generation) {
+            audioBufferCache.set(cacheKey, decoded);
+            item.audioBuffer = decoded;
+            return decoded;
+          }
+        } else if (res.status >= 500) {
+          if (attempt < maxAttempts - 1) {
+            await new Promise((r) => setTimeout(r, 400));
+            continue;
+          }
+        }
+      } catch (err) {
+        if (err?.name === "AbortError" || abortCtrl.signal.aborted) {
+          return null;
+        }
+        console.warn(`[SpeechController] TTS fetch attempt ${attempt + 1}/${maxAttempts} failed: "${item.sanitized.slice(0, 40)}"`, err?.message || err);
+        if (attempt < maxAttempts - 1) {
+          await new Promise((r) => setTimeout(r, 400));
+        }
       }
     }
     return null;
@@ -719,7 +759,9 @@ export class SpeechController {
       }
 
       try {
+        const tPlay = typeof window !== "undefined" ? performance.now() : Date.now();
         source.start(0);
+        console.log(`[DebugTiming] Audio playback started chunk="${item.sanitized.slice(0, 30)}" at=${Math.round(tPlay)}`);
       } catch (playErr) {
         console.error(`[SpeechController] Audio source.start failed:`, playErr);
         safeResolve("start_error");

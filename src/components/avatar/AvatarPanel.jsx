@@ -225,6 +225,14 @@ export default function AvatarPanel({
         />
       )}
 
+      {/* User Voice-to-Text Transcript Bubble (Bottom-Left) */}
+      {isEngaged && (
+        <UserTranscriptBubble
+          liveTranscript={liveTranscript}
+          lastUserSpeech={lastUserSpeech}
+        />
+      )}
+
 
       {/* Live Speech Testing Monitor (visible in debug mode) */}
       {debugOpen && (
@@ -257,6 +265,58 @@ export default function AvatarPanel({
           onClose={onCloseDebug}
         />
       )}
+    </div>
+  );
+}
+
+function UserTranscriptBubble({ liveTranscript = "", lastUserSpeech = "" }) {
+  const [holdingFinal, setHoldingFinal] = useState("");
+  const holdTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (liveTranscript) {
+      if (holdTimerRef.current) {
+        clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = null;
+      }
+      setHoldingFinal("");
+    } else if (lastUserSpeech) {
+      setHoldingFinal(lastUserSpeech);
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = setTimeout(() => {
+        setHoldingFinal("");
+      }, 2500);
+    }
+    return () => {
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+    };
+  }, [liveTranscript, lastUserSpeech]);
+
+  const activeText = liveTranscript || holdingFinal;
+  if (!activeText) return null;
+
+  return (
+    <div className="voice-hud-fixed-container" style={{ pointerEvents: "none" }}>
+      <div
+        className="live-transcript-bubble"
+        style={{
+          background: "rgba(6, 24, 14, 0.95)",
+          border: "1.5px solid rgba(74, 222, 128, 0.7)",
+          borderRadius: "18px",
+          padding: "8px 18px",
+          color: "#ffffff",
+          fontSize: "13.5px",
+          fontWeight: "600",
+          maxWidth: "94%",
+          textAlign: "center",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.4), 0 0 16px rgba(34, 197, 94, 0.3)",
+          backdropFilter: "blur(16px)",
+          animation: "fadeIn 0.15s ease-out",
+        }}
+      >
+        <span style={{ color: "#4ade80", marginRight: "6px", fontWeight: "700" }}>🗣️ You:</span>
+        <span style={{ color: "#fef08a" }}>"{activeText}"</span>
+      </div>
     </div>
   );
 }

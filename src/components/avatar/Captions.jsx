@@ -59,83 +59,11 @@ function splitIntoSubtitles(fullText, wordsPerChunk = 6) {
 }
 
 export default function Captions({ text, speaking, status, charIndex = 0, activeChunkText = "", showDetail = false }) {
-  const [chunkIndex, setChunkIndex] = useState(0);
-  const [holdingText, setHoldingText] = useState("");
-  const chunks = useMemo(() => splitIntoSubtitles(text, 6), [text]);
-  const lastSpokenTextRef = useRef("");
+  // Show Greeny's current spoken line as text in the existing avatar bubble, in sync with each chunk as it starts playing, and clear it when she finishes.
+  const displayText = speaking ? (activeChunkText || text || "") : "";
+  const isVisible = Boolean(speaking && displayText);
 
-  // Reset to first chunk on new text
-  useEffect(() => {
-    setChunkIndex(0);
-    setHoldingText("");
-    lastSpokenTextRef.current = "";
-  }, [text]);
-
-  // Track the most recent spoken line and hold 2.5s after speech ends
-  useEffect(() => {
-    if (speaking) {
-      const active = activeChunkText || chunks[chunkIndex]?.text || "";
-      if (active) {
-        lastSpokenTextRef.current = active;
-      }
-      setHoldingText("");
-    } else if (lastSpokenTextRef.current) {
-      const textToHold = lastSpokenTextRef.current;
-      setHoldingText(textToHold);
-      const timer = setTimeout(() => {
-        setHoldingText((prev) => (prev === textToHold ? "" : prev));
-        lastSpokenTextRef.current = "";
-      }, 2500);
-      return () => clearTimeout(timer);
-    }
-  }, [speaking, activeChunkText, chunkIndex, chunks]);
-
-  // Real-time synchronization with speech boundary charIndex
-  useEffect(() => {
-    if (!speaking || chunks.length <= 1) return;
-
-    // Match the current speech boundary character position to the right subtitle card
-    const activeIdx = chunks.findIndex(
-      (c) => charIndex >= c.startChar && charIndex <= c.endChar + 4
-    );
-
-    if (activeIdx !== -1) {
-      setChunkIndex(activeIdx);
-    }
-  }, [charIndex, speaking, chunks]);
-
-  // Fallback timer pacing if browser doesn't emit onboundary
-  useEffect(() => {
-    if (!speaking || chunks.length <= 1 || charIndex > 0) return;
-
-    const currentChunk = chunks[chunkIndex];
-    if (!currentChunk) return;
-
-    // ~240ms per word matches speech rate 1.02
-    const durationMs = Math.max(900, currentChunk.wordCount * 240);
-
-    const timer = setTimeout(() => {
-      setChunkIndex((prev) => (prev < chunks.length - 1 ? prev + 1 : prev));
-    }, durationMs);
-
-    return () => clearTimeout(timer);
-  }, [speaking, chunkIndex, chunks, charIndex]);
-
-  const activeChunk = chunks[Math.min(chunkIndex, chunks.length - 1)];
-
-  // Never show the full text while speaking is false. Show the status ("Preparing...") or nothing.
-  // Show each chunk's text when its audio actually starts playing (the audio "playing" event).
-  // Hold the last line 2.5s after speech ends.
-  let displayText = "";
-  if (speaking) {
-    displayText = activeChunkText || activeChunk?.text || status || "";
-  } else if (holdingText) {
-    displayText = holdingText;
-  } else {
-    displayText = status === "Preparing..." ? status : "";
-  }
-
-  if (!displayText) return null;
+  if (!displayText && !isVisible) return null;
 
   // Split displayText into primary sentence (Line 1: bold) and secondary text (Line 2: grey-green)
   const sentences = displayText ? String(displayText).trim().split(/(?<=[.!?])\s+/) : [];
@@ -149,8 +77,6 @@ export default function Captions({ text, speaking, status, charIndex = 0, active
       line2 = clauseMatch[2];
     }
   }
-
-  const isVisible = Boolean(displayText && (speaking || holdingText));
 
   return (
     <div

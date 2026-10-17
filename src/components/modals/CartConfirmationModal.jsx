@@ -114,7 +114,7 @@ export default function CartConfirmationModal({
                 <h4>{product.name}</h4>
                 <span className="cart-item-sku">SKU: {sku || product.sku || product.id}</span>
                 <div className="cart-item-price-row">
-                  <span className="cart-item-price">₹{product.salePrice || product.price || 999}</span>
+                  <span className="cart-item-price">₹{product.salePrice || product.price || 0}</span>
                   <span className="cart-item-eco-tag">🌾 100% Upcycled Rice-Husk</span>
                 </div>
               </div>

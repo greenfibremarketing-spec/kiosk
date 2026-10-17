@@ -279,7 +279,7 @@ export default function RightOnboardingFlow({
 
             <div className="right-flow-headline">
               <h2>
-                {backendAction?.message || (name || inputName ? `Nice to meet you, ${name || inputName}! What are you looking for today?` : "Which category would you like to explore?")}
+                {backendAction?.message || (name || inputName ? `Nice to meet you, ${name || inputName}!` : "Explore Our Collections")}
               </h2>
               <p>
                 Select a collection below to discover sustainable essentials crafted from 100% upcycled rice-husk:

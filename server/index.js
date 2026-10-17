@@ -3,7 +3,9 @@ import express from "express";
 import cors from "cors";
 import crypto from "crypto";
 import fs from "fs";
-import { synth, checkTtsHealth, prewarmTtsCache, DEFAULT_MODEL } from "./tts.js";
+import path from "path";
+import { synth, checkTtsHealth, prewarmTtsCache, DEFAULT_MODEL, CACHE_DIR } from "./tts.js";
+import { getAllProductSpeechLines, buildProductSpeech, normalizeForSpeech } from "../src/lib/productSpeech.mjs";
 
 const app = express();
 app.use(cors());
@@ -101,6 +103,7 @@ app.listen(PORT, async () => {
   setTimeout(async () => {
     try {
       const lines = [...STATIC_PREWARM_LINES];
+      let catalogProducts = null;
 
       // Try fetching verified product lines from backend (production or configured URL)
       const backendUrl =
@@ -113,22 +116,62 @@ app.listen(PORT, async () => {
         if (prodRes.ok) {
           const data = await prodRes.json();
           if (Array.isArray(data?.products)) {
-            for (const p of data.products) {
-              if (p.name) lines.push(p.name);
-              if (p.category) lines.push(`Here is our ${p.category} collection.`);
-              if (p.description) {
-                // Take first sentence of description
-                const firstSent = p.description.split(/[.?!]/)[0]?.trim();
-                if (firstSent && firstSent.length < 80) lines.push(firstSent);
+            catalogProducts = data.products;
+          }
+        }
+      } catch (_) {
+        // Backend might be starting up; will try local fallback
+      }
+
+      if (!catalogProducts) {
+        const localCandidates = [
+          path.join(process.cwd(), "..", "kiosk-backend", "kiosk_AIML", "docs", "GREENY_FRONTEND_PRODUCT_IDENTITIES.json"),
+          "E:/kiosk-backend/kiosk_AIML/docs/GREENY_FRONTEND_PRODUCT_IDENTITIES.json",
+        ];
+        for (const candidate of localCandidates) {
+          if (fs.existsSync(candidate)) {
+            try {
+              const fileData = JSON.parse(fs.readFileSync(candidate, "utf8"));
+              if (Array.isArray(fileData?.products)) {
+                catalogProducts = fileData.products;
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+
+      if (catalogProducts) {
+        lines.push(...getAllProductSpeechLines(catalogProducts));
+      }
+
+      await prewarmTtsCache(lines, DEFAULT_MODEL, SHARED_LINES.first_visit);
+
+      // Dev dry-run check: verify 0 cache misses for all catalog product chunks
+      if (catalogProducts) {
+        let misses = 0;
+        let total = 0;
+        for (const p of catalogProducts) {
+          for (let v = 0; v < 3; v++) {
+            const speech = buildProductSpeech(p, { variantIndex: v, hasPairUp: false });
+            for (const ch of speech.chunks) {
+              total++;
+              const norm = normalizeForSpeech(ch);
+              const key = crypto.createHash("md5").update(`v2:${DEFAULT_MODEL}:${norm}`).digest("hex") + ".mp3";
+              const filePath = path.join(CACHE_DIR, key);
+              if (!fs.existsSync(filePath)) {
+                misses++;
+                console.warn(`[TTS Dry-Run] Cache miss on chunk: "${norm}"`);
               }
             }
           }
         }
-      } catch (_) {
-        // Backend might be starting up; static lines will still be pre-warmed
+        if (misses === 0) {
+          console.log(`[TTS Dry-Run] Verified ${total} product chunks: 0 cache misses!`);
+        } else {
+          console.warn(`[TTS Dry-Run] Found ${misses} / ${total} cache misses!`);
+        }
       }
-
-      await prewarmTtsCache(lines, DEFAULT_MODEL, SHARED_LINES.first_visit);
     } catch (prewarmErr) {
       console.warn("[TTS Pre-Warm] Warning during cache pre-warming:", prewarmErr.message);
     }

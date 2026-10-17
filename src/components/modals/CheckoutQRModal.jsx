@@ -70,7 +70,7 @@ export default function CheckoutQRModal({
             <div className="qr-product-info">
               <h4>{product.name}</h4>
               <span className="qr-sku">SKU: {sku || product.sku || product.id}</span>
-              <strong className="qr-price">₹{product.salePrice || product.price || 999}</strong>
+              <strong className="qr-price">₹{product.salePrice || product.price || 0}</strong>
             </div>
           </div>
         )}
