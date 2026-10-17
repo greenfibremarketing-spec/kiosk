@@ -26,6 +26,7 @@ export default function RightOnboardingFlow({
   backendAction = null,
   categories = [],
   products = [],
+  onboardingDone = false,
   onSubmitName,
   onSkipName,
   onSelectCategory,
@@ -98,23 +99,26 @@ export default function RightOnboardingFlow({
     }
   }, [isOpen, controlledStep]);
 
-  if (!isOpen) return null;
+  if (!isOpen || (step === 2 && onboardingDone)) return null;
 
   // Handle Step 1 (Name) submission -> Transition to Step 2 (Categories & Recommendations)
   const handleProceedFromStep1 = (chosenName = "") => {
     const trimmed = (chosenName || inputName).trim();
     if (trimmed) {
       onSubmitName?.(trimmed);
-      setStep(2);
+      if (!onboardingDone) setStep(2);
+      else handleDismiss();
     } else {
       onSkipName?.();
-      setStep(2);
+      if (!onboardingDone) setStep(2);
+      else handleDismiss();
     }
   };
 
   const handleSkipStep1 = () => {
     onSkipName?.();
-    setStep(2);
+    if (!onboardingDone) setStep(2);
+    else handleDismiss();
   };
 
   // Close with smooth exit animation
@@ -249,7 +253,7 @@ export default function RightOnboardingFlow({
         {/* ═════════════════════════════════════════════════════════════════════════
             STEP 2: SHOW CATEGORIES & RECOMMENDATIONS (Then Step)
             ═════════════════════════════════════════════════════════════════════════ */}
-        {step === 2 && (
+        {step === 2 && !onboardingDone && (
           <div className="right-flow-step step-2-anim">
             {/* Step Pill Header */}
             <div className="right-step-eyebrow">

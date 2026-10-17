@@ -34,6 +34,7 @@ app.commandLine.appendSwitch("log-level", "3");
 
 let win = null;
 let voiceServerProcess = null;
+let isQuitting = false;
 let kioskCurrentState = "IDLE";
 
 // Helper paths
@@ -234,6 +235,14 @@ function startVoiceServer(loadedEnv) {
     voiceServerProcess.on("exit", (code, signal) => {
       log.info(`[VoiceServer] Exited (code=${code}, signal=${signal})`);
       voiceServerProcess = null;
+      if (!isQuitting) {
+        log.warn("[Main] Voice server exited unexpectedly. Auto-restarting in 2s...");
+        setTimeout(() => {
+          if (!isQuitting && !voiceServerProcess) {
+            startVoiceServer(loadedEnv);
+          }
+        }, 2000);
+      }
     });
 
     log.info(`[Main] Spawned TTS server on port 4000 (script: ${serverScript})`);
@@ -430,6 +439,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on("before-quit", () => {
+    isQuitting = true;
     stopVoiceServer();
   });
 

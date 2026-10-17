@@ -36,6 +36,17 @@ function getApiKey() {
 
 const CACHE_VERSION = "v2";
 
+let activeLiveRequests = 0;
+export function trackLiveRequestStart() {
+  activeLiveRequests++;
+}
+export function trackLiveRequestEnd() {
+  activeLiveRequests = Math.max(0, activeLiveRequests - 1);
+}
+export function isLiveRequestActive() {
+  return activeLiveRequests > 0;
+}
+
 /**
  * Synthesizes speech using Deepgram Aura TTS with retry backoff, disk caching,
  * and client disconnect cancellation via AbortSignal.
@@ -43,9 +54,10 @@ const CACHE_VERSION = "v2";
  * @param {string} text - The text to speak
  * @param {string} [requestedModel] - Aura voice model name
  * @param {AbortSignal} [signal] - Optional abort signal to cancel upstream Deepgram request
+ * @param {boolean} [isLive=true] - Whether this is a real-time playback request
  * @returns {Promise<{ file: string, model: string }>}
  */
-export async function synth(text, requestedModel, signal = null) {
+export async function synth(text, requestedModel, signal = null, isLive = true) {
   const clean = String(text || "").trim().slice(0, 1000);
   if (!clean) {
     throw new Error("Text is required for TTS synthesis");
@@ -68,47 +80,54 @@ export async function synth(text, requestedModel, signal = null) {
     try { fs.unlinkSync(file); } catch (_) {}
   }
 
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    throw new Error("Deepgram API key not configured for TTS");
+  console.log(`[TTS] cache MISS text="${clean}"`);
+
+  if (isLive) {
+    trackLiveRequestStart();
   }
 
-  const t0 = performance.now();
-  let lastError = null;
-  let attemptModel = model;
-
-  for (let attempt = 0; attempt <= 2; attempt++) {
-    if (signal?.aborted) {
-      const abortErr = new Error("Upstream TTS aborted: client disconnected");
-      abortErr.name = "AbortError";
-      throw abortErr;
+  try {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      throw new Error("Deepgram API key not configured for TTS");
     }
 
-    try {
-      const url = `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(attemptModel)}&encoding=mp3`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          Authorization: `Token ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ text: clean }),
-        signal: signal || undefined,
-      });
+    const t0 = performance.now();
+    let lastError = null;
+    let attemptModel = model;
 
-      if (res.ok) {
-        const arrayBuf = await res.arrayBuffer();
-        const buffer = Buffer.from(arrayBuf);
-        if (buffer.length < 100) {
-          throw new Error("TTS response audio buffer too small");
-        }
-
-        fs.writeFileSync(file, buffer);
-        const resolvedModel = res.headers.get("dg-model-name") || attemptModel;
-        const synthMs = Math.round(performance.now() - t0);
-        console.log(`[TTS] synth_ms=${synthMs} chars=${clean.length}`);
-        return { file, model: resolvedModel };
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      if (signal?.aborted) {
+        const abortErr = new Error("Upstream TTS aborted: client disconnected");
+        abortErr.name = "AbortError";
+        throw abortErr;
       }
+
+      try {
+        const url = `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(attemptModel)}&encoding=mp3`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Token ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ text: clean }),
+          signal: signal || undefined,
+        });
+
+        if (res.ok) {
+          const arrayBuf = await res.arrayBuffer();
+          const buffer = Buffer.from(arrayBuf);
+          if (buffer.length < 100) {
+            throw new Error("TTS response audio buffer too small");
+          }
+
+          fs.writeFileSync(file, buffer);
+          const resolvedModel = res.headers.get("dg-model-name") || attemptModel;
+          const synthMs = Math.round(performance.now() - t0);
+          console.log(`[TTS] synth_ms=${synthMs} chars=${clean.length}`);
+          return { file, model: resolvedModel };
+        }
 
       const status = res.status;
       const errText = await res.text().catch(() => "");
@@ -148,6 +167,11 @@ export async function synth(text, requestedModel, signal = null) {
   }
 
   throw lastError || new Error("Failed to synthesize speech after retries");
+} finally {
+  if (isLive) {
+    trackLiveRequestEnd();
+  }
+}
 }
 
 /**
@@ -168,23 +192,32 @@ export async function checkTtsHealth() {
 
 /**
  * Pre-warms the persistent disk cache at startup with static lines.
- * Concurrently processes items with a maximum concurrency limit.
+ * Pre-warms first-visit lines first, then remaining lines in background with concurrency 2.
+ * Pauses background pre-warming while any live playback request is being served.
  *
  * @param {string[]} lines
  * @param {string} [model]
+ * @param {string[]} [firstVisitLines]
  */
-export async function prewarmTtsCache(lines, model = DEFAULT_MODEL) {
+export async function prewarmTtsCache(lines, model = DEFAULT_MODEL, firstVisitLines = []) {
   if (!Array.isArray(lines) || lines.length === 0) return { total: 0, warmed: 0, cached: 0 };
 
-  const unique = Array.from(new Set(lines.map((l) => String(l || "").trim()).filter(Boolean)));
-  console.log(`[TTS Pre-Warm] Pre-warming ${unique.length} static lines into persistent cache...`);
+  const firstVisitSet = new Set((firstVisitLines || []).map((l) => String(l || "").trim()).filter(Boolean));
+  const uniqueAll = Array.from(new Set(lines.map((l) => String(l || "").trim()).filter(Boolean)));
+
+  // Separate into first-visit priority lines and background lines
+  const tier1 = uniqueAll.filter((l) => firstVisitSet.has(l));
+  const tier2 = uniqueAll.filter((l) => !firstVisitSet.has(l));
+  const ordered = [...tier1, ...tier2];
+
+  console.log(`[TTS Pre-Warm] Pre-warming ${ordered.length} lines (${tier1.length} first-visit priority)...`);
 
   let cachedCount = 0;
   let warmedCount = 0;
   let errorCount = 0;
   const toSynth = [];
 
-  for (const line of unique) {
+  for (const line of ordered) {
     const cacheKey = crypto.createHash("md5").update(`${CACHE_VERSION}:${model}:${line}`).digest("hex") + ".mp3";
     const file = path.join(CACHE_DIR, cacheKey);
     if (fs.existsSync(file)) {
@@ -198,14 +231,19 @@ export async function prewarmTtsCache(lines, model = DEFAULT_MODEL) {
     toSynth.push(line);
   }
 
-  // Synthesize missing lines with controlled concurrency (2 at a time)
+  // Synthesize missing lines with controlled concurrency (2 at a time), pausing for live requests
   const CONCURRENCY = 2;
   for (let i = 0; i < toSynth.length; i += CONCURRENCY) {
+    // Pause background pre-warming while any live playback request is in progress
+    while (activeLiveRequests > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+
     const batch = toSynth.slice(i, i + CONCURRENCY);
     await Promise.all(
       batch.map(async (text) => {
         try {
-          const res = await synth(text, model);
+          const res = await synth(text, model, null, false);
           if (res && res.file && fs.existsSync(res.file) && fs.statSync(res.file).size > 100) {
             warmedCount++;
           } else {
@@ -222,5 +260,5 @@ export async function prewarmTtsCache(lines, model = DEFAULT_MODEL) {
   console.log(
     `[TTS Pre-Warm] Cache ready: ${cachedCount} already cached, ${warmedCount} freshly synthesized, ${errorCount} errors.`
   );
-  return { total: unique.length, cached: cachedCount, warmed: warmedCount, errors: errorCount };
+  return { total: ordered.length, cached: cachedCount, warmed: warmedCount, errors: errorCount };
 }

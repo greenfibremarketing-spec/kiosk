@@ -155,11 +155,14 @@ export function useSpeech({
         bufferRef.current = full;
         clearTimeout(finalFlushTimerRef.current);
         const isTrailing = /[,;]\s*$|\b(?:and|or|but|because|with|ki|aur)\s*$/i.test(full);
-        if (d.speech_final && !isTrailing) {
+        const isPunctEnd = /[.?!]\s*$/.test(full);
+        if (d.speech_final && isPunctEnd) {
+          finalFlushTimerRef.current = setTimeout(flush, 150);
+        } else if (d.speech_final && !isTrailing) {
           flush();
         } else {
-          // Fallback debounce: if UtteranceEnd / speech_final doesn't arrive in 250ms, flush
-          const waitMs = isTrailing ? 1200 : 250;
+          // Flush after 150 ms when ending in ? . or !, keep 1200 ms only for conjunctions/comma
+          const waitMs = isTrailing ? 1200 : isPunctEnd ? 150 : 250;
           finalFlushTimerRef.current = setTimeout(() => {
             flush();
           }, waitMs);

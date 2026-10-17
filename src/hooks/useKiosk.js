@@ -118,6 +118,8 @@ export function useKiosk() {
   const [showDetail, setShowDetail]       = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(1);
+  const [onboardingDone, setOnboardingDone] = useState(false);
+  const onboardingDoneRef = useRef(false);
   const [actionButtons, setActionButtons] = useState([]);
   const [cartModalOpen, setCartModalOpen] = useState(false);
   const [cartModalData, setCartModalData] = useState(null);
@@ -272,6 +274,62 @@ export function useKiosk() {
   const isBackFromDetailPendingRef = useRef(false);
   const productDetailOpenedRef = useRef(false);
   const backTurnIdRef = useRef(null);
+
+  const markOnboardingDone = useCallback((reason) => {
+    if (!onboardingDoneRef.current) {
+      console.log(`[Kiosk] onboardingDone=true reason=${reason}`);
+      onboardingDoneRef.current = true;
+      setOnboardingDone(true);
+    }
+    clearTimeout(categoriesFallbackTimerRef.current);
+  }, []);
+
+  const openCategoryPicker = useCallback((source) => {
+    console.log(`[Kiosk] categories open source=${source} onboardingDone=${onboardingDoneRef.current}`);
+    if (onboardingDoneRef.current) {
+      setOnboardingOpen(false);
+      trace("showDetail=false", { caller: "openCategoryPicker" });
+      setShowDetail(false);
+      setCartModalOpen(false);
+      setQrModalOpen(false);
+      if (typeof window !== "undefined") {
+        const el = document.querySelector(".category-tabs-container, .category-chips, .categories-section");
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+          el.classList.add("category-tabs--highlight");
+          setTimeout(() => el.classList.remove("category-tabs--highlight"), 2000);
+        }
+      }
+    } else {
+      setOnboardingStep(2);
+      setOnboardingOpen(true);
+    }
+  }, []);
+
+  const hintIdleTimerRef = useRef(null);
+  const resetHintIdleTimer = useCallback(() => {
+    clearTimeout(hintIdleTimerRef.current);
+    if (kioskModeRef.current !== "ENGAGED") return;
+    hintIdleTimerRef.current = setTimeout(() => {
+      if (
+        kioskModeRef.current === "ENGAGED" &&
+        !latestRef.current.onboardingOpen &&
+        !latestRef.current.showDetail &&
+        !latestRef.current.cartModalOpen &&
+        !latestRef.current.showCheckout &&
+        !latestRef.current.speaking
+      ) {
+        setHintBubble("Say what you're looking for, or tap any category to explore!");
+      }
+    }, 18000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(categoriesFallbackTimerRef.current);
+      clearTimeout(hintIdleTimerRef.current);
+    };
+  }, []);
 
   // Preload catalog with retry backoff & pre-warm voice server cache
   useEffect(() => {
@@ -1278,6 +1336,9 @@ export function useKiosk() {
     nameSubmittedRef.current = false;
     turnsWithSentencesRef.current.clear();
     clearTimeout(categoriesFallbackTimerRef.current);
+    clearTimeout(hintIdleTimerRef.current);
+    onboardingDoneRef.current = false;
+    setOnboardingDone(false);
     cancelPendingReturnFromDetail("session_reset");
     productDetailOpenedRef.current = false;
 
@@ -1662,23 +1723,17 @@ export function useKiosk() {
     KioskStepCache.setCustomerName(trimmed);
     setName(trimmed);
 
-    // Optimistically open Categories screen immediately; never wait for server
-    setOnboardingStep(2);
-    setOnboardingOpen(true);
-
-    kioskWS.sendNameSubmitted(trimmed);
-    kioskWS.sendSetName(trimmed);
-
-    // 1.5s fallback timer: ensure categories are rendered even if server SHOW_CATEGORIES is delayed
-    clearTimeout(categoriesFallbackTimerRef.current);
-    categoriesFallbackTimerRef.current = setTimeout(() => {
-      if (latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
-        console.log("[Kiosk] 1.5s categories fallback timer: displaying categories");
-        setOnboardingStep(2);
-        setOnboardingOpen(true);
-      }
-    }, 1500);
-  }, [stopSpeechForUserAction]);
+    // If onboarding is not done, open categories and arm 1.5s fallback timer
+    if (!onboardingDoneRef.current) {
+      openCategoryPicker("submitName_optimistic");
+      clearTimeout(categoriesFallbackTimerRef.current);
+      categoriesFallbackTimerRef.current = setTimeout(() => {
+        if (!onboardingDoneRef.current && latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
+          openCategoryPicker("1.5s_categories_fallback_timer");
+        }
+      }, 1500);
+    }
+  }, [stopSpeechForUserAction, openCategoryPicker]);
 
   const skipName = useCallback(() => {
     stopSpeechForUserAction("user_skip_name");
@@ -1686,22 +1741,20 @@ export function useKiosk() {
     nameSubmittedRef.current = true;
     KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
 
-    // Optimistically open Categories screen immediately
-    setOnboardingStep(2);
-    setOnboardingOpen(true);
-
     kioskWS.sendNameSkipped();
     kioskWS.sendSkipName();
 
-    clearTimeout(categoriesFallbackTimerRef.current);
-    categoriesFallbackTimerRef.current = setTimeout(() => {
-      if (latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
-        console.log("[Kiosk] 1.5s categories fallback timer: displaying categories");
-        setOnboardingStep(2);
-        setOnboardingOpen(true);
-      }
-    }, 1500);
-  }, [stopSpeechForUserAction]);
+    // If onboarding is not done, open categories and arm 1.5s fallback timer
+    if (!onboardingDoneRef.current) {
+      openCategoryPicker("skipName_optimistic");
+      clearTimeout(categoriesFallbackTimerRef.current);
+      categoriesFallbackTimerRef.current = setTimeout(() => {
+        if (!onboardingDoneRef.current && latestRef.current.onboardingStep <= 2 && latestRef.current.onboardingOpen) {
+          openCategoryPicker("1.5s_categories_fallback_timer");
+        }
+      }, 1500);
+    }
+  }, [stopSpeechForUserAction, openCategoryPicker]);
 
   // ── AI Screen Director: Handle structured server actions ────────────────
   const handleServerAction = useCallback((action, salesStage) => {
@@ -1875,8 +1928,7 @@ export function useKiosk() {
       case "SHOW_CATEGORIES": {
         clearTimeout(categoriesFallbackTimerRef.current);
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
-        setOnboardingStep(2);
-        setOnboardingOpen(true);
+        openCategoryPicker("SHOW_CATEGORIES");
         trace("showDetail=false", { caller: "SHOW_CATEGORIES" });
         setShowDetail(false);
         setCartModalOpen(false);
@@ -1910,12 +1962,8 @@ export function useKiosk() {
       case "SHOW_PRODUCTS": {
         const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
-        // Server actions must close onboarding card if products are returned
-        if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
-          setOnboardingOpen(false);
-        } else if (latestRef.current.onboardingStep !== 2) {
-          setOnboardingOpen(false);
-        }
+        markOnboardingDone("SHOW_PRODUCTS");
+        setOnboardingOpen(false);
         trace("showDetail=false", { caller: "SHOW_PRODUCTS" });
         setShowDetail(false);
         setCartModalOpen(false);
@@ -1979,6 +2027,7 @@ export function useKiosk() {
         cancelPendingReturnFromDetail("server_show_product");
         productDetailOpenedRef.current = true;
         KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
+        markOnboardingDone("SHOW_PRODUCT");
         setOnboardingOpen(false);
         setShowDetail(true);
         setCartModalOpen(false);
@@ -2428,6 +2477,15 @@ export function useKiosk() {
 
     stopSpeechForUserAction("user_voice_turn");
 
+    // ── "Show me more products" / "more products" / "browse all" ──
+    if (/^(?:show (?:me )?more products|more products|browse all|show all|show everything|see more products|show more)$/i.test(trimmed)) {
+      console.log("[Kiosk] voice shortcut: show me more products -> SHOW_PRODUCTS");
+      markOnboardingDone("voice_more_products");
+      showAll();
+      kioskWS.sendWsAction({ action: "SHOW_PRODUCTS", category_id: "all" });
+      return;
+    }
+
     // ── Spoken purchase / checkout intent ──
     if (/^(?:buy|buy now|checkout|i'll take it|i want this|take it)$/i.test(trimmed)) {
       kioskWS.sendWsMessage("buy");
@@ -2437,10 +2495,11 @@ export function useKiosk() {
     setConv(S.THINKING);
     const uTs = timing?.userFinalTs || (typeof window !== "undefined" ? performance.now() : Date.now());
     const sTs = timing?.sttFinalTs || Date.now();
+    const wsSentTs = typeof window !== "undefined" ? performance.now() : Date.now();
     kioskWS.sendWsMessage(trimmed, {
       userFinalTs: uTs,
       stt_final_ts: sTs,
-      client_sent_ts: Date.now(),
+      client_sent_ts: wsSentTs,
     });
 
   }, [handleServerAction, say, setConv, skipName, stopSpeechForUserAction, submitName]);
@@ -2473,13 +2532,14 @@ export function useKiosk() {
 
   // Hypotheses from Deepgram
   const handleHypothesis = useCallback((text) => {
+    resetHintIdleTimer();
     if (text) {
       setLiveTranscript(text);
       if (convStateRef.current !== S.LISTENING && convStateRef.current !== S.THINKING) {
         setConv(S.LISTENING);
       }
     }
-  }, [setConv]);
+  }, [setConv, resetHintIdleTimer]);
 
   // Final transcript from Deepgram
   const handleFinal = useCallback((text) => {
@@ -2522,7 +2582,11 @@ export function useKiosk() {
       }
     } else if (convStateRef.current === S.LISTENING) {
       clearTimeout(eotTimerRef.current);
-      eotTimerRef.current = setTimeout(finaliseAndSend, speechConfig.endOfTurnSilenceMs);
+      const text = (pendingTranscriptRef.current || liveTranscript || "").trim();
+      const isPunctEnd = /[.?!]\s*$/.test(text);
+      const isTrailing = /[,;]\s*$|\b(?:and|or|but|because|with|ki|aur)\s*$/i.test(text);
+      const waitMs = isTrailing ? 1200 : isPunctEnd ? 150 : speechConfig.endOfTurnSilenceMs;
+      eotTimerRef.current = setTimeout(finaliseAndSend, waitMs);
     }
   }, [userSpeaking, vadSpeech, audioLevel, isEngaged, isAvatarActive, getGate, interruptAvatar, setConv, finaliseAndSend]);
 
@@ -2638,13 +2702,14 @@ export function useKiosk() {
 
   // ── Avatar speaking → update conv state ──────────────────────────────────
   const handleSpeakingChange = useCallback((isSpeaking) => {
+    resetHintIdleTimer();
     setSpeaking(isSpeaking);
     if (!isSpeaking) {
       if (convStateRef.current === S.SPEAKING) {
         setConv(S.ATTENTIVE);
       }
     }
-  }, [setConv]);
+  }, [setConv, resetHintIdleTimer]);
 
 
   // ── Attentive state: face present but not speaking ────────────────────────
@@ -2693,6 +2758,9 @@ export function useKiosk() {
     stopSpeechForUserAction("user_tap_category");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
+    resetHintIdleTimer();
+    markOnboardingDone("selectCategory");
+
     const rawId = typeof cat === "string" ? cat : (cat?.id || "all");
     const cleanId = normalizeCategory(rawId);
     const catObj = categories.find((c) => c.id === cleanId || c.id === rawId);
@@ -2709,11 +2777,22 @@ export function useKiosk() {
     setFiltersApplied(null);
     setHighlightSku(null);
 
+    const catProds = (backendCatalog || []).filter((p) => {
+      const pCat = normalizeCategory(p.category || "");
+      return cleanId === "all" || pCat === cleanId;
+    });
+
     kioskWS.sendSelectCategory({
       category_id: cleanId,
       category_name: catName,
     });
-  }, [categories, presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
+    kioskWS.sendScreenChanged({
+      type: "list",
+      category: cleanId,
+      sku: null,
+      skus: catProds.map((p) => p.sku || p.id).filter(Boolean),
+    });
+  }, [categories, backendCatalog, presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer]);
 
   const selectProduct = useCallback((p) => {
     cancelPendingReturnFromDetail("user_tap_product");
@@ -2724,11 +2803,21 @@ export function useKiosk() {
       pendingTappedProductRef.current = p;
     }
     presence.triggerTouchEngaged();
+    resetHintIdleTimer();
+    markOnboardingDone("selectProduct");
+
+    const sku = p?.sku || p?.id;
     setProductId(p.id);
     setShowDetail(true);
     setOnboardingOpen(false);
     KioskStepCache.setSelectedProduct(p);
     kioskWS.sendSelectProduct(p);
+    kioskWS.sendScreenChanged({
+      type: "product",
+      category: p?.category || null,
+      sku,
+      skus: sku ? [sku] : [],
+    });
 
     // Prefetch pair-up suggestions in background
     const pid = p?.id || p?.sku;
@@ -2746,7 +2835,7 @@ export function useKiosk() {
           console.warn("[PairUp] Prefetch notice:", err?.message || err);
         });
     }
-  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
+  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, resetHintIdleTimer]);
 
   const showAll = useCallback(() => {
     cancelPendingReturnFromDetail("user_tap_show_all");
@@ -2754,6 +2843,9 @@ export function useKiosk() {
     stopSpeechForUserAction("user_tap_show_all");
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
+    resetHintIdleTimer();
+    markOnboardingDone("showAll");
+
     setCategory("all");
     trace("showDetail=false", { caller: "showAll" });
     setShowDetail(false);
@@ -2762,7 +2854,13 @@ export function useKiosk() {
     setFiltersApplied(null);
     setHighlightSku(null);
     kioskWS.sendWsAction({ action: "SHOW_ALL" });
-  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail]);
+    kioskWS.sendScreenChanged({
+      type: "list",
+      category: "all",
+      sku: null,
+      skus: (backendCatalog || []).map((p) => p.sku || p.id).filter(Boolean),
+    });
+  }, [presence, stopSpeechForUserAction, cancelPendingReturnFromDetail, markOnboardingDone, backendCatalog, resetHintIdleTimer]);
 
   const clearFilters = useCallback(() => {
     setLiveTurnProducts([]);
@@ -2774,6 +2872,7 @@ export function useKiosk() {
   const navigateBack = useCallback(() => {
     lastInputAtRef.current = Date.now();
     presence.triggerTouchEngaged();
+    resetHintIdleTimer();
     if (isBackFromDetailPendingRef.current) {
       return;
     }
@@ -2783,13 +2882,22 @@ export function useKiosk() {
     setLiveTurnProducts([]);
     setFiltersApplied(null);
     setHighlightSku(null);
+
+    kioskWS.sendScreenChanged({
+      type: "list",
+      category: category && category !== "all" ? category : null,
+      sku: null,
+      skus: (backendCatalog || []).map((p) => p.sku || p.id).filter(Boolean),
+    });
+
     const turnId = kioskWS.sendWsAction({ action: "NAVIGATE_BACK" });
     if (wasDetail) {
       triggerReturnFromDetail(turnId);
     } else {
+      openCategoryPicker("navigate_back");
       stopSpeechForUserAction("user_tap_back");
     }
-  }, [presence, stopSpeechForUserAction, triggerReturnFromDetail]);
+  }, [presence, stopSpeechForUserAction, triggerReturnFromDetail, category, backendCatalog, resetHintIdleTimer, openCategoryPicker]);
 
   const restartSession = useCallback(() => {
     lastInputAtRef.current = Date.now();
@@ -2911,6 +3019,7 @@ export function useKiosk() {
         const replyId = `pu_${type}_${Date.now()}`;
         speechController.beginReply(replyId, { source: "pairup" });
         const lineChunks = Array.isArray(chunks) && chunks.length > 0 ? chunks : [text];
+        console.log(`[PairUp] chunk1="${lineChunks[0] || ''}" chunk2="${lineChunks[1] || ''}" enqueued for replyId=${replyId}`);
         for (const chunk of lineChunks) {
           speechController.appendSentence(replyId, chunk, { turnId: replyId, openTime });
         }
@@ -2933,8 +3042,14 @@ export function useKiosk() {
       setPairUpModalOpen(false);
       setCartModalOpen(false);
       setShowCheckout(true);
+      kioskWS.sendScreenChanged({
+        type: "cart",
+        category: null,
+        sku: productId || null,
+        skus: cartItemsRef.current.map((i) => i.sku || i.id).filter(Boolean),
+      });
     },
-    [cancelPendingReturnFromDetail]
+    [cancelPendingReturnFromDetail, productId]
   );
 
   const removeCartItem = useCallback((idOrSku) => {
@@ -3335,6 +3450,9 @@ export function useKiosk() {
     setOnboardingOpen,
     onboardingStep,
     setOnboardingStep,
+    onboardingDone,
+    markOnboardingDone,
+    openCategoryPicker,
     handleServerAction,
     setStageRef,
     handleSpeakingChange,

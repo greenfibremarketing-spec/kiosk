@@ -118,7 +118,16 @@ export class SpeechController {
   /**
    * Explicitly open a reply turn from an ACTION frame or caller.
    */
-  beginReply(replyId, { source = "unknown", speechId = null, userFinalTs = null, firstSentenceReceivedTs = null } = {}) {
+  beginReply(replyId, options = {}) {
+    const {
+      source = "unknown",
+      speechId = null,
+      userFinalTs = null,
+      firstSentenceReceivedTs = null,
+      sttFinalTs = null,
+      wsSentTs = null,
+      actionFrameReceivedTs = null,
+    } = options || {};
     const rid = replyId || `reply_${Date.now()}`;
     if (this.cancelledReplyIds.has(rid)) {
       console.log(`[SpeechController] beginReply ignored, ${rid} was cancelled`);
@@ -136,7 +145,10 @@ export class SpeechController {
         ended: false,
         hasLoggedFirstReq: false,
         hasLoggedFirstByte: false,
-        userFinalTs: userFinalTs || null,
+        userFinalTs: userFinalTs || sttFinalTs || null,
+        sttFinalTs: sttFinalTs || userFinalTs || null,
+        wsSentTs: wsSentTs || null,
+        actionFrameReceivedTs: actionFrameReceivedTs || null,
         firstSentenceReceivedTs: firstSentenceReceivedTs || null,
         firstTtsReqTs: null,
         firstByteTs: null,
@@ -147,6 +159,9 @@ export class SpeechController {
       if (speechId && !meta.speechId) meta.speechId = speechId;
       if (source && meta.source === "unknown") meta.source = source;
       if (userFinalTs && !meta.userFinalTs) meta.userFinalTs = userFinalTs;
+      if (sttFinalTs && !meta.sttFinalTs) meta.sttFinalTs = sttFinalTs;
+      if (wsSentTs && !meta.wsSentTs) meta.wsSentTs = wsSentTs;
+      if (actionFrameReceivedTs && !meta.actionFrameReceivedTs) meta.actionFrameReceivedTs = actionFrameReceivedTs;
       if (firstSentenceReceivedTs && !meta.firstSentenceReceivedTs) meta.firstSentenceReceivedTs = firstSentenceReceivedTs;
     }
 
@@ -666,14 +681,24 @@ export class SpeechController {
       this.onSpeakingChange?.(true);
 
       const meta = this.replyMap.get(item.replyId);
-      if (meta && meta.userFinalTs && !meta.hasLoggedLatency) {
+      if (meta && (meta.userFinalTs || meta.sttFinalTs) && !meta.hasLoggedLatency) {
         meta.hasLoggedLatency = true;
         const playbackStartTs = typeof window !== "undefined" ? performance.now() : Date.now();
-        const sentRecvMs = meta.firstSentenceReceivedTs ? Math.round(meta.firstSentenceReceivedTs - meta.userFinalTs) : Math.round(playbackStartTs - meta.userFinalTs);
+        const baseTs = meta.sttFinalTs || meta.userFinalTs;
+        const sentRecvMs = meta.firstSentenceReceivedTs ? Math.round(meta.firstSentenceReceivedTs - baseTs) : Math.round(playbackStartTs - baseTs);
         const ttsReqByteMs = meta.firstTtsReqTs && meta.firstByteTs ? Math.round(meta.firstByteTs - meta.firstTtsReqTs) : 0;
         const bytePlayMs = meta.firstByteTs ? Math.round(playbackStartTs - meta.firstByteTs) : 0;
-        const totalMs = Math.round(playbackStartTs - meta.userFinalTs);
+        const totalMs = Math.round(playbackStartTs - baseTs);
         console.log(`[Latency] user_final->first_sentence_received=${sentRecvMs}ms first_tts_request->first_byte=${ttsReqByteMs}ms first_byte->playback_start=${bytePlayMs}ms total user_final->audio_start=${totalMs}ms`);
+
+        const t0 = Math.round(meta.sttFinalTs || meta.userFinalTs || 0);
+        const t1 = Math.round(meta.wsSentTs || 0);
+        const t2 = Math.round(meta.actionFrameReceivedTs || 0);
+        const t3 = Math.round(meta.firstSentenceReceivedTs || 0);
+        const t4 = Math.round(meta.firstTtsReqTs || 0);
+        const t5 = Math.round(meta.firstByteTs || 0);
+        const t6 = Math.round(playbackStartTs);
+        console.log(`[Timeline] stt_final=${t0} ws_sent=${t1} action_frame_received=${t2} first_sentence_received=${t3} tts_request=${t4} first_byte=${t5} playback_start=${t6} total_turn=${totalMs}ms`);
       }
 
       // Cancel any active subtitle hold timer

@@ -63,6 +63,9 @@ export function sanitizeTtsText(text) {
   //    *, #, _, `, ~, |, >  when used as formatting (not inside words)
   t = t.replace(/[*#_`~|>]/g, " ");
 
+  // 6b. Sanitize hyphens / dashes in product names (" - " → ", ") so TTS doesn't stumble
+  t = t.replace(/\s+[–—\-]\s+/g, ", ");
+
   // 7. Collapse excessive whitespace and trim
   t = t.replace(/[ \t]+/g, " ").trim();
 
@@ -84,10 +87,11 @@ export function splitIntoSentences(text) {
  * Splits text into natural sentence TTS chunks for smooth, low-latency synthesis.
  *
  * Rules:
- *  1. Split on sentence end (. ? !) only.
- *  2. Never split on commas unless a sentence exceeds ~140 chars; then split at the comma nearest the middle.
- *  3. Merge any piece shorter than ~30 chars into the next one (or previous one if last).
- *  4. Single unified chunker and sanitizer shared across live playback, fallback, and prewarm.
+ *  1. Split on sentence end (. ? !) first.
+ *  2. Keep the first chunk to 40 characters or fewer (split at comma or clause boundary if longer).
+ *  3. Dynamic prefix / greeting clauses ("Nice to meet you, {name}!", "Psst, {name}!") must NOT
+ *     be merged into the static remainder, allowing the static part to hit persistent cache.
+ *  4. Never split on commas unless a sentence exceeds ~140 chars or is the first chunk > 40 chars.
  *
  * @param {string} text
  * @returns {string[]} array of sanitized, non-empty chunks
@@ -102,9 +106,21 @@ export function splitIntoTtsChunks(text) {
   const rawSentences = raw.split(/(?<=[.?!])\s+/);
   const pieces = [];
 
-  for (const sentence of rawSentences) {
-    const s = sentence.trim();
+  for (let sIdx = 0; sIdx < rawSentences.length; sIdx++) {
+    const s = rawSentences[sIdx].trim();
     if (!s) continue;
+
+    // For the very first sentence, if it exceeds 40 chars, check for an early comma/clause boundary
+    if (sIdx === 0 && s.length > 40) {
+      const firstCommaIdx = s.indexOf(",");
+      if (firstCommaIdx >= 8 && firstCommaIdx <= 40) {
+        const c1 = s.slice(0, firstCommaIdx + 1).trim();
+        const c2 = s.slice(firstCommaIdx + 1).trim();
+        if (c1) pieces.push(c1);
+        if (c2) pieces.push(c2);
+        continue;
+      }
+    }
 
     if (s.length <= 140) {
       pieces.push(s);
@@ -154,15 +170,17 @@ export function splitIntoTtsChunks(text) {
     }
   }
 
-  // Merge any piece shorter than ~30 chars into the next one (or previous if last)
+  // Merge only dangling fragments (without ending punctuation or < 8 chars)
+  // Greetings/exclamations ending in ! or . (like "Psst, Puneet!", "Nice to meet you, Puneet!") are kept distinct
   const merged = [];
   for (let i = 0; i < pieces.length; i++) {
     let current = pieces[i].trim();
     if (!current) continue;
 
-    if (current.length < 30 && i + 1 < pieces.length) {
+    const isCompleteClause = /[.?!]$/.test(current) || (i === 0 && current.length <= 40);
+    if (!isCompleteClause && current.length < 15 && i + 1 < pieces.length) {
       pieces[i + 1] = current + " " + pieces[i + 1].trim();
-    } else if (current.length < 30 && merged.length > 0) {
+    } else if (!isCompleteClause && current.length < 15 && merged.length > 0) {
       merged[merged.length - 1] = merged[merged.length - 1] + " " + current;
     } else {
       merged.push(current);

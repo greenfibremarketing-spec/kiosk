@@ -2,6 +2,7 @@ import "./loadEnv.js";
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+import fs from "fs";
 import { synth, checkTtsHealth, prewarmTtsCache, DEFAULT_MODEL } from "./tts.js";
 
 const app = express();
@@ -64,73 +65,21 @@ app.get("/health", async (req, res) => {
 });
 
 // Static lines to pre-warm into the persistent disk cache
+// Load shared lines configuration (single source of truth)
+let SHARED_LINES = { first_visit: [], name_clauses: [], openers: [], pair_up: [], cart_and_common: [] };
+try {
+  const sharedPath = new URL("./shared_lines.json", import.meta.url);
+  SHARED_LINES = JSON.parse(fs.readFileSync(sharedPath, "utf-8"));
+} catch (e) {
+  console.warn("[TTS Pre-Warm] Could not load shared_lines.json:", e.message);
+}
+
 const STATIC_PREWARM_LINES = [
-  // Greetings
-  "Hello! Welcome to GreenFibre. I'm Greenie, your eco companion. Ask me anything or tap any product to explore!",
-  "Welcome to Green Fibre.",
-  "Hello! Welcome to GreenFibre.",
-  "I'm Greenie, your eco companion.",
-  "Ask me anything or tap any product to explore!",
-  "What would you like to explore today?",
-  // Friendly openers (Cached Acknowledgements)
-  "Sure!",
-  "Of course!",
-  "Lovely choice!",
-  "Let me show you.",
-  "Here you go!",
-  "Great pick!",
-  "One moment.",
-  // ASK_NAME prompts
-  "Hi!",
-  "What's your name?",
-  "May I know your name?",
-  "What is your name?",
-  "Hi! What's your name?",
-  // Category prompts
-  "What are you looking for today? Select a category or just tell me.",
-  "Select a category or tap any product to explore.",
-  "What are you looking for today?",
-  "Select a category or just tell me.",
-  // Category names & intros
-  "All Products",
-  "Drinkware",
-  "Kitchen and Dining",
-  "Gift Boxes and Hampers",
-  "Office and Stationery",
-  "Planters",
-  "Here are our sustainable drinkware products.",
-  "Here are our eco-friendly kitchen essentials.",
-  "Here are our handcrafted sustainable planters.",
-  "Here are all our products.",
-  "Here is our complete collection.",
-  // Return from product detail
-  "No rush! Take your time, there's lots more to explore.",
-  // Pair-up suggestion lines (no-name & static remainders)
-  "Psst! Pick any one pair-up from here and unlock an extra 5% off your whole order!",
-  "Psst! Pick any one pair-up from here and unlock an extra 5 percent off your whole order!",
-  "Pick any one pair-up from here and unlock an extra 5% off your whole order!",
-  "Pick any one pair-up from here and unlock an extra 5 percent off your whole order!",
-  "Before you go, here's a little bonus! Add any one of these and your whole order gets 5% off.",
-  "Before you go, here's a little bonus! Add any one of these and your whole order gets 5 percent off.",
-  "Here's a little bonus! Add any one of these and your whole order gets 5% off.",
-  "Here's a little bonus! Add any one of these and your whole order gets 5 percent off.",
-  "No problem! Taking you to your cart.",
-  "Taking you to your cart.",
-  "Lovely! Your pair-up is added and your 5% discount is applied. Let's go to your cart!",
-  "Lovely! Your pair-up is added and your 5 percent discount is applied. Let's go to your cart!",
-  "Your pair-up is added and your 5% discount is applied. Let's go to your cart!",
-  "Your pair-up is added and your 5 percent discount is applied. Let's go to your cart!",
-  "Added to your cart! Pick any of these suggestions to get an extra five percent off your entire order.",
-  "Your item is added! Pair it up with any of these pieces to unlock five percent off your cart.",
-  "Here is your cart! Add any one companion piece below to get an extra five percent discount.",
-  "Here they are! Add any one to get an extra five percent off your cart.",
-  "Take a look. An extra five percent off if you pick one up.",
-  "No problem, here is your cart.",
-  "Sure thing, taking you to your cart.",
-  "Lovely choice! Your five percent discount is applied.",
-  "Added! You've unlocked five percent off the whole cart.",
-  "All good, here is your cart.",
-  "No worries, let's look at your cart.",
+  ...(SHARED_LINES.first_visit || []),
+  ...(SHARED_LINES.name_clauses || []),
+  ...(SHARED_LINES.openers || []),
+  ...(SHARED_LINES.pair_up || []),
+  ...(SHARED_LINES.cart_and_common || []),
 ];
 
 const PORT = process.env.PORT || 4000;
@@ -179,7 +128,7 @@ app.listen(PORT, async () => {
         // Backend might be starting up; static lines will still be pre-warmed
       }
 
-      await prewarmTtsCache(lines, DEFAULT_MODEL);
+      await prewarmTtsCache(lines, DEFAULT_MODEL, SHARED_LINES.first_visit);
     } catch (prewarmErr) {
       console.warn("[TTS Pre-Warm] Warning during cache pre-warming:", prewarmErr.message);
     }

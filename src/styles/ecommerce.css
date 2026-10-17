@@ -3549,7 +3549,7 @@
   position: fixed;
   bottom: 110px;
   left: 24px;
-  z-index: 9998;
+  z-index: 80;
   max-width: 380px;
   background: #ffffff;
   border: 1.5px solid #00A63E;
@@ -3560,6 +3560,17 @@
   gap: 12px;
   box-shadow: 0 10px 30px rgba(0, 166, 62, 0.2);
   animation: hintPop 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.category-tabs-container.category-tabs--highlight,
+.category-chips.category-tabs--highlight {
+  animation: categoryTabsPulse 1.2s ease;
+}
+
+@keyframes categoryTabsPulse {
+  0% { transform: scale(1); filter: drop-shadow(0 0 0 rgba(0, 166, 62, 0)); }
+  50% { transform: scale(1.02); filter: drop-shadow(0 0 16px rgba(0, 166, 62, 0.5)); }
+  100% { transform: scale(1); filter: drop-shadow(0 0 0 rgba(0, 166, 62, 0)); }
 }
 
 @keyframes hintPop {

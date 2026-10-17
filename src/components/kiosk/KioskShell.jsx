@@ -18,8 +18,8 @@ import ErrorBoundary from "@/components/debug/ErrorBoundary";
 import TranscriptDebug from "@/components/debug/TranscriptDebug";
 import { trace } from "@/lib/debugTrace";
 
-// TEST ONLY: set to false before shipping to the kiosk
-const SHOW_TRANSCRIPT_DEBUG = true;
+// TEST ONLY: set to true via NEXT_PUBLIC_DEBUG_TRANSCRIPT=true for mic overlay
+const SHOW_TRANSCRIPT_DEBUG = process.env.NEXT_PUBLIC_DEBUG_TRANSCRIPT === "true";
 
 /**
  * Fullscreen Idle Promo Video
@@ -110,6 +110,20 @@ export default function KioskShell() {
     return () => clearInterval(timer);
   }, []);
 
+  const isAnyModalOrPanelOpen = Boolean(
+    k.onboardingOpen ||
+    k.showCheckout ||
+    k.showDetail ||
+    k.cartModalOpen ||
+    k.cartPrompt?.active ||
+    k.recommendationPrompt?.active ||
+    k.checkoutQR?.active ||
+    k.goodbye?.active ||
+    k.identityPrompt?.active ||
+    k.pairUpModalOpen ||
+    k.sessionTimeoutWarning?.active
+  );
+
   return (
     <main
       className="kiosk"
@@ -195,7 +209,7 @@ export default function KioskShell() {
       />
 
       {/* ── Help Tooltip / Suggestions (SHOW_HINT) ── */}
-      {isEngaged && k.hintBubble && (
+      {isEngaged && !isAnyModalOrPanelOpen && k.hintBubble && (
         <HintTooltip
           hint={k.hintBubble}
           onTapHint={(hint) => k.send(typeof hint === "string" ? hint : hint.text || hint.message)}
@@ -251,7 +265,11 @@ export default function KioskShell() {
               backendAction={k.backendAction}
               categories={k.categories}
               products={k.products}
-              onClose={() => k.setOnboardingOpen(false)}
+              onboardingDone={k.onboardingDone}
+              onClose={() => {
+                k.setOnboardingOpen(false);
+                k.markOnboardingDone?.("onboarding_closed");
+              }}
               name={k.name}
               liveTranscript={k.liveTranscript}
               onSubmitName={(name) => {
@@ -268,6 +286,7 @@ export default function KioskShell() {
               }}
               onGoToAllProducts={() => {
                 k.showAll();
+                k.markOnboardingDone?.("browse_all");
               }}
               onResetSession={k.resetSession}
             />
