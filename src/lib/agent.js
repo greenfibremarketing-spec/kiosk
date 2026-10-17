@@ -2,6 +2,7 @@
 import { inr } from "@/lib/format";
 import { kioskWS } from "@/lib/kioskWebSocket";
 import { ENDPOINTS, KIOSK_ID } from "@/lib/apiConfig";
+import fallbackProductsData from "@/data/fallbackProducts.json";
 
 export const GREETING =
   "Hello! Welcome to GreenFibre. I'm Greenie, your eco companion. Ask me anything or tap any product to explore!";
@@ -106,12 +107,35 @@ export function normalizeBackendProduct(p) {
     p.images?.[0] ||
     "";
 
-  const rawPrice = p.salePrice ?? p.price ?? 0;
-  const parsedPrice = typeof rawPrice === "number" ? rawPrice : Number(String(rawPrice).replace(/[^\d.]/g, "")) || 0;
-  const numPrice = parsedPrice > 0 ? parsedPrice : 0;
-  const rawMrp = p.mrp ?? 0;
-  const parsedMrp = typeof rawMrp === "number" ? rawMrp : Number(String(rawMrp).replace(/[^\d.]/g, "")) || 0;
-  const numMrp = parsedMrp > 0 ? parsedMrp : (numPrice > 0 ? Math.round(numPrice * 1.35) : 0);
+  const rawPrice = Number(String(p.price ?? "").replace(/[^\d.]/g, "")) || 0;
+  const rawMrp = Number(String(p.mrp ?? "").replace(/[^\d.]/g, "")) || 0;
+  const rawSale = Number(String(p.salePrice ?? "").replace(/[^\d.]/g, "")) || 0;
+
+  let numMrp = 0;
+  let numSalePrice = 0;
+
+  // If already normalized with 10% discount (e.g. mrp: 1199, salePrice: 1079), preserve it without re-discounting
+  if (rawSale > 0 && rawMrp > 0 && rawSale < rawMrp && rawMrp <= Math.round(rawSale * 1.15)) {
+    numMrp = rawMrp;
+    numSalePrice = rawSale;
+  } else {
+    // Authoritative retail MRP:
+    // Raw catalog items have p.price as the true retail MRP (e.g. 1199 for Viora 400ml),
+    // whereas raw p.mrp is an inflated 1.35x artifact (e.g. 1619). Reject 1.35x inflation.
+    if (rawPrice > 0 && rawMrp > 0 && Math.abs(rawMrp / rawPrice - 1.35) < 0.05) {
+      numMrp = rawPrice;
+    } else if (rawPrice > 0) {
+      numMrp = rawPrice;
+    } else if (rawMrp > 0) {
+      numMrp = rawMrp;
+    } else if (rawSale > 0) {
+      numMrp = rawSale;
+    }
+
+    // Strictly apply 10% discount off authoritative retail MRP
+    numSalePrice = numMrp > 0 ? Math.round(numMrp * 0.90) : 0;
+  }
+
   const rawCat = String(p.category || "all").toLowerCase().trim();
 
   let shape = "bottle";
@@ -138,9 +162,9 @@ export function normalizeBackendProduct(p) {
     name: p.name,
     category: p.category || "General",
     categories: ["all", cleanCat, rawCat],
-    price: numPrice,
+    price: numSalePrice > 0 ? numSalePrice : numMrp,
     mrp: numMrp,
-    salePrice: numPrice,
+    salePrice: numSalePrice,
     image,
     shape,
     blurb: p.description || p.message || `${p.name} handcrafted from sustainable eco-composite materials.`,
@@ -164,7 +188,7 @@ export function normalizeBackendProduct(p) {
     inStock: p.in_stock !== false,
     rating: 4.9,
     reviews: 48,
-    badge: numPrice > 2000 ? "Premium" : "Bestseller",
+    badge: (numSalePrice || numMrp) > 2000 ? "Premium" : "Bestseller",
   };
 }
 
@@ -363,6 +387,10 @@ export async function resetBackendSession(sessionId = "kiosk-session") {
   }
 }
 
+export const INITIAL_BACKEND_CATALOG = (
+  Array.isArray(fallbackProductsData) ? fallbackProductsData : []
+).map(normalizeBackendProduct).filter(Boolean);
+
 /**
  * Fetch verified product catalog from backend (GET /products)
  */
@@ -373,11 +401,39 @@ export async function fetchBackendProducts() {
     if (res.ok) {
       const data = await res.json();
       console.log(`[BACKEND >> REST PRODUCTS] Fetched ${data?.products?.length || 0} products`);
-      return data;
+      if (Array.isArray(data?.products) && data.products.length > 0) {
+        try {
+          if (typeof window !== "undefined") {
+            localStorage.setItem("greenie_kiosk_catalog", JSON.stringify(data.products));
+          }
+        } catch (_) {}
+        return data;
+      }
     }
   } catch (e) {
     console.warn("[Agent] Failed to fetch backend products:", e.message);
   }
+
+  // Fallback 1: localStorage cache
+  try {
+    if (typeof window !== "undefined") {
+      const cached = localStorage.getItem("greenie_kiosk_catalog");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(`[BACKEND >> CACHE PRODUCTS] Loaded ${parsed.length} cached products`);
+          return { products: parsed };
+        }
+      }
+    }
+  } catch (_) {}
+
+  // Fallback 2: bundled offline snapshot (17 products)
+  if (Array.isArray(fallbackProductsData) && fallbackProductsData.length > 0) {
+    console.log(`[BACKEND >> FALLBACK PRODUCTS] Loaded ${fallbackProductsData.length} bundled products`);
+    return { products: fallbackProductsData };
+  }
+
   return null;
 }
 

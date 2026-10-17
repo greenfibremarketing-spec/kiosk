@@ -68,8 +68,8 @@ export function normalizeForSpeech(text) {
     const num = Math.round(Number(String(p1).replace(/,/g, "")) || 0);
     return num > 0 ? `${num.toLocaleString("en-IN")} rupees ` : "";
   });
-  t = t.replace(/\b(\d{3,5})\s*rupees\b/gi, (m, p1) => {
-    const num = Math.round(Number(p1) || 0);
+  t = t.replace(/(?<!\d)([\d,]+)\s*rupees\b/gi, (m, p1) => {
+    const num = Math.round(Number(String(p1).replace(/,/g, "")) || 0);
     return num > 0 ? `${num.toLocaleString("en-IN")} rupees` : m;
   });
   // Plain price numbers like 1199 or 1499 that match catalog item prices without 'rupees'

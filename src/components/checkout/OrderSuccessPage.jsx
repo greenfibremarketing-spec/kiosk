@@ -1,11 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 import ProductArt from "../products/ProductArt";
 import { getPaymentApi } from "@/lib/paymentApi";
 
 export default function OrderSuccessPage({ orderResult, onReturnToCatalog }) {
-  const [printed, setPrinted] = useState(false);
   if (!orderResult) return null;
 
   const {
@@ -29,13 +28,6 @@ export default function OrderSuccessPage({ orderResult, onReturnToCatalog }) {
 
   const displayOrderNum = orderNumber || orderId || "GF-ORD";
   const displayAmount = amount !== undefined ? amount : grandTotal;
-
-  const handlePrintSlip = () => {
-    setPrinted(true);
-    setTimeout(() => {
-      alert(`Receipt for Order #${displayOrderNum} printed at Kiosk Terminal.`);
-    }, 400);
-  };
 
   const handleFinish = () => {
     try {
@@ -103,43 +95,23 @@ export default function OrderSuccessPage({ orderResult, onReturnToCatalog }) {
           )}
         </div>
 
-        {/* Status Alert for Email and Stock */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "8px", margin: "10px 0 20px 0" }}>
-          {stockConflict && (
-            <div
-              style={{
-                background: "#fffbe6",
-                border: "1px solid #ffe58f",
-                borderRadius: "10px",
-                padding: "10px 14px",
-                fontSize: "13px",
-                color: "#d48806",
-                textAlign: "center",
-              }}
-            >
-              ⚠️ <strong>Stock review required:</strong> Payment received; item availability requires store staff review.
-            </div>
-          )}
-
+        {/* Status Alert for Stock Review (if applicable) */}
+        {stockConflict && (
           <div
             style={{
-              background: "#f6ffed",
-              border: "1px solid #b7eb8f",
+              background: "#fffbe6",
+              border: "1px solid #ffe58f",
               borderRadius: "10px",
               padding: "10px 14px",
               fontSize: "13px",
-              color: "#389e0d",
+              color: "#d48806",
               textAlign: "center",
+              margin: "10px 0 20px 0",
             }}
           >
-            📧{" "}
-            {emailStatus === "sent"
-              ? `Confirmation email sent to ${customer.email || "your email"}.`
-              : emailStatus === "failed"
-              ? "Order remains confirmed; confirmation email is being retried."
-              : `Confirmation email queued to ${customer.email || "your email"}.`}
+            ⚠️ <strong>Stock review required:</strong> Payment received; item availability requires store staff review.
           </div>
-        </div>
+        )}
 
         {/* Item & Summary Box */}
         <div className="success-details-grid">
@@ -185,39 +157,23 @@ export default function OrderSuccessPage({ orderResult, onReturnToCatalog }) {
             </p>
           </div>
         </div>
-
-        {/* Eco Impact Certificate */}
-        <div className="eco-impact-certificate">
-          <div className="certificate-top">
-            <span className="cert-badge">🌱 Circular Footprint Certificate</span>
+        {/* Confirmation Email Notice Card */}
+        <div className="success-email-notice-card">
+          <div className="email-notice-icon-circle">
+            <span>✉️</span>
           </div>
-          <div className="cert-stats-row">
-            <div className="cert-stat">
-              <span className="stat-number">{quantity * 210}g</span>
-              <span className="stat-desc">Agricultural Stubble Diverted</span>
-            </div>
-            <div className="cert-stat">
-              <span className="stat-number">100%</span>
-              <span className="stat-desc">Zero Virgin Plastic Guarantee</span>
-            </div>
-            <div className="cert-stat">
-              <span className="stat-number">-40%</span>
-              <span className="stat-desc">Carbon Dioxide Reduction</span>
-            </div>
+          <div className="email-notice-text">
+            <h4>Confirmation Email on the Way</h4>
+            <p>
+              A confirmation email with your order receipt, invoice, and tracking details will be sent to{" "}
+              <strong>{customer.email || "your email address"}</strong>.
+            </p>
           </div>
-          <p className="cert-footnote">
-            Every unit produced prevents open field crop burning in North India, reducing air pollution while fostering circular design.
-          </p>
         </div>
 
         {/* Actions Bar */}
         <div className="success-actions-bar">
-          <button type="button" className="print-slip-btn" onClick={handlePrintSlip}>
-            <span className="btn-icon">🖨️</span>
-            <span>{printed ? "Receipt Slip Printed" : "Print Kiosk Receipt Slip"}</span>
-          </button>
-
-          <button type="button" className="return-catalog-btn" onClick={handleFinish}>
+          <button type="button" className="return-catalog-btn return-catalog-btn--full" onClick={handleFinish}>
             <span>🛍️ Back to All Products</span>
             <span className="btn-arrow">→</span>
           </button>

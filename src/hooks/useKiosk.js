@@ -32,6 +32,7 @@ import {
   matchProductAction,
   fetchBackendProducts,
   normalizeBackendProduct,
+  INITIAL_BACKEND_CATALOG,
 } from "@/lib/agent";
 import { BACKEND_URL } from "@/lib/apiConfig";
 import { kioskWS } from "@/lib/kioskWebSocket";
@@ -109,8 +110,8 @@ export function useKiosk() {
   const speechAckTimerRef = useRef(null);
   const activeActionReplyIdRef = useRef(null);
   const [backendAction, setBackendAction] = useState(null);
-  const [backendCatalog, setBackendCatalog] = useState([]);
-  const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
+  const [backendCatalog, setBackendCatalog] = useState(INITIAL_BACKEND_CATALOG || []);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(!(INITIAL_BACKEND_CATALOG?.length > 0));
   const [liveTurnProducts, setLiveTurnProducts] = useState([]);
   const liveTurnProductsRef = useRef(liveTurnProducts);
   liveTurnProductsRef.current = liveTurnProducts;
@@ -174,7 +175,7 @@ export function useKiosk() {
 
     for (const item of cartItems) {
       const qty = Number(item.quantity) || 1;
-      const pricePaise = Math.round(Number(item.price || item.salePrice || 0) * 100);
+      const pricePaise = Math.round(Number(item.salePrice || item.price || 0) * 100);
       subtotalPaise += pricePaise * qty;
       if (item.isPairUp) {
         hasPairUp = true;
@@ -348,23 +349,27 @@ export function useKiosk() {
     let active = true;
     async function loadCatalog() {
       setIsLoadingCatalog(true);
-      for (let attempt = 0; attempt <= 2; attempt++) {
+      for (let attempt = 0; attempt <= 5; attempt++) {
         try {
           const data = await fetchBackendProducts();
           if (!active) return;
           if (data?.products && Array.isArray(data.products) && data.products.length > 0) {
             const mapped = data.products.map(normalizeBackendProduct).filter(Boolean);
-            setBackendCatalog(mapped);
-            if (mapped[0]?.id) {
-              setProductId((curr) => curr || mapped[0].id);
+            if (mapped.length > 0) {
+              setBackendCatalog(mapped);
+              if (mapped[0]?.id) {
+                setProductId((curr) => curr || mapped[0].id);
+              }
+              setIsLoadingCatalog(false);
+              try {
+                prewarmVoiceCache(mapped);
+              } catch (_) { }
+              return;
             }
-            prewarmVoiceCache(mapped);
-            setIsLoadingCatalog(false);
-            return;
           }
         } catch (_) { }
         if (!active) return;
-        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        await new Promise((r) => setTimeout(r, Math.min(1000 * Math.pow(1.5, attempt), 5000)));
       }
       if (active) {
         setIsLoadingCatalog(false);
@@ -3258,8 +3263,11 @@ export function useKiosk() {
             const data = await res.json();
             const list = Array.isArray(data) ? data : Array.isArray(data?.products) ? data.products : [];
             if (list.length > 0) {
-              pairupCacheRef.current.set(pid, list);
-              setPairUpProducts(list);
+              const mapped = list.map(normalizeBackendProduct).filter(Boolean);
+              if (mapped.length > 0) {
+                pairupCacheRef.current.set(pid, mapped);
+                setPairUpProducts(mapped);
+              }
             }
           }
         } catch (_) { }

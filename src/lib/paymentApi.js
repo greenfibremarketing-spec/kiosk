@@ -117,11 +117,15 @@ export function createPaymentApi({ apiBase, kioskId, getTicket }) {
       if (attempt.order) return attempt.order;
       creating = true;
       try {
+        // AUDIT-TEMP: Log outgoing create order payload
+        console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.createOrder requesting /payments/orders with payload:`, attempt.payload);
         const result = await request("/payments/orders", {
           method: "POST",
           headers: { "Idempotency-Key": attempt.key },
           body: attempt.payload,
         });
+        // AUDIT-TEMP: Log received order record from backend
+        console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.createOrder received result from backend:`, result);
         attempt.order = { ...result, session_id: attempt.payload.session_id };
         // Store only recovery identifiers, not customer/address/card information.
         try {
@@ -143,6 +147,8 @@ export function createPaymentApi({ apiBase, kioskId, getTicket }) {
     },
 
     verify(order, callback) {
+      // AUDIT-TEMP: Log verify attempt
+      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.verify called with callback:`, callback);
       return request("/payments/verify", {
         method: "POST",
         body: {
@@ -157,8 +163,12 @@ export function createPaymentApi({ apiBase, kioskId, getTicket }) {
     async recover(reference) {
       const id = encodeURIComponent(reference.database_order_id);
       const session = encodeURIComponent(reference.session_id);
+      // AUDIT-TEMP: Log recover check
+      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.recover checking order id=${id}`);
       const proof = await request(`/payments/orders/${id}?session_id=${session}`);
       if (proof.paid === true) return proof;
+      // AUDIT-TEMP: Log reconcile call
+      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.recover order unpaid, calling /reconcile for id=${id}`);
       return request(`/payments/orders/${id}/reconcile?session_id=${session}`, {
         method: "POST",
       });
@@ -371,6 +381,7 @@ export function validateAndBuildCheckoutPayload({ form, cart = [], sessionId, ca
 
   // Resolve SKUs and combine duplicates
   const combinedMap = new Map();
+  const pairUpMap = new Map();
   for (const item of rawItems) {
     const resolvedSku = resolveCatalogVariantSku(item, catalog);
     if (!resolvedSku) continue;
@@ -378,6 +389,9 @@ export function validateAndBuildCheckoutPayload({ form, cart = [], sessionId, ca
     const qty = Math.max(1, Math.min(100, Math.round(Number(item.quantity) || 1)));
     const currentQty = combinedMap.get(resolvedSku) || 0;
     combinedMap.set(resolvedSku, Math.min(100, currentQty + qty));
+    if (item.isPairUp) {
+      pairUpMap.set(resolvedSku, true);
+    }
   }
 
   if (combinedMap.size === 0) {
@@ -391,6 +405,7 @@ export function validateAndBuildCheckoutPayload({ form, cart = [], sessionId, ca
   const items = Array.from(combinedMap.entries()).map(([sku, quantity]) => ({
     sku,
     quantity,
+    is_pair_up: Boolean(pairUpMap.get(sku)),
   }));
 
   return {

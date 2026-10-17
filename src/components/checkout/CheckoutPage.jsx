@@ -82,10 +82,16 @@ export default function CheckoutPage({
       )
     : unitPrice * qty;
 
-  const pairUpDiscount =
-    hasCartItems && order.cartTotals?.hasPairUpDiscount
-      ? order.cartTotals.discount
-      : 0;
+  const hasPairUpInOrder = Boolean(
+    order.cartTotals?.hasPairUpDiscount ||
+    (hasCartItems && order.cartItems.some((i) => i.isPairUp))
+  );
+
+  const pairUpDiscount = hasPairUpInOrder
+    ? (typeof order.cartTotals?.discount === "number"
+        ? order.cartTotals.discount
+        : Math.round(itemsSubtotal * 0.05))
+    : 0;
 
   const grandTotal = Math.max(0, itemsSubtotal - pairUpDiscount);
   const totalUnits = activeCart.reduce((acc, i) => acc + (Number(i.quantity) || 1), 0);
@@ -308,6 +314,8 @@ export default function CheckoutPage({
 
       ui.showStatus("preparing");
       orderRecord = await paymentApi.createOrder(payload);
+      // AUDIT-TEMP: Log created order record received by UI
+      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] CheckoutPage: Created orderRecord:`, orderRecord);
 
       if (orderRecord.paid === true) {
         renderProof(orderRecord);
@@ -316,6 +324,14 @@ export default function CheckoutPage({
       }
 
       const customer = payload.customer;
+      // AUDIT-TEMP: Log initializing Razorpay checkout options
+      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] CheckoutPage: Initializing window.Razorpay with:`, {
+        key: orderRecord.key_id,
+        order_id: orderRecord.order_id,
+        amount: orderRecord.amount,
+        currency: orderRecord.currency,
+      });
+
       const checkout = new window.Razorpay({
         key: orderRecord.key_id,
         order_id: orderRecord.order_id,
@@ -332,9 +348,13 @@ export default function CheckoutPage({
         handler: async (callback) => {
           if (callbackReceived) return;
           callbackReceived = true;
+          // AUDIT-TEMP: Log Razorpay success handler callback
+          console.log(`// AUDIT-TEMP [${new Date().toISOString()}] CheckoutPage: Razorpay handler callback:`, callback);
           ui.showStatus("verifying", orderRecord);
           try {
             const proof = await paymentApi.verify(orderRecord, callback);
+            // AUDIT-TEMP: Log verification proof result
+            console.log(`// AUDIT-TEMP [${new Date().toISOString()}] CheckoutPage: verify returned proof:`, proof);
             if (proof && proof.saved_to_database === true && proof.paid === true) {
               renderProof(proof);
             } else {
@@ -392,6 +412,8 @@ export default function CheckoutPage({
         },
         modal: {
           ondismiss: async () => {
+            // AUDIT-TEMP: Log modal ondismiss trigger
+            console.log(`// AUDIT-TEMP [${new Date().toISOString()}] CheckoutPage: Razorpay modal dismissed by user! callbackReceived=${callbackReceived}`);
             if (callbackReceived) return;
             // Closing Checkout checks status before allowing fresh order
             await checkSavedOrder(orderRecord);
@@ -401,7 +423,8 @@ export default function CheckoutPage({
       });
 
       checkout.on("payment.failed", (failResponse) => {
-        console.warn("[Checkout] Razorpay payment.failed:", failResponse);
+        // AUDIT-TEMP: Log payment.failed event
+        console.warn(`// AUDIT-TEMP [${new Date().toISOString()}] CheckoutPage: Razorpay payment.failed:`, failResponse);
         if (onOrderError) {
           const desc = failResponse?.error?.description || failResponse?.error?.reason || "Payment was declined by your bank or payment method.";
           onOrderError({
@@ -529,7 +552,7 @@ export default function CheckoutPage({
                 {statusState === "paying" && "Please complete your UPI, Card, or Netbanking payment."}
                 {statusState === "verifying" && "Confirming bank response with authoritative backend..."}
                 {statusState === "pending" && "We're checking your payment status with the bank. No need to repay."}
-                {statusState === "confirmed" && "Redirecting to your circular footprint certificate..."}
+                {statusState === "confirmed" && "Redirecting to your order confirmation..."}
                 {statusState === "review" && "Your payment was captured; stock allocation is being reviewed by staff."}
                 {statusState === "problem" && (statusData?.error?.message || "Payment request could not be completed.")}
               </span>

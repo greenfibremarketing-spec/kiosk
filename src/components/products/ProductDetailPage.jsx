@@ -254,7 +254,7 @@ export default function ProductDetailPage({
 
   // Pricing calculations
   const unitPrice = Number(product.salePrice || product.price) || 0;
-  const mrp = Number(product.mrp) || 0;
+  const mrp = Number(product.mrp || product.price) || 0;
   const hasDiscount = mrp > unitPrice;
   const discountPct = hasDiscount ? Math.round(((mrp - unitPrice) / mrp) * 100) : 0;
   const totalPrice = unitPrice * quantity;
