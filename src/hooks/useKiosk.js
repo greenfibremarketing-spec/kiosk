@@ -98,6 +98,20 @@ const STOP_NAME_WORDS = new Set([
   "later", "never", "mind", "browse"
 ]);
 
+// ── Natural category phrase mapper ─────────────────────────────────────────
+function getCategoryNaturalLine(id, name) {
+  const cl = ((name || id || "") + "").toLowerCase();
+  if (cl.includes("bottle") || cl.includes("tumbler")) return "Here are our bottles.";
+  if (cl.includes("gift") || cl.includes("hamper")) return "Here are our gifting picks.";
+  if (cl.includes("drinkware") || cl.includes("mug") || cl.includes("cup")) return "Here are our drinkware picks.";
+  if (cl.includes("kitchen") || cl.includes("dining") || cl.includes("casserole") || cl.includes("bowl")) return "Here are our kitchen and dining essentials.";
+  if (cl.includes("planter")) return "Here are our planters.";
+  if (cl.includes("tableware") || cl.includes("plate")) return "Here are our tableware pieces.";
+  if (cl.includes("storage") || cl.includes("canister")) return "Here are our storage canisters.";
+  if (cl.includes("office") || cl.includes("stationery") || cl.includes("desk")) return "Here are our desk essentials.";
+  return "Here are all our products.";
+}
+
 export function useKiosk() {
   // ── Core product/UI state ──────────────────────────────────────────────────
   const [name, setName] = useState(() => KioskStepCache.getCustomerName());
@@ -279,6 +293,9 @@ export function useKiosk() {
   const backTurnIdRef = useRef(null);
   const lastProductSpokenRef = useRef(null);
   const selectProductRef = useRef(null);
+  const categoryBeforeDetailRef = useRef("all");
+  const justReturnedFromDetailRef = useRef(false);
+  const justReturnedTimerRef = useRef(null);
 
   const markOnboardingDone = useCallback((reason) => {
     if (!onboardingDoneRef.current) {
@@ -1267,7 +1284,7 @@ export function useKiosk() {
   }, []);
 
   const triggerReturnFromDetail = useCallback((turnId = null) => {
-    if (!productDetailOpenedRef.current && !latestRef.current.showDetail) {
+    if (!productDetailOpenedRef.current && !latestRef.current.showDetail && !justReturnedFromDetailRef.current) {
       console.log("[Kiosk] triggerReturnFromDetail skipped: no product detail was open");
       return;
     }
@@ -1306,7 +1323,8 @@ export function useKiosk() {
         return;
       }
 
-      const line = (Array.isArray(returnFromDetail) && returnFromDetail[0]) || "No rush! Take your time, there's lots more to explore.";
+      const targetCat = categoryBeforeDetailRef.current || latestRef.current.category || "all";
+      const line = getCategoryNaturalLine(targetCat);
       setCaption(line);
 
       const activeTid = backTurnIdRef.current || tid || "back_from_detail";
@@ -1509,6 +1527,8 @@ export function useKiosk() {
     setName("");
     nameRef.current = "";
     setCategory("all");
+    categoryBeforeDetailRef.current = "all";
+    justReturnedFromDetailRef.current = false;
     setProductId(backendCatalog[0]?.id || null);
     setCaption("");
 
@@ -2063,54 +2083,67 @@ export function useKiosk() {
       }
 
       case "SHOW_PRODUCTS": {
-        const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
+        const wasInDetail =
+          latestRef.current.showDetail ||
+          productDetailOpenedRef.current ||
+          isBackFromDetailPendingRef.current ||
+          justReturnedFromDetailRef.current;
+
         KioskStepCache.setCurrentStep(KIOSK_STEPS.BROWSING);
         markOnboardingDone("SHOW_PRODUCTS");
         setOnboardingOpen(false);
         trace("showDetail=false", { caller: "SHOW_PRODUCTS" });
         setShowDetail(false);
+        productDetailOpenedRef.current = false;
         setCartModalOpen(false);
         setQrModalOpen(false);
 
-        let resolvedCat = null;
-        if (action?.category_id || action?.category) {
-          resolvedCat = normalizeCategory(action.category_id || action.category);
-        } else if (action?.products?.[0]?.category) {
-          resolvedCat = normalizeCategory(action.products[0].category);
-        }
-
-        if (resolvedCat) {
-          setCategory(resolvedCat);
-        }
-
-        if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
-          const normTurnProducts = action.products.map(normalizeBackendProduct).filter(Boolean);
-          setLiveTurnProducts(normTurnProducts);
-        } else {
-          setLiveTurnProducts([]);
-        }
-
-        if (action?.filters_applied) {
-          setFiltersApplied(action.filters_applied);
-        } else {
-          setFiltersApplied(null);
-        }
-
-        if (action?.highlight_sku) {
-          setHighlightSku(action.highlight_sku);
-        } else {
-          setHighlightSku(null);
-        }
-
-        if (action?.buttons && Array.isArray(action.buttons)) {
-          setActionButtons(action.buttons);
-        }
-
         if (wasInDetail) {
+          // Returning from detail: restore pre-detail category, never overwrite with backend's stale subset
+          const targetCat = categoryBeforeDetailRef.current || "all";
+          setCategory(targetCat);
+          setLiveTurnProducts([]);
+          setFiltersApplied(null);
+          setHighlightSku(null);
+
+          const naturalLine = getCategoryNaturalLine(targetCat);
+          setCaption(naturalLine);
+
           if (!isBackFromDetailPendingRef.current) {
             triggerReturnFromDetail(actionTurnId);
           }
         } else {
+          let resolvedCat = null;
+          if (action?.category_id || action?.category) {
+            resolvedCat = normalizeCategory(action.category_id || action.category);
+          } else if (action?.products?.[0]?.category) {
+            resolvedCat = normalizeCategory(action.products[0].category);
+          }
+
+          if (resolvedCat) {
+            categoryBeforeDetailRef.current = resolvedCat;
+            setCategory(resolvedCat);
+          }
+
+          if (action?.products && Array.isArray(action.products) && action.products.length > 0) {
+            const normTurnProducts = action.products.map(normalizeBackendProduct).filter(Boolean);
+            setLiveTurnProducts(normTurnProducts);
+          } else {
+            setLiveTurnProducts([]);
+          }
+
+          if (action?.filters_applied) {
+            setFiltersApplied(action.filters_applied);
+          } else {
+            setFiltersApplied(null);
+          }
+
+          if (action?.highlight_sku) {
+            setHighlightSku(action.highlight_sku);
+          } else {
+            setHighlightSku(null);
+          }
+
           const msg = action?.message || action?.text;
           if (msg && typeof msg === "string" && msg.trim().length > 0) {
             const cleanMsg = msg.trim();
@@ -2121,6 +2154,10 @@ export function useKiosk() {
               speechController.endReply(activeTid);
             }
           }
+        }
+
+        if (action?.buttons && Array.isArray(action.buttons)) {
+          setActionButtons(action.buttons);
         }
         break;
       }
@@ -2265,22 +2302,38 @@ export function useKiosk() {
         }
         trace("showDetail=false", { caller: "SHOW_ALL" });
         setShowDetail(false);
+        productDetailOpenedRef.current = false;
+        categoryBeforeDetailRef.current = "all";
         setCategory("all");
         setLiveTurnProducts([]);
         setFiltersApplied(null);
         setHighlightSku(null);
+        setCaption("Here are all our products.");
         break;
       }
 
       case "NAVIGATE_BACK": {
-        const wasInDetail = latestRef.current.showDetail || productDetailOpenedRef.current;
+        const wasInDetail =
+          latestRef.current.showDetail ||
+          productDetailOpenedRef.current ||
+          isBackFromDetailPendingRef.current ||
+          justReturnedFromDetailRef.current;
+
         trace("showDetail=false", { caller: "NAVIGATE_BACK" });
         setShowDetail(false);
+        productDetailOpenedRef.current = false;
         setLiveTurnProducts([]);
         setFiltersApplied(null);
         setHighlightSku(null);
-        if (wasInDetail && !isBackFromDetailPendingRef.current) {
-          triggerReturnFromDetail(actionTurnId);
+
+        if (wasInDetail) {
+          const targetCat = categoryBeforeDetailRef.current || "all";
+          setCategory(targetCat);
+          const naturalLine = getCategoryNaturalLine(targetCat);
+          setCaption(naturalLine);
+          if (!isBackFromDetailPendingRef.current) {
+            triggerReturnFromDetail(actionTurnId);
+          }
         }
         break;
       }
@@ -2549,6 +2602,15 @@ export function useKiosk() {
     }
 
     stopSpeechForUserAction("user_voice_turn");
+
+    // ── Voice shortcut: "go back" / "back" / "back to products" / "back to all products" ──
+    if (/^(?:go back|back|back to products|back to all products|back to catalog|previous)$/i.test(trimmed)) {
+      if (latestRef.current.showDetail || productDetailOpenedRef.current) {
+        console.log("[Kiosk] voice shortcut: navigateBack from detail");
+        navigateBack();
+        return;
+      }
+    }
 
     // ── "Show me more products" / "more products" / "browse all" ──
     if (/^(?:show (?:me )?more products|more products|browse all|show all|show everything|see more products|show more)$/i.test(trimmed)) {
@@ -2857,6 +2919,7 @@ export function useKiosk() {
         ? (cat?.label || cat?.name)
         : (catObj?.label || catObj?.name || cleanId.replace("-", " ").replace(/\b\w/g, (l) => l.toUpperCase()));
 
+    categoryBeforeDetailRef.current = cleanId;
     setCategory(cleanId);
     trace("showDetail=false", { caller: "selectCategory" });
     setShowDetail(false);
@@ -2889,7 +2952,14 @@ export function useKiosk() {
 
   const selectProduct = useCallback((p, options = {}) => {
     cancelPendingReturnFromDetail("select_product");
+
+    // Remember category before entering detail (only if not already in detail)
+    if (!latestRef.current.showDetail && !productDetailOpenedRef.current) {
+      categoryBeforeDetailRef.current = latestRef.current.category || "all";
+    }
+
     productDetailOpenedRef.current = true;
+    justReturnedFromDetailRef.current = false;
     stopSpeechForUserAction("select_product");
     speechController.cancelAll("select_product");
     lastInputAtRef.current = Date.now();
@@ -2923,10 +2993,7 @@ export function useKiosk() {
       return [fullProd, ...prev];
     });
 
-    if (fullProd.categories) {
-      const bestCat = fullProd.categories.find((c) => c !== "all") || "all";
-      setCategory(bestCat);
-    }
+    // Opening a product must ONLY set selected product id/view; it must not change list, category or search state
 
     KioskStepCache.setSelectedProduct(fullProd);
     KioskStepCache.setCurrentStep(KIOSK_STEPS.PRODUCT_SELECTED);
@@ -2984,6 +3051,7 @@ export function useKiosk() {
     resetHintIdleTimer();
     markOnboardingDone("showAll");
 
+    categoryBeforeDetailRef.current = "all";
     setCategory("all");
     trace("showDetail=false", { caller: "showAll" });
     setShowDetail(false);
@@ -3021,16 +3089,33 @@ export function useKiosk() {
     const wasDetail = productDetailOpenedRef.current || latestRef.current.showDetail;
     lastProductSpokenRef.current = null;
     speechController.cancelAll("navigate_back");
-    setCaption("");
+
     trace("showDetail=false", { caller: "navigateBack" });
     setShowDetail(false);
+    productDetailOpenedRef.current = false;
     setLiveTurnProducts([]);
     setFiltersApplied(null);
     setHighlightSku(null);
 
+    // Track return window so incoming server responses to NAVIGATE_BACK do not overwrite category/list
+    justReturnedFromDetailRef.current = wasDetail;
+    clearTimeout(justReturnedTimerRef.current);
+    justReturnedTimerRef.current = setTimeout(() => {
+      justReturnedFromDetailRef.current = false;
+    }, 1500);
+
+    const targetCat = categoryBeforeDetailRef.current || "all";
+    if (wasDetail) {
+      setCategory(targetCat);
+      const naturalLine = getCategoryNaturalLine(targetCat);
+      setCaption(naturalLine);
+    } else {
+      setCaption("");
+    }
+
     kioskWS.sendScreenChanged({
       type: "list",
-      category: category && category !== "all" ? category : null,
+      category: targetCat && targetCat !== "all" ? targetCat : null,
       sku: null,
       skus: (backendCatalog || []).map((p) => p.sku || p.id).filter(Boolean),
     });
@@ -3354,11 +3439,11 @@ export function useKiosk() {
   }, [handlePairUpProceed]);
 
   const products = useMemo(() => {
-    if (liveTurnProducts.length > 0) {
-      return liveTurnProducts;
-    }
     const catalog = backendCatalog;
     if (!catalog || catalog.length === 0) return [];
+    if (!showDetail && filtersApplied && liveTurnProducts.length > 0) {
+      return liveTurnProducts;
+    }
     if (!category || category === "all") return catalog;
     const clean = normalizeCategory(category);
     return catalog.filter((p) => {
@@ -3366,7 +3451,7 @@ export function useKiosk() {
       const pCats = Array.isArray(p.categories) ? p.categories.map(normalizeCategory) : [];
       return pCat === clean || pCats.includes(clean);
     });
-  }, [backendCatalog, category, liveTurnProducts]);
+  }, [backendCatalog, category, filtersApplied, liveTurnProducts, showDetail]);
 
   const product = useMemo(() => {
     const catalog = backendCatalog;
