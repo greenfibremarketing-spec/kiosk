@@ -6,6 +6,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.21.2",
-    "node-edge-tts": "^1.2.6"
+    "node-edge-tts": "^1.2.6",
+    "undici": "^8.12.2"
   }
 }

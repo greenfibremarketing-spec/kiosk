@@ -36,6 +36,7 @@ const SHOW_TRANSCRIPT_DEBUG = process.env.NEXT_PUBLIC_DEBUG_TRANSCRIPT === "true
 // Module cache to avoid re-fetching intro-player.js on every playlist loop iteration
 let cachedPlayerModule = null;
 let cachedApiBase = null;
+let hasLoggedRemoteNotice = false;
 
 async function getIntroPlayer(apiBase) {
   const normalizedBase = (apiBase || "https://kioskai.greenfibre.org").replace(/\/$/, "");
@@ -49,11 +50,15 @@ async function getIntroPlayer(apiBase) {
     if (mod && typeof mod.playKioskIntro === "function") {
       cachedPlayerModule = mod;
       cachedApiBase = normalizedBase;
+      hasLoggedRemoteNotice = false;
       return mod;
     }
     return mod;
   } catch (err) {
-    console.warn("[IdlePromoVideo] Failed to import remote intro-player.js:", err);
+    if (!hasLoggedRemoteNotice) {
+      console.log("[IdlePromoVideo] Remote intro-player.js not available, looping local promo fallback");
+      hasLoggedRemoteNotice = true;
+    }
     return null;
   }
 }
@@ -146,8 +151,7 @@ function IdlePromoVideo({ isEngaged, onTap, onOpenAdmin }) {
     let retryDelay = 30000; // 30s initial retry backoff
 
     // Ensure fallback video plays initially so there is never a blank screen
-    if (fallbackVideoRef.current) {
-      fallbackVideoRef.current.currentTime = 0;
+    if (fallbackVideoRef.current && fallbackVideoRef.current.paused) {
       fallbackVideoRef.current.play().catch(() => {});
     }
 
@@ -217,9 +221,14 @@ function IdlePromoVideo({ isEngaged, onTap, onOpenAdmin }) {
           });
           enforceFullscreenAndAudio();
 
-          // Once remote video begins playing, pause the fallback video to save resources
+          // Once remote video begins playing, reveal container and pause fallback video
           const onRemotePlaying = () => {
             enforceFullscreenAndAudio();
+            if (container) {
+              container.style.opacity = "1";
+              container.style.visibility = "visible";
+              container.style.pointerEvents = "auto";
+            }
             if (fallbackVideoRef.current) {
               fallbackVideoRef.current.pause();
             }
@@ -239,27 +248,38 @@ function IdlePromoVideo({ isEngaged, onTap, onOpenAdmin }) {
           if (!isActive || controller.signal.aborted) break;
 
           if (result === "intro_skipped") {
+            if (container) {
+              container.style.opacity = "0";
+              container.style.visibility = "hidden";
+              container.style.pointerEvents = "none";
+              container.innerHTML = "";
+            }
             if (isVideoOnly()) {
               retryDelay = 30000;
               continue;
             }
             // "Meet Greeny" button clicked or abort signal resolved: silence instantly
-            if (container) {
-              const vids = container.querySelectorAll("video");
-              vids.forEach((vid) => {
-                vid.muted = true;
-                vid.pause();
-              });
-            }
             triggerEngaged();
             break;
           } else if (result === "intro_done") {
             // Finished playing all videos in playlist -> reset delay & loop to video 1
+            if (container) {
+              container.style.opacity = "0";
+              container.style.visibility = "hidden";
+              container.style.pointerEvents = "none";
+              container.innerHTML = "";
+            }
             retryDelay = 30000;
             continue;
           } else {
-            // "intro_failed" -> fallback to local video and wait before retry
-            if (fallbackVideoRef.current) {
+            // "intro_failed" -> hide remote container and ensure local fallback video is playing
+            if (container) {
+              container.style.opacity = "0";
+              container.style.visibility = "hidden";
+              container.style.pointerEvents = "none";
+              container.innerHTML = "";
+            }
+            if (fallbackVideoRef.current && fallbackVideoRef.current.paused) {
               fallbackVideoRef.current.play().catch(() => {});
             }
             await interruptibleSleep(retryDelay, controller.signal);
@@ -267,8 +287,14 @@ function IdlePromoVideo({ isEngaged, onTap, onOpenAdmin }) {
           }
         } catch (err) {
           if (!isActive || controller.signal.aborted) break;
-          // Exception -> fallback to local video and wait before retry
-          if (fallbackVideoRef.current) {
+          // Exception -> hide remote container and ensure local fallback video is playing
+          if (container) {
+            container.style.opacity = "0";
+            container.style.visibility = "hidden";
+            container.style.pointerEvents = "none";
+            container.innerHTML = "";
+          }
+          if (fallbackVideoRef.current && fallbackVideoRef.current.paused) {
             fallbackVideoRef.current.play().catch(() => {});
           }
           await interruptibleSleep(retryDelay, controller.signal);
@@ -296,6 +322,9 @@ function IdlePromoVideo({ isEngaged, onTap, onOpenAdmin }) {
           vid.pause();
         });
         containerRef.current.innerHTML = "";
+        containerRef.current.style.opacity = "0";
+        containerRef.current.style.visibility = "hidden";
+        containerRef.current.style.pointerEvents = "none";
       }
     };
   }, [isEngaged]);
@@ -334,6 +363,10 @@ function IdlePromoVideo({ isEngaged, onTap, onOpenAdmin }) {
           width: "100%",
           height: "100%",
           zIndex: 1,
+          opacity: 0,
+          visibility: "hidden",
+          pointerEvents: "none",
+          transition: "opacity 300ms ease",
         }}
       />
 

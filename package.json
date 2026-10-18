@@ -39,11 +39,15 @@
       "!out/test-videos/**",
       "electron/**",
       "server/**",
+      "src/lib/productSpeech.mjs",
+      "src/lib/staticSpeechLines.mjs",
       "package.json",
       "config.json"
     ],
     "asarUnpack": [
-      "server/**"
+      "server/**",
+      "src/lib/productSpeech.mjs",
+      "src/lib/staticSpeechLines.mjs"
     ],
     "win": {
       "target": [
