@@ -21,6 +21,12 @@ export default function CheckoutPage({
 }) {
   const { product = {}, selectedColor = "Natural Olive", savings = 0 } = order || {};
 
+  const CHECKOUT_MODE = (process.env.NEXT_PUBLIC_CHECKOUT_MODE || "payment").toLowerCase().trim();
+  const isPrelaunch = CHECKOUT_MODE === "prelaunch";
+  const launchText = (process.env.NEXT_PUBLIC_LAUNCH_TEXT || "25th October").trim();
+  const launchPlatforms = (process.env.NEXT_PUBLIC_LAUNCH_PLATFORMS || "Amazon, Flipkart, our Android app and our website").trim();
+  const launchNotice = `We are coming live from ${launchText} on ${launchPlatforms}. Stay tuned! Enter your details and we will save them and contact you as soon as our products are live. No payment is needed today.`;
+
   const [qty, setQty] = useState(order?.quantity || 1);
   const [includeGiftWrap, setIncludeGiftWrap] = useState(true);
   const [deliveryConfirmed, setDeliveryConfirmed] = useState(false);
@@ -270,7 +276,11 @@ export default function CheckoutPage({
     setValidationError("");
 
     if (!deliveryConfirmed) {
-      setValidationError("Please confirm that you understand your order will be delivered on 28th–29th.");
+      setValidationError(
+        isPrelaunch
+          ? "Please agree that Green Fibre may save your details to proceed."
+          : "Please confirm that you understand your order will be delivered on 28th–29th."
+      );
       return;
     }
 
@@ -294,6 +304,63 @@ export default function CheckoutPage({
       });
     } catch (valErr) {
       setValidationError(valErr.message || "Please check delivery details.");
+      return;
+    }
+
+    if (isPrelaunch) {
+      ui.setBusy(true);
+      try {
+        const idempotencyKey = typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `lead_${Date.now()}_${Math.random()}`;
+
+        const leadPayload = {
+          idempotencyKey,
+          customer: {
+            fullName: formData.fullName,
+            phone: formData.phone,
+            email: formData.email,
+            address: formData.address,
+            city: formData.city,
+            state: formData.state,
+            pincode: formData.pincode,
+            landmark: formData.landmark || "",
+          },
+          items: activeCart.map((it) => ({
+            id: it.id || it.sku,
+            sku: it.sku || it.id,
+            name: it.name,
+            selectedColor: it.selectedColor,
+            quantity: it.quantity,
+            price: it.price,
+          })),
+          sessionId: sessionId || "sess_prelaunch",
+          kioskId: process.env.NEXT_PUBLIC_KIOSK_ID || "kiosk-01",
+        };
+
+        if (window.kiosk?.sendPrelaunchLead) {
+          await window.kiosk.sendPrelaunchLead(leadPayload);
+        } else {
+          console.warn("[Prelaunch] window.kiosk.sendPrelaunchLead is unavailable in this environment.");
+        }
+
+        ui.setBusy(false);
+        onOrderSuccess?.({
+          isPrelaunch: true,
+          customer: formData,
+          items: activeCart,
+          launchText,
+          launchPlatforms,
+        });
+      } catch (err) {
+        ui.setBusy(false);
+        onOrderError?.({
+          isPrelaunch: true,
+          title: "Could Not Submit Details",
+          message: err.message || "We could not save your details right now. Please try submitting again or speak to our staff.",
+          customer: formData,
+        });
+      }
       return;
     }
 
@@ -863,20 +930,32 @@ export default function CheckoutPage({
 
           {/* Section: Proceed to Pay Banner with Razorpay Trust */}
           <div className="checkout-payment-box">
-            <div className="payment-gateway-strip">
-              <div className="gateway-brand">
-                <span className="gateway-logo">⚡</span>
-                <div>
-                  <strong>Razorpay Secure Checkout</strong>
-                  <span>Supports GPay, PhonePe, Paytm, All Cards &amp; Netbanking</span>
+            {isPrelaunch ? (
+              <div className="payment-gateway-strip" style={{ flexDirection: "column", alignItems: "flex-start", gap: "6px" }}>
+                <div className="gateway-brand">
+                  <span className="gateway-logo">📢</span>
+                  <div>
+                    <strong style={{ display: "block", marginBottom: "2px" }}>Coming Live Soon — Stay Tuned!</strong>
+                    <span style={{ fontSize: "12.5px", lineHeight: "1.4" }}>{launchNotice}</span>
+                  </div>
                 </div>
               </div>
-              <div className="gateway-badges">
-                <span className="pay-tag">UPI</span>
-                <span className="pay-tag">CARDS</span>
-                <span className="pay-tag">NETBANKING</span>
+            ) : (
+              <div className="payment-gateway-strip">
+                <div className="gateway-brand">
+                  <span className="gateway-logo">⚡</span>
+                  <div>
+                    <strong>Razorpay Secure Checkout</strong>
+                    <span>Supports GPay, PhonePe, Paytm, All Cards &amp; Netbanking</span>
+                  </div>
+                </div>
+                <div className="gateway-badges">
+                  <span className="pay-tag">UPI</span>
+                  <span className="pay-tag">CARDS</span>
+                  <span className="pay-tag">NETBANKING</span>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Delivery Notice Box */}
             <div
@@ -891,22 +970,26 @@ export default function CheckoutPage({
                 gap: "8px",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <strong style={{ fontSize: "14px", fontWeight: "800", color: "#14271c" }}>
-                  📦 Important Delivery Information
-                </strong>
-              </div>
-              <p style={{ margin: 0, fontSize: "12.5px", color: "#4a6153", lineHeight: "1.4" }}>
-                Our B2B store goes live on the 25th. Orders placed now will be delivered between 28th – 29th.
-              </p>
+              {!isPrelaunch && (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <strong style={{ fontSize: "14px", fontWeight: "800", color: "#14271c" }}>
+                      📦 Important Delivery Information
+                    </strong>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "12.5px", color: "#4a6153", lineHeight: "1.4" }}>
+                    Our B2B store goes live on the 25th. Orders placed now will be delivered between 28th – 29th.
+                  </p>
+                </>
+              )}
               <label
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: "10px",
-                  marginTop: "4px",
-                  paddingTop: "10px",
-                  borderTop: "1px solid #ebdfce",
+                  marginTop: isPrelaunch ? "0px" : "4px",
+                  paddingTop: isPrelaunch ? "0px" : "10px",
+                  borderTop: isPrelaunch ? "none" : "1px solid #ebdfce",
                   cursor: isBusy ? "not-allowed" : "pointer",
                   fontSize: "12.5px",
                   fontWeight: "700",
@@ -929,8 +1012,17 @@ export default function CheckoutPage({
                     flexShrink: 0,
                   }}
                 />
-                <span>I understand my order will be delivered on 28th–29th. *</span>
+                <span>
+                  {isPrelaunch
+                    ? "I agree that Green Fibre may save my details and contact me about my selected products and the launch."
+                    : "I understand my order will be delivered on 28th–29th. *"}
+                </span>
               </label>
+              {isPrelaunch && (
+                <p style={{ margin: "2px 0 0 28px", fontSize: "11px", color: "#5a7062" }}>
+                  Used only to contact you about Green Fibre products. Ask our staff if you want your details removed.
+                </p>
+              )}
             </div>
 
             {/* Validation Error Message */}
@@ -950,7 +1042,7 @@ export default function CheckoutPage({
               </div>
             )}
 
-            {/* Direct Proceed to Pay Button */}
+            {/* Direct Proceed to Pay / Submit Details Button */}
             <button
               type="submit"
               className="checkout-proceed-btn"
@@ -962,28 +1054,32 @@ export default function CheckoutPage({
             >
               <div className="btn-content-left">
                 <span className="lock-emblem">
-                  {isBusy || statusState === "preparing" || statusState === "verifying" ? "🔄" : "🔒"}
+                  {isBusy || statusState === "preparing" || statusState === "verifying" ? "🔄" : (isPrelaunch ? "✉️" : "🔒")}
                 </span>
                 <span className="btn-main-title">
-                  {statusState === "preparing"
-                    ? "Preparing Order..."
-                    : statusState === "paying"
-                    ? "Waiting for Payment..."
-                    : statusState === "verifying"
-                    ? "Verifying Payment..."
-                    : statusState === "confirmed"
-                    ? "Order Confirmed!"
-                    : "Proceed to Pay"}
+                  {isPrelaunch
+                    ? (isBusy ? "Submitting Details..." : "Submit My Details")
+                    : (statusState === "preparing"
+                      ? "Preparing Order..."
+                      : statusState === "paying"
+                      ? "Waiting for Payment..."
+                      : statusState === "verifying"
+                      ? "Verifying Payment..."
+                      : statusState === "confirmed"
+                      ? "Order Confirmed!"
+                      : "Proceed to Pay")}
                 </span>
               </div>
               <div className="btn-content-right">
-                <span className="btn-amount-badge">₹{grandTotal.toLocaleString("en-IN")}</span>
+                {!isPrelaunch && <span className="btn-amount-badge">₹{grandTotal.toLocaleString("en-IN")}</span>}
                 <span className="btn-arrow">→</span>
               </div>
             </button>
 
             <p className="checkout-trust-footnote">
-              Clicking &ldquo;Proceed to Pay&rdquo; will open the official Razorpay Checkout window.
+              {isPrelaunch
+                ? launchNotice
+                : "Clicking \u201cProceed to Pay\u201d will open the official Razorpay Checkout window."}
             </p>
           </div>
         </div>

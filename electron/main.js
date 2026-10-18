@@ -1,11 +1,15 @@
-const { app, BrowserWindow, session, globalShortcut, Menu, protocol, net, ipcMain } = require("electron");
+const { app, BrowserWindow, session, globalShortcut, Menu, protocol, net, ipcMain, safeStorage } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
 const log = require("electron-log");
 const { fork } = require("child_process");
+const nodemailer = require("nodemailer");
 
 const DEV = process.argv.includes("--dev") || process.argv.includes("-d");
+
+// Ensure consistent userData folder between dev and packaged production
+app.setName("GreenFibre Kiosk");
 
 // Configure logging
 log.transports.file.level = "info";
@@ -403,6 +407,181 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle("save-config", (e, cfg) => saveConfig(cfg));
     ipcMain.on("presence-state", (e, state) => {
       kioskCurrentState = state;
+    });
+
+    // ── Pre-launch Lead Submission IPC Handler ──────────────────────────────
+    let leadSendInFlight = false;
+    const sessionLastLeadSentMap = new Map();
+    const sentLeadKeys = new Map();
+    const RATE_LIMIT_COOLDOWN_MS = 20000;
+
+    const escapeHtml = (s) =>
+      String(s || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+
+    const stripHdr = (s) => String(s || "").replace(/[\r\n]+/g, " ").trim();
+
+    ipcMain.handle("kiosk:send-prelaunch-lead", async (event, payload) => {
+      const frameUrl = event.senderFrame?.url || "";
+      const isAllowedDev = !app.isPackaged && (frameUrl.startsWith("http://localhost:3000") || frameUrl.startsWith("app://kiosk"));
+      const isAllowedProd = frameUrl.startsWith("app://kiosk");
+      if (!isAllowedDev && !isAllowedProd) {
+        log.warn(`[Lead] Rejected origin: ${frameUrl}`);
+        throw new Error("Unauthorized request origin");
+      }
+
+      if (leadSendInFlight) {
+        throw new Error("A submission is already in progress. Please wait.");
+      }
+
+      const now = Date.now();
+      const sessionKey = String(payload?.sessionId || payload?.idempotencyKey || "").trim();
+      const lastSessionSuccessTs = sessionKey ? (sessionLastLeadSentMap.get(sessionKey) || 0) : 0;
+      const elapsed = now - lastSessionSuccessTs;
+      if (sessionKey && lastSessionSuccessTs > 0 && elapsed < RATE_LIMIT_COOLDOWN_MS) {
+        const remaining = Math.ceil((RATE_LIMIT_COOLDOWN_MS - elapsed) / 1000);
+        throw new Error(`Please wait ${remaining} seconds before submitting again.`);
+      }
+
+      const idempotencyKey = String(payload?.idempotencyKey || "").trim();
+      if (idempotencyKey && sentLeadKeys.has(idempotencyKey)) {
+        const cutoff = now - 600000;
+        for (const [k, t] of sentLeadKeys.entries()) {
+          if (t < cutoff) sentLeadKeys.delete(k);
+        }
+        log.info(`[Lead] status=duplicate-ignored kioskId=${payload?.kioskId || "kiosk"}`);
+        return { success: true, duplicate: true };
+      }
+
+      const customer = payload?.customer || {};
+      const fullName = stripHdr(customer.fullName || customer.name || "");
+      const phone = String(customer.phone || "").replace(/\D/g, "");
+      const email = stripHdr(customer.email || "");
+      const address = stripHdr(customer.address || customer.streetAddress || "");
+      const city = stripHdr(customer.city || "");
+      const state = stripHdr(customer.state || "");
+      const pincode = String(customer.pincode || "").replace(/\D/g, "");
+      const landmark = stripHdr(customer.landmark || "");
+
+      if (!fullName || phone.length !== 10 || !email.includes("@") || !address || !city || !state || pincode.length !== 6) {
+        throw new Error("Invalid customer delivery details.");
+      }
+
+      leadSendInFlight = true;
+      try {
+        const userData = getUserDataPath();
+        const configPath = path.join(userData, "prelaunch-config.json");
+        const encPath = path.join(userData, "prelaunch-smtp.enc");
+
+        let smtpPass = null;
+        let credSource = null;
+        if (fs.existsSync(encPath) && safeStorage && safeStorage.isEncryptionAvailable()) {
+          try {
+            const encryptedBytes = fs.readFileSync(encPath);
+            smtpPass = safeStorage.decryptString(encryptedBytes);
+            if (smtpPass) {
+              const cleaned = smtpPass.replace(/[\s\u0000-\u001F\u007F]/g, "");
+              if (cleaned.length > 0) {
+                smtpPass = cleaned;
+                credSource = "safeStorage";
+              } else {
+                smtpPass = null;
+              }
+            }
+          } catch (decErr) {
+            log.warn("[Lead] safeStorage decrypt error, checking env fallback:", decErr.code || decErr.message);
+          }
+        }
+
+        if (!smtpPass) {
+          const freshEnv = loadEnvVariables();
+          const envPass = process.env.SMTP_PASS || freshEnv?.SMTP_PASS || loadedEnv?.SMTP_PASS;
+          if (envPass) {
+            const cleaned = envPass.replace(/[\s\u0000-\u001F\u007F]/g, "");
+            if (cleaned.length > 0) {
+              smtpPass = cleaned;
+              credSource = "env";
+            }
+          }
+        }
+
+        if (!smtpPass) {
+          log.error("[Lead] FAIL-CLOSED: No SMTP credentials configured (safeStorage or env).");
+          throw new Error("SMTP credentials are not configured on this kiosk. Please provide your Gmail app password in .env or run set-smtp-config.js.");
+        }
+        log.info(`[Lead] Using SMTP credentials from source: ${credSource}`);
+
+        let smtpConfig = {
+          host: process.env.SMTP_HOST || loadedEnv?.SMTP_HOST || "smtp.gmail.com",
+          port: Number(process.env.SMTP_PORT || loadedEnv?.SMTP_PORT) || 465,
+          secure: true,
+          user: process.env.SMTP_USER || loadedEnv?.SMTP_USER || "greenfibre.marketing@gmail.com",
+          to: process.env.SMTP_TO || loadedEnv?.SMTP_TO || "greenfibre.marketing@gmail.com",
+        };
+        if (fs.existsSync(configPath)) {
+          try {
+            const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+            smtpConfig = { ...smtpConfig, ...parsed };
+          } catch (_) {}
+        }
+
+        const transporter = nodemailer.createTransport({
+          host: stripHdr(smtpConfig.host),
+          port: Number(smtpConfig.port) || 465,
+          secure: Number(smtpConfig.port) === 465 || smtpConfig.secure === true,
+          auth: {
+            user: stripHdr(smtpConfig.user),
+            pass: smtpPass,
+          },
+          connectionTimeout: 12000,
+          greetingTimeout: 10000,
+          socketTimeout: 12000,
+          tls: {
+            rejectUnauthorized: true,
+          },
+        });
+
+        const isEmailStrict = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email);
+        const replyTo = isEmailStrict ? email : undefined;
+
+        const items = Array.isArray(payload?.items) ? payload.items : [];
+        const itemsText = items.map((it, idx) => `  ${idx + 1}. ${it.name || "Product"} (Color: ${it.selectedColor || "N/A"}, Qty: ${it.quantity || 1}, SKU: ${it.sku || it.id || "N/A"})`).join("\n");
+        const itemsHtml = items.map((it) => `<li><strong>${escapeHtml(it.name || "Product")}</strong> — Color: ${escapeHtml(it.selectedColor || "N/A")}, Qty: ${Number(it.quantity) || 1}, SKU: ${escapeHtml(it.sku || it.id || "N/A")}</li>`).join("");
+
+        const textBody = `NEW PRE-LAUNCH INTEREST LEAD\n============================\nCustomer Information:\n- Name: ${fullName}\n- Mobile: ${phone}\n- Email: ${email}\n- Address: ${address}\n- City: ${city}, State: ${state} - PIN: ${pincode}\n${landmark ? `- Landmark: ${landmark}\n` : ""}Kiosk ID: ${stripHdr(payload?.kioskId || "kiosk-01")}\nSubmitted At: ${new Date().toISOString()}\n\nSelected Products of Interest:\n${itemsText || "  (None specified)"}\n`;
+
+        const htmlBody = `<h2>New Pre-Launch Interest Lead</h2><p><strong>Customer Information:</strong></p><ul><li><strong>Name:</strong> ${escapeHtml(fullName)}</li><li><strong>Mobile:</strong> ${escapeHtml(phone)}</li><li><strong>Email:</strong> ${escapeHtml(email)}</li><li><strong>Address:</strong> ${escapeHtml(address)}, ${escapeHtml(city)}, ${escapeHtml(state)} - ${escapeHtml(pincode)}</li>${landmark ? `<li><strong>Landmark:</strong> ${escapeHtml(landmark)}</li>` : ""}<li><strong>Kiosk Terminal:</strong> ${escapeHtml(payload?.kioskId || "kiosk-01")}</li><li><strong>Submitted:</strong> ${new Date().toISOString()}</li></ul><p><strong>Products of Interest:</strong></p><ul>${itemsHtml || "<li>None</li>"}</ul>`;
+
+        const mailOptions = {
+          from: `"${stripHdr("GreenFibre Kiosk Lead")}" <${stripHdr(smtpConfig.user)}>`,
+          to: stripHdr(smtpConfig.to),
+          subject: `[Pre-Launch Lead] ${fullName} - Kiosk ${stripHdr(payload?.kioskId || "01")}`,
+          text: textBody,
+          html: htmlBody,
+        };
+        if (replyTo) {
+          mailOptions.replyTo = replyTo;
+        }
+
+        await transporter.sendMail(mailOptions);
+        if (sessionKey) {
+          sessionLastLeadSentMap.set(sessionKey, Date.now());
+        }
+        if (idempotencyKey) {
+          sentLeadKeys.set(idempotencyKey, Date.now());
+        }
+        log.info(`[Lead] status=sent kioskId=${payload?.kioskId || "kiosk-01"} ts=${new Date().toISOString()}`);
+        return { success: true };
+      } catch (sendErr) {
+        log.warn(`[Lead] status=failed kioskId=${payload?.kioskId || "kiosk-01"} code=${sendErr.code || "ERR"} ts=${new Date().toISOString()}`);
+        throw new Error(sendErr.message || "Failed to send lead email");
+      } finally {
+        leadSendInFlight = false;
+      }
     });
 
     // Auto-grant camera and microphone permissions for presence and STT

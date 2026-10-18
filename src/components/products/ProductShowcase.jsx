@@ -308,6 +308,7 @@ export default function ProductShowcase({
         <OrderSuccessPage
           orderResult={orderResult}
           onReturnToCatalog={handleReturnToCatalog}
+          onResetSession={onResetSession}
         />
       )}
 

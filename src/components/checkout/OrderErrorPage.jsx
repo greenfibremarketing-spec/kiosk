@@ -12,9 +12,13 @@ export default function OrderErrorPage({
   const [assistanceRequested, setAssistanceRequested] = useState(false);
   if (!orderError) return null;
 
+  const isPrelaunch = orderError?.isPrelaunch === true;
+
   const {
-    title = "Order Could Not Be Completed",
-    message = "Your payment could not be verified by the store backend. No charges were captured.",
+    title = isPrelaunch ? "Could Not Submit Details" : "Order Could Not Be Completed",
+    message = isPrelaunch
+      ? "We could not save your details right now. Please try submitting again or speak to our staff."
+      : "Your payment could not be verified by the store backend. No charges were captured.",
     orderId,
     databaseOrderId,
     orderNumber,
@@ -39,9 +43,11 @@ export default function OrderErrorPage({
   };
 
   const handleCancelAndLeave = () => {
-    try {
-      getPaymentApi().finishResolvedCheckout();
-    } catch (_) {}
+    if (!isPrelaunch) {
+      try {
+        getPaymentApi().finishResolvedCheckout();
+      } catch (_) {}
+    }
     if (onReturnToCatalog) {
       onReturnToCatalog();
     }
@@ -61,7 +67,7 @@ export default function OrderErrorPage({
 
         <div className="error-header">
           <span className="error-kiosk-tag">
-            Payment Not Verified • Order Not Placed
+            {isPrelaunch ? "Submission Incomplete" : "Payment Not Verified • Order Not Placed"}
           </span>
           <h1 className="error-title">{title}</h1>
           <p className="error-subtitle">
@@ -69,8 +75,8 @@ export default function OrderErrorPage({
           </p>
         </div>
 
-        {/* Order Identifier if created */}
-        {displayOrderNum && (
+        {/* Order Identifier if created (Payment Mode Only) */}
+        {!isPrelaunch && displayOrderNum && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", justifyContent: "center", margin: "10px 0" }}>
             <div
               style={{
@@ -111,7 +117,7 @@ export default function OrderErrorPage({
           </div>
         )}
 
-        {/* Reassurance & Financial Safety Banner */}
+        {/* Reassurance Banner */}
         <div
           style={{
             width: "100%",
@@ -128,14 +134,25 @@ export default function OrderErrorPage({
         >
           <span style={{ fontSize: "22px", flexShrink: 0 }}>🛡️</span>
           <div style={{ fontSize: "13px", color: "#7c2d12", lineHeight: "1.45" }}>
-            <strong style={{ display: "block", fontSize: "14px", color: "#9a3412", marginBottom: "4px" }}>
-              Your Money is Safe
-            </strong>
-            No order was confirmed in the store backend. If your bank account or UPI app shows any debited amount, Razorpay and your bank will automatically reverse it within <strong>3 to 5 business days</strong>.
-            {failureReason && (
-              <div style={{ marginTop: "6px", fontSize: "12px", color: "#b45309" }}>
-                <strong>Bank Reason:</strong> {failureReason}
-              </div>
+            {isPrelaunch ? (
+              <>
+                <strong style={{ display: "block", fontSize: "14px", color: "#9a3412", marginBottom: "4px" }}>
+                  No Payment Required
+                </strong>
+                No charges or payments were attempted. Your details have been preserved so you can retry immediately.
+              </>
+            ) : (
+              <>
+                <strong style={{ display: "block", fontSize: "14px", color: "#9a3412", marginBottom: "4px" }}>
+                  Your Money is Safe
+                </strong>
+                No order was confirmed in the store backend. If your bank account or UPI app shows any debited amount, Razorpay and your bank will automatically reverse it within <strong>3 to 5 business days</strong>.
+                {failureReason && (
+                  <div style={{ marginTop: "6px", fontSize: "12px", color: "#b45309" }}>
+                    <strong>Bank Reason:</strong> {failureReason}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -150,10 +167,12 @@ export default function OrderErrorPage({
               <div className="preview-meta">
                 <h3>{activeProduct.name}</h3>
                 <p>Color: {selectedColor} • Qty: {quantity}</p>
-                <span className="preview-price" style={{ color: "#b91c1c" }}>
-                  Attempted Amount: {currency === "INR" ? "₹" : `${currency} `}
-                  {typeof displayAmount === "number" ? displayAmount.toLocaleString("en-IN") : displayAmount}
-                </span>
+                {!isPrelaunch && (
+                  <span className="preview-price" style={{ color: "#b91c1c" }}>
+                    Attempted Amount: {currency === "INR" ? "₹" : `${currency} `}
+                    {typeof displayAmount === "number" ? displayAmount.toLocaleString("en-IN") : displayAmount}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -174,7 +193,7 @@ export default function OrderErrorPage({
             onClick={onRetry}
           >
             <span className="btn-icon">🔄</span>
-            <span>Try Payment Again</span>
+            <span>{isPrelaunch ? "Try Submitting Again" : "Try Payment Again"}</span>
             <span className="btn-arrow">→</span>
           </button>
 

@@ -22,4 +22,5 @@ contextBridge.exposeInMainWorld("kiosk", {
   },
   setSpeechMuted: (muted) => ipcRenderer.send("stt-mute", muted),
   sendPresenceState: (state) => ipcRenderer.send("presence-state", state),
+  sendPrelaunchLead: (payload) => ipcRenderer.invoke("kiosk:send-prelaunch-lead", payload),
 });

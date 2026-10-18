@@ -1442,10 +1442,17 @@ export function useKiosk() {
     lastResetAtRef.current = now;
 
     // Inactivity/presence resets must not clear an unresolved checkout
-    const pendingPayment = getPaymentApi().getPendingReference();
-    if (pendingPayment && pendingPayment.database_order_id) {
-      console.log(`[Session] reset skipped: unresolved checkout pending (order=${pendingPayment.order_number || pendingPayment.database_order_id})`);
-      return;
+    const isPrelaunch = (process.env.NEXT_PUBLIC_CHECKOUT_MODE || "").toLowerCase().trim() === "prelaunch";
+    if (!isPrelaunch) {
+      const pendingPayment = getPaymentApi().getPendingReference();
+      if (pendingPayment && pendingPayment.database_order_id) {
+        console.log(`[Session] reset skipped: unresolved checkout pending (order=${pendingPayment.order_number || pendingPayment.database_order_id})`);
+        return;
+      }
+    } else {
+      try {
+        getPaymentApi().finishResolvedCheckout();
+      } catch (_) {}
     }
 
     const oldSession = sessionIdRef.current;
@@ -1621,6 +1628,10 @@ export function useKiosk() {
     setHighlightSku(null);
     clearCart();
     setCartItems([]);
+    cartItemsRef.current = [];
+    lastAddToCartRef.current = 0;
+    lastAddedIdRef.current = null;
+    isNavigatingToCartRef.current = false;
     setShowCheckout(false);
     setSessionResetKey((prev) => prev + 1);
     console.log(`[Session] reset cleared liveTurn=${clearedLiveTurn} cart=${clearedCart} view=${currentView}`);
@@ -2310,9 +2321,18 @@ export function useKiosk() {
           null;
 
         if (target) {
+          const targetId = target.id || target.sku;
+          const now = Date.now();
+          if (now - lastAddToCartRef.current < 450 && lastAddedIdRef.current === targetId) {
+            console.log(`[Cart] Debounced duplicate voice CONFIRM_BUY for pid=${targetId}`);
+            break;
+          }
+          lastAddToCartRef.current = now;
+          lastAddedIdRef.current = targetId;
+
           const targetItem = {
-            id: target.id || target.sku,
-            sku: target.sku || target.id,
+            id: targetId,
+            sku: target.sku || targetId,
             name: target.name,
             price: target.salePrice || target.price || 0,
             quantity: 1,
@@ -2322,7 +2342,17 @@ export function useKiosk() {
             isPairUp: false,
           };
           setCartItems((prev) => {
-            if (prev.some((i) => i.id === targetItem.id || i.sku === targetItem.sku)) return prev;
+            const existingIdx = prev.findIndex(
+              (i) => (i.id === targetItem.id || i.sku === targetItem.sku) && i.selectedColor === targetItem.selectedColor
+            );
+            if (existingIdx >= 0) {
+              const updated = [...prev];
+              updated[existingIdx] = {
+                ...updated[existingIdx],
+                quantity: (updated[existingIdx].quantity || 1) + 1,
+              };
+              return updated;
+            }
             return [...prev, targetItem];
           });
 
@@ -3492,8 +3522,10 @@ export function useKiosk() {
         let updated = [...prev];
         if (base) {
           const baseId = base.id || base.sku;
-          const hasBase = updated.some((i) => i.id === baseId || i.sku === baseId);
-          if (!hasBase) {
+          const idx = updated.findIndex((i) => i.id === baseId || i.sku === baseId);
+          if (idx >= 0) {
+            updated[idx] = { ...updated[idx], quantity: (updated[idx].quantity || 1) + 1 };
+          } else {
             updated.push({
               id: baseId,
               sku: base.sku || baseId,
@@ -3509,8 +3541,10 @@ export function useKiosk() {
         }
         if (sugg) {
           const suggId = sugg.id || sugg.sku;
-          const hasSugg = updated.some((i) => i.id === suggId || i.sku === suggId);
-          if (!hasSugg) {
+          const idx = updated.findIndex((i) => i.id === suggId || i.sku === suggId);
+          if (idx >= 0) {
+            updated[idx] = { ...updated[idx], quantity: (updated[idx].quantity || 1) + 1 };
+          } else {
             updated.push({
               id: suggId,
               sku: sugg.sku || suggId,
@@ -3741,8 +3775,15 @@ export function useKiosk() {
       };
 
       setCartItems((prev) => {
-        const existing = prev.find((i) => i.id === pairItem.id || i.sku === pairItem.sku);
-        if (existing) return prev;
+        const existingIdx = prev.findIndex((i) => i.id === pairItem.id || i.sku === pairItem.sku);
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            quantity: (updated[existingIdx].quantity || 1) + 1,
+          };
+          return updated;
+        }
         return [...prev, pairItem];
       });
 
