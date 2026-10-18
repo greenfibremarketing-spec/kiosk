@@ -1,0 +1,165 @@
+/**
+ * staticSpeechLines.mjs
+ * Single source of truth for ALL static kiosk speech lines.
+ * Imported by live speech, pre-warm (server/index.js), and fallback layers
+ * so they cannot drift.
+ */
+
+export const STATIC_SPEECH_LINES = {
+  categories: [
+    "Here are our bottles.",
+    "Here are our gifting picks.",
+    "Here are our drinkware picks.",
+    "Here are our kitchen and dining essentials.",
+    "Here are our planters.",
+    "Here are our tableware pieces.",
+    "Here are our storage canisters.",
+    "Here are our desk essentials.",
+    "Here are our sustainable products.",
+    "Here are our Viora bottles.",
+  ],
+
+  first_visit: [
+    "Hi! I'm Greeny, your shopping guide at Green Fibre.",
+    "I'm here to help you discover our eco-friendly products, made from rice husk.",
+    "Before we start, may I know your name?",
+    "What can I help you find today?",
+    "Have a look at our collection.",
+    "Have a look at our collection. Tap a category, or ask me anything.",
+    "Which category would you like to explore?",
+    "Tap any item on the screen to view details or tell me what you'd like to see.",
+    "Nice to meet you,",
+    "Wonderful to meet you,",
+    "Great to meet you,",
+    "Hello, welcome to Green Fibre!",
+    "You can pick a category here. We have a lovely variety of eco-friendly products.",
+    "Take a look at our categories above. We have a lovely variety of eco-friendly products.",
+    "Choose any category to start exploring. We have a lovely variety of eco-friendly products.",
+    "If you have any questions, just ask me, I'm here to help.",
+    "I'm Greeny, your shopping guide. If you have any questions, just ask me, I'm here to help.",
+    "I'm Greeny, your shopping guide.",
+    "Say what you're looking for, or tap any category to explore!",
+    "Still there? Tap or speak to continue.",
+    "Welcome back",
+    "Welcome back!",
+    "What name should I call you?",
+  ],
+
+  openers: [
+    "Sure!",
+    "Of course!",
+    "Lovely choice!",
+    "Let me show you.",
+    "Here you go!",
+    "Great pick!",
+    "One moment.",
+    "Great question!",
+  ],
+
+  pair_up: [
+    "Psst!",
+    "Pick any one pair-up from here and unlock an extra 5 percent off your whole order!",
+    "Pick any one pair-up from here and unlock an extra 5% off your whole order!",
+    "Psst! Pick any one pair-up from here and unlock an extra 5 percent off your whole order!",
+    "Psst! Pick any one pair-up from here and unlock an extra 5% off your whole order!",
+    "Before you go, here's a little bonus! Add any one of these and your whole order gets 5 percent off.",
+    "Before you go, here's a little bonus! Add any one of these and your whole order gets 5% off.",
+    "Here's a little bonus! Add any one of these and your whole order gets 5 percent off.",
+    "Here's a little bonus! Add any one of these and your whole order gets 5% off.",
+    "No problem! Taking you to your cart.",
+    "Taking you to your cart.",
+    "Lovely! Your pair-up is added and your 5 percent discount is applied. Let's go to your cart!",
+    "Lovely! Your pair-up is added and your 5% discount is applied. Let's go to your cart!",
+    "Added to your cart! Pick any of these suggestions to get an extra five percent off your entire order.",
+    "Your item is added! Pair it up with any of these pieces to unlock five percent off your cart.",
+    "Here is your cart! Add any one companion piece below to get an extra five percent discount.",
+    "Here they are! Add any one to get an extra five percent off your cart.",
+    "Take a look. An extra five percent off if you pick one up.",
+    "Lovely choice! Your five percent discount is applied.",
+    "Added! You've unlocked five percent off the whole cart.",
+    "Great choice!",
+    "Let me show you some items that pair well with these mugs.",
+    "What catches your eye first?",
+    "Which one, the mug or the bowl?",
+    "What would you like me to add to your cart?",
+    "Which one would you prefer?",
+    "Would you like to add it to your cart?",
+  ],
+
+  cart_and_common: [
+    "Added to your cart.",
+    "I've added it to your cart.",
+    "Add it to your cart? Tap 'Go to checkout' or keep shopping.",
+    "No problem, here is your cart.",
+    "Sure thing, taking you to your cart.",
+    "All good, here is your cart.",
+    "No worries, let's look at your cart.",
+    "No rush! Take your time, there's lots more to explore.",
+    "I don't see a product selected yet.",
+    "I don't see a product selected yet. Please tap any product first.",
+    "Here are our sustainable products. Tap any item to explore.",
+    "Tap Add to Cart whenever you're ready.",
+    "Have a look around, I'm here if you need me.",
+    "Take your time to explore, or tap Add to Cart.",
+    "I'd be happy to help! Which product would you like to know about?",
+  ],
+
+  fallbacks: [
+    "Sorry, I couldn't catch that, it may be some noise around. Could you say it again, or tap on the screen?",
+    "Pardon me, there seems to be a little background noise. Could you repeat that or tap on the display?",
+    "I didn't quite catch that. Would you mind repeating, or you can tap any category to explore!",
+    "Sorry, I don't have that detail right now. I can tell you about the material, colours, size and price instead.",
+    "I don't have that exact detail handy. But I'd love to share the colours, size, or material with you!",
+    "That detail isn't in my notes right now. I can tell you about its eco-material, size, or pricing instead!",
+    "I couldn't find that here, but you can browse our categories on screen, or tell me what you need and I'll suggest something.",
+    "We don't have that in our collection, but feel free to explore our sustainable kitchen and drinkware on screen!",
+    "I don't see that item in our catalogue, but tell me what you're looking for and I'll find our closest eco-match.",
+    "I'm best at helping with our eco-friendly products. What are you looking for today?",
+    "I focus on our sustainable lifestyle collection here at GreenFibre. What can I help you find today?",
+    "I'm here to help you shop our sustainable essentials! Tell me what you'd like to explore.",
+    "Sorry, that's taking a little longer. Could you ask me again, or tap on the screen?",
+    "Pardon me, that took longer than usual. Would you mind asking once more, or tap any item to explore?",
+    "Sorry for the delay, that's taking a moment. Could you say that again, or touch the screen to browse?",
+  ],
+
+  small_talk: [
+    "I'm doing great, thank you for asking! How can I help you today?",
+    "I'm having a wonderful day, thank you! What can I help you find today?",
+    "Doing very well, thank you! What would you like to explore today?",
+    "You're most welcome! I'm right here if you need anything.",
+    "Always happy to help! Let me know if you'd like to see more items.",
+    "Anytime! Feel free to tap the screen or ask me about any product.",
+    "I'm Greeny, your shopping guide. I can show you products, prices and colours, just ask me.",
+    "I'm Greeny, your store assistant. You can ask me about our sustainable collection, prices, or tap the screen to explore.",
+    "I'm Greeny! I help you find eco-friendly tableware, bottles and gifts. Tell me what you need, or tap any category.",
+    "Thank you for visiting Green Fibre! Have a lovely day.",
+    "Goodbye! Thank you for stopping by Green Fibre. Have a wonderful day ahead.",
+    "Take care! Thank you for exploring Green Fibre. See you soon.",
+    "I couldn't find that here, but you can browse our categories on the screen, or tap the item you like. You can try the touch navigation too.",
+    "We don't have that in our collection today, but you can check our categories on the screen or tap any item to explore.",
+    "That item isn't available with us, but you can explore our eco-friendly products on the screen or ask me about our bottles and tableware.",
+    "I'm best at helping with our eco-friendly products. Please tell me what you're looking for, or tap on the screen to explore.",
+    "I'm here to help you shop our sustainable collection. Tell me what you'd like to see, or browse the screen.",
+    "I specialize in our Green Fibre products. Feel free to ask about our tableware, bottles, or tap the screen.",
+    "Sorry, I couldn't catch that, it may be some noise around. Please say it again, or use the touch screen.",
+    "I didn't quite get that through the background sound. Please try saying it again, or tap on the screen.",
+    "Pardon me, I couldn't hear that clearly. Could you please repeat, or explore using the touch screen.",
+  ],
+};
+
+/**
+ * Returns a flat array of all static lines for pre-warming or verification.
+ */
+export function getAllStaticLines() {
+  const set = new Set();
+  for (const group of Object.values(STATIC_SPEECH_LINES)) {
+    if (Array.isArray(group)) {
+      for (const line of group) {
+        if (line && typeof line === "string") {
+          set.add(line.trim());
+        }
+      }
+    }
+  }
+  return Array.from(set);
+}

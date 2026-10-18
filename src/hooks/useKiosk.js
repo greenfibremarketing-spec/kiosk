@@ -72,7 +72,7 @@ import {
 } from "@/lib/greetConfig";
 import { prefetchAudio, prewarmVoiceCache } from "@/lib/avatar/GreenieAvatar";
 import { speechController, warmupSpeech } from "@/lib/avatar/SpeechController";
-import { buildProductSpeech, getGreetingFlowLines } from "@/lib/productSpeech.mjs";
+import { buildProductSpeech, getGreetingFlowLines, cleanProductName } from "@/lib/productSpeech.mjs";
 import { getPaymentApi } from "@/lib/paymentApi";
 import { preloadCatalogThumbnails, preloadProductDetailPhotos } from "@/lib/imagePreloader";
 import { getHonestFallback, verifyReplyGrounding } from "@/lib/safetyNet";
@@ -102,23 +102,60 @@ const STOP_NAME_WORDS = new Set([
 
 /**
  * Validates candidate customer names against greeting rules:
- * 1 to 2 words, letters only, 2 to 20 characters, rejects request/product words.
+ * 1 to 2 words, letters only, 2 to 25 characters, rejects request/product words.
+ * Collapses consecutive repeated words case-insensitively ("Puneet Puneet" -> "Puneet").
  */
 export function validateCustomerName(str) {
   if (!str || typeof str !== "string") return { valid: false, reason: "empty" };
   const clean = str.replace(/[.,!?]/g, "").trim();
-  if (clean.length < 2 || clean.length > 20) return { valid: false, reason: "length" };
-  if (!/^[a-zA-Z]+(?:\s+[a-zA-Z]+)?$/.test(clean)) return { valid: false, reason: "letters_only" };
-  const words = clean.toLowerCase().split(/\s+/).filter(Boolean);
+  if (clean.length < 2) return { valid: false, reason: "length" };
+  const rawWords = clean.split(/\s+/).filter(Boolean);
+  if (rawWords.length === 0) return { valid: false, reason: "empty" };
+
+  // Collapse consecutive repeated words case-insensitively ("Puneet Puneet" -> "Puneet")
+  const words = [];
+  for (let i = 0; i < rawWords.length; i++) {
+    if (i === 0 || rawWords[i].toLowerCase() !== rawWords[i - 1].toLowerCase()) {
+      words.push(rawWords[i]);
+    }
+  }
+
   if (words.length > 2) return { valid: false, reason: "word_count" };
+  const collapsedClean = words.join(" ");
+  if (!/^[a-zA-Z]+(?:\s+[a-zA-Z]+)?$/.test(collapsedClean)) return { valid: false, reason: "letters_only" };
+  if (collapsedClean.length < 2 || collapsedClean.length > 25) return { valid: false, reason: "length" };
+
   for (const w of words) {
-    if (STOP_NAME_WORDS.has(w)) return { valid: false, reason: "stop_word" };
+    if (STOP_NAME_WORDS.has(w.toLowerCase())) return { valid: false, reason: "stop_word" };
   }
   const formatted = words
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
   return { valid: true, name: formatted };
 }
+
+function prewarmNameLines(name) {
+  if (!name || typeof window === "undefined") return;
+  const ttsUrl = process.env.NEXT_PUBLIC_TTS_URL || "http://localhost:4000/api/tts";
+  const lines = [
+    `Nice to meet you, ${name}!`,
+    `${name}!`,
+    `Before you go, ${name}!`,
+    `No problem, ${name}!`,
+    `Lovely, ${name}!`,
+  ];
+  setTimeout(() => {
+    for (const text of lines) {
+      try {
+        fetch(`${ttsUrl}?text=${encodeURIComponent(text)}&model=aura-2-luna-en`, {
+          method: "GET",
+          priority: "low",
+        }).catch(() => {});
+      } catch (_) {}
+    }
+  }, 100);
+}
+
 
 // ── Natural category phrase mapper ─────────────────────────────────────────
 function getCategoryNaturalLine(id, name) {
@@ -302,6 +339,7 @@ export function useKiosk() {
   const nameSubmittedRef = useRef(false);
   const categoriesFallbackTimerRef = useRef(null);
   const aiTurnTimeoutRef = useRef(null);
+  const timedOutTurnIdRef = useRef(null);
   const catalogRetryCountRef = useRef(0);
   const lastAppliedTurnIdRef = useRef(null);
   const lastAppliedSeqRef = useRef(0);
@@ -1828,24 +1866,26 @@ export function useKiosk() {
     const trimmed = String(n || "").trim();
     if (!trimmed) return;
 
+    const validation = validateCustomerName(trimmed);
+    if (!validation.valid) {
+      console.warn(`[Kiosk] Customer name validation failed: "${trimmed}" (reason=${validation.reason})`);
+      const retryLine = "Sorry, I didn't quite catch that name. Could you say it again?";
+      setCaption(retryLine);
+      const retryTid = `name_retry_${Date.now()}`;
+      speechController.beginReply(retryTid, { source: "name_retry" });
+      speechController.appendSentence(retryTid, retryLine, { turnId: retryTid });
+      speechController.endReply(retryTid);
+      return;
+    }
+
+    const formattedName = validation.name;
+    nameRef.current = formattedName;
+    setName(formattedName);
+    KioskStepCache.setCustomerName(formattedName);
+    prewarmNameLines(formattedName);
+
     // Mid-session edit from top header chip or voice
     if (onboardingDoneRef.current) {
-      const validation = validateCustomerName(trimmed);
-      if (!validation.valid) {
-        console.warn(`[Kiosk] Customer name validation failed: "${trimmed}" (reason=${validation.reason})`);
-        const retryLine = "Sorry, I didn't quite catch that name. Could you say it again?";
-        setCaption(retryLine);
-        const retryTid = `name_retry_${Date.now()}`;
-        speechController.beginReply(retryTid, { source: "name_retry" });
-        speechController.appendSentence(retryTid, retryLine, { turnId: retryTid });
-        speechController.endReply(retryTid);
-        return;
-      }
-
-      const formattedName = validation.name;
-      nameRef.current = formattedName;
-      setName(formattedName);
-      KioskStepCache.setCustomerName(formattedName);
       setOnboardingOpen(false);
 
       kioskWS.sendNameSubmitted(formattedName);
@@ -1863,19 +1903,17 @@ export function useKiosk() {
 
     nameSubmittedRef.current = true;
     KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
-    KioskStepCache.setCustomerName(trimmed);
-    nameRef.current = trimmed;
-    setName(trimmed);
 
-    kioskWS.sendNameSubmitted(trimmed);
+    kioskWS.sendNameSubmitted(formattedName);
 
     // Part C: Greeting Flow (Name provided)
     // 1. Say: "Nice to meet you," + "${name}!"
     // 2. Open category tab after greeting
     // 3. Say category line
     // 4. Say help line
-    const vIdx = trimmed.length % 3;
-    const flow = getGreetingFlowLines({ name: trimmed, isSkipped: false, variantIndex: vIdx });
+    const vIdx = formattedName.length % 3;
+    const flow = getGreetingFlowLines({ name: formattedName, isSkipped: false, variantIndex: vIdx });
+
 
     const tid = `greeting_name_${Date.now()}`;
     speechController.beginReply(tid, { source: "greeting_flow" });
@@ -2477,17 +2515,28 @@ export function useKiosk() {
         return;
       }
       const activeTurnKey = activeActionReplyIdRef.current || turnId || kioskWS.currentTurnId || "turn_default";
+      clearTimeout(aiTurnTimeoutRef.current);
+
+      if (timedOutTurnIdRef.current && (activeTurnKey === timedOutTurnIdRef.current || turnId === timedOutTurnIdRef.current)) {
+        console.log(`[Kiosk] Dropping late streamed sentence for timed-out turn=${activeTurnKey}`);
+        return;
+      }
+
       if (isBackFromDetailPendingRef.current || (backTurnIdRef.current && (turnId === backTurnIdRef.current || activeTurnKey === backTurnIdRef.current))) {
         console.log(`[Kiosk] Dropping streamed sentence for back_from_detail turn=${activeTurnKey}`);
         return;
       }
       turnsWithSentencesRef.current.add(activeTurnKey);
-      clearTimeout(aiTurnTimeoutRef.current);
       console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${activeTurnKey} text="${sentence.slice(0, 50)}"`);
       setConv(S.SPEAKING);
 
-      // Part 1 Req 7: Safety net checking all numbers against active context
-      const groundingCheck = verifyReplyGrounding(sentence, [latestRef.current.product, ...(latestRef.current.backendCatalog || [])]);
+      // Part 1 Req 7: Safety net checking all numbers and facts against context product(s) only
+      const activeContextProducts = latestRef.current.product
+        ? [latestRef.current.product]
+        : (latestRef.current.liveTurnProducts && latestRef.current.liveTurnProducts.length > 0)
+          ? latestRef.current.liveTurnProducts
+          : [];
+      const groundingCheck = verifyReplyGrounding(sentence, activeContextProducts);
       const safeSentence = groundingCheck.text;
 
       const textToSpeak = sanitizeForMultipleFaces(safeSentence);
@@ -2502,6 +2551,14 @@ export function useKiosk() {
 
     const unsubDone = kioskWS.on("done", (doneData) => {
       clearTimeout(aiTurnTimeoutRef.current);
+      const turnId = activeActionReplyIdRef.current || doneData?.turnId || doneData?.meta?.turn_id || kioskWS.currentTurnId || "turn_default";
+
+      if (timedOutTurnIdRef.current && (turnId === timedOutTurnIdRef.current || doneData?.turnId === timedOutTurnIdRef.current)) {
+        console.log(`[Kiosk] Dropping late done reply for timed-out turn=${turnId}`);
+        timedOutTurnIdRef.current = null;
+        return;
+      }
+
       if (replayingRef.current) {
         console.log("[Restore] replay: ignored done");
         return;
@@ -2514,7 +2571,6 @@ export function useKiosk() {
       if (doneData?.action || doneData?.salesStage) {
         handleServerAction(doneData.action, doneData.salesStage);
       }
-      const turnId = activeActionReplyIdRef.current || doneData?.turnId || doneData?.meta?.turn_id || kioskWS.currentTurnId || "turn_default";
       if (isBackFromDetailPendingRef.current || (backTurnIdRef.current && turnId === backTurnIdRef.current)) {
         console.log(`[Kiosk] unsubDone: holding for returnFromDetail turn=${turnId}`);
         return;
@@ -2522,8 +2578,13 @@ export function useKiosk() {
       speechController.endReply(turnId);
 
       if (doneData?.reply && typeof doneData.reply === "string" && doneData.reply.trim().length > 0) {
-        // Part 1 Req 7: Safety net checking all numbers in done reply
-        const groundingCheck = verifyReplyGrounding(doneData.reply.trim(), [latestRef.current.product, ...(latestRef.current.backendCatalog || [])]);
+        // Part 1 Req 7: Safety net checking all numbers and facts in done reply against context product(s) only
+        const activeContextProducts = latestRef.current.product
+          ? [latestRef.current.product]
+          : (latestRef.current.liveTurnProducts && latestRef.current.liveTurnProducts.length > 0)
+            ? latestRef.current.liveTurnProducts
+            : [];
+        const groundingCheck = verifyReplyGrounding(doneData.reply.trim(), activeContextProducts);
         const replyText = sanitizeForMultipleFaces(groundingCheck.text);
         setCaption(replyText);
 
@@ -2709,6 +2770,87 @@ export function useKiosk() {
       }
     }
 
+    // ── Spoken answers during Pair-Up Modal Sheet ──
+    if (latestRef.current.pairUpModalOpen) {
+      const pairList = latestRef.current.pairUpProducts || [];
+      const clean = trimmed
+        .toLowerCase()
+        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // 1. "first one", "add the first one", "add first", "the first"
+      if (/(?:first one|the first one|add the first|add first|first item)\b/i.test(clean)) {
+        if (pairList[0]) {
+          console.log("[PairUpVoice] adding first item:", pairList[0].name);
+          latestRef.current.handlePairUpAddProduct?.(pairList[0]);
+          return;
+        }
+      }
+
+      // 2. "second one", "add the second one", "add second", "the second"
+      if (/(?:second one|the second one|add the second|add second|second item)\b/i.test(clean)) {
+        if (pairList[1]) {
+          console.log("[PairUpVoice] adding second item:", pairList[1].name);
+          latestRef.current.handlePairUpAddProduct?.(pairList[1]);
+          return;
+        }
+      }
+
+      // 3. "third one", "add the third one", "add third", "the third"
+      if (/(?:third one|the third one|add the third|add third|third item)\b/i.test(clean)) {
+        if (pairList[2]) {
+          console.log("[PairUpVoice] adding third item:", pairList[2].name);
+          latestRef.current.handlePairUpAddProduct?.(pairList[2]);
+          return;
+        }
+      }
+
+      // 4. "no", "skip", "take me to cart", "proceed", "go to cart"
+      if (/^(?:no|skip|no thanks|proceed|continue|take me to cart|go to cart|view cart)\b/i.test(clean)) {
+        console.log("[PairUpVoice] proceed to cart:", clean);
+        latestRef.current.handlePairUpProceed?.();
+        return;
+      }
+
+      // 5. Generic "add it" / "add this" / "take it"
+      if (/^(?:add it|add this|take it|add to cart|i will take it|i'll take it)$/i.test(clean)) {
+        if (pairList.length === 1) {
+          latestRef.current.handlePairUpAddProduct?.(pairList[0]);
+          return;
+        }
+        if (pairList.length >= 2) {
+          const p1 = cleanProductName(pairList[0]?.name || "item");
+          const p2 = cleanProductName(pairList[1]?.name || "item");
+          say(`Which one, the ${p1} or the ${p2}?`);
+          return;
+        }
+      }
+
+      // 6. Match specific product name in pairList: "add the mug", "i'll take the bowl", etc.
+      const words = clean.split(/\s+/).filter((w) => w.length >= 3 && !["add", "the", "take", "and", "one", "for", "please"].includes(w));
+      const matchedPair = pairList.find((p) => {
+        const pName = (p.name || "").toLowerCase();
+        return words.some((w) => pName.includes(w));
+      });
+      if (matchedPair) {
+        console.log("[PairUpVoice] matched specific item:", matchedPair.name);
+        latestRef.current.handlePairUpAddProduct?.(matchedPair);
+        return;
+      }
+    }
+
+    // ── Spoken add-to-cart intent while browsing ──
+    if (/^(?:add to cart|add it|add this|add product|i'll take it|i will take it|buy this)$/i.test(trimmed)) {
+      if (latestRef.current.showDetail && latestRef.current.product) {
+        console.log("[CartVoice] Adding currently open product to cart:", latestRef.current.product.name);
+        latestRef.current.handleAddToCart?.({ product: latestRef.current.product });
+        return;
+      }
+      say("What would you like me to add to your cart?");
+      return;
+    }
+
     stopSpeechForUserAction("user_voice_turn");
 
     // ── Voice shortcut: "go back" / "back" / "back to products" / "back to all products" ──
@@ -2740,13 +2882,21 @@ export function useKiosk() {
     const sTs = timing?.sttFinalTs || Date.now();
     const wsSentTs = typeof window !== "undefined" ? performance.now() : Date.now();
 
-    // Part 1 Req 7: 4-second timeout guard: speak fallback so customer is never left in silence
+    // Part 2: 4-second timeout watchdog for slow AI reply
+    const sentTurnId = kioskWS.sendWsMessage(trimmed, {
+      userFinalTs: uTs,
+      stt_final_ts: sTs,
+      client_sent_ts: wsSentTs,
+    });
+    activeActionReplyIdRef.current = sentTurnId;
+
     clearTimeout(aiTurnTimeoutRef.current);
     aiTurnTimeoutRef.current = setTimeout(() => {
       if (kioskModeRef.current !== "ENGAGED") return;
       if (convStateRef.current === S.THINKING) {
-        console.warn("[Kiosk] AI turn timed out (4000ms). Speaking safe honest fallback.");
-        const fallback = getHonestFallback("not_in_data");
+        console.warn(`[Kiosk] AI turn timed out (4000ms) for turn=${sentTurnId}. Speaking taking_longer fallback.`);
+        timedOutTurnIdRef.current = sentTurnId;
+        const fallback = getHonestFallback("taking_longer");
         setConv(S.SPEAKING);
         setCaption(fallback);
         const fbTurnId = `timeout_fb_${Date.now()}`;
@@ -2755,12 +2905,6 @@ export function useKiosk() {
         speechController.endReply(fbTurnId);
       }
     }, 4000);
-
-    kioskWS.sendWsMessage(trimmed, {
-      userFinalTs: uTs,
-      stt_final_ts: sTs,
-      client_sent_ts: wsSentTs,
-    });
 
   }, [handleServerAction, say, setConv, skipName, stopSpeechForUserAction, submitName]);
 
@@ -3216,6 +3360,7 @@ export function useKiosk() {
     const wasDetail = productDetailOpenedRef.current || latestRef.current.showDetail;
     lastProductSpokenRef.current = null;
     speechController.cancelAll("navigate_back");
+    clearTimeout(aiTurnTimeoutRef.current);
 
     trace("showDetail=false", { caller: "navigateBack" });
     setShowDetail(false);
@@ -3335,9 +3480,60 @@ export function useKiosk() {
     stopSpeechForUserAction("user_accept_recommendation");
     lastInputAtRef.current = Date.now();
     console.log("[Reco] accepted");
+
+    const reco = latestRef.current.recommendationData;
+    const base = reco?.base_product;
+    const sugg = reco?.suggested_product;
+
+    if (sugg || base) {
+      setCartItems((prev) => {
+        let updated = [...prev];
+        if (base) {
+          const baseId = base.id || base.sku;
+          const hasBase = updated.some((i) => i.id === baseId || i.sku === baseId);
+          if (!hasBase) {
+            updated.push({
+              id: baseId,
+              sku: base.sku || baseId,
+              name: base.name,
+              price: base.salePrice || base.price || 0,
+              quantity: 1,
+              selectedColor: "Natural Olive",
+              image: base.image,
+              shape: base.shape,
+              isPairUp: false,
+            });
+          }
+        }
+        if (sugg) {
+          const suggId = sugg.id || sugg.sku;
+          const hasSugg = updated.some((i) => i.id === suggId || i.sku === suggId);
+          if (!hasSugg) {
+            updated.push({
+              id: suggId,
+              sku: sugg.sku || suggId,
+              name: sugg.name,
+              price: sugg.salePrice || sugg.price || 0,
+              quantity: 1,
+              image: sugg.image,
+              shape: sugg.shape,
+              isPairUp: true,
+            });
+          }
+        }
+        return updated;
+      });
+
+      if (sugg) {
+        say(`Added the ${cleanProductName(sugg.name)} to your cart.`);
+      } else if (base) {
+        say(`Added the ${cleanProductName(base.name)} to your cart.`);
+      }
+    }
+
     setRecommendationOpen(false);
     kioskWS.sendWsAction({ action: "ACCEPT_RECOMMENDATION" });
-  }, [stopSpeechForUserAction]);
+  }, [stopSpeechForUserAction, say]);
 
   const declineRecommendation = useCallback(() => {
     stopSpeechForUserAction("user_decline_recommendation");
@@ -3413,11 +3609,24 @@ export function useKiosk() {
     setCartItems((prev) => prev.filter((it) => it.id !== idOrSku && it.sku !== idOrSku));
   }, []);
 
+  const lastAddToCartRef = useRef(0);
+  const lastAddedIdRef = useRef(null);
+
   const handleAddToCart = useCallback(
     async ({ product, quantity = 1, selectedColor = "Natural Olive" } = {}) => {
       if (!product) return;
-      const openTime = Date.now();
       const pid = product.id || product.sku;
+
+      // Debounce duplicate triggers (tap + voice, double-tap within 450ms)
+      const now = Date.now();
+      if (now - lastAddToCartRef.current < 450 && lastAddedIdRef.current === pid) {
+        console.log(`[Cart] Debounced duplicate add-to-cart for pid=${pid}`);
+        return;
+      }
+      lastAddToCartRef.current = now;
+      lastAddedIdRef.current = pid;
+
+      const openTime = Date.now();
 
       cancelPendingReturnFromDetail("add_to_cart");
       speechController.cancelAll("pairup_action");
@@ -3509,6 +3718,15 @@ export function useKiosk() {
       if (!item) return;
       const pid = item.id || item.sku;
 
+      // Debounce duplicate triggers (tap + voice, double-tap within 450ms)
+      const now = Date.now();
+      if (now - lastAddToCartRef.current < 450 && lastAddedIdRef.current === pid) {
+        console.log(`[Cart] Debounced duplicate pair-up add-to-cart for pid=${pid}`);
+        return;
+      }
+      lastAddToCartRef.current = now;
+      lastAddedIdRef.current = pid;
+
       const pairItem = {
         id: pid,
         sku: item.sku || pid,
@@ -3527,8 +3745,9 @@ export function useKiosk() {
       });
 
       addedPairUpInCurrentModalRef.current = true;
+      say(`Added the ${cleanProductName(item.name)} to your cart.`);
     },
-    []
+    [say]
   );
 
   const handlePairUpSkip = useCallback(() => {
@@ -3677,11 +3896,13 @@ export function useKiosk() {
     declineRecommendation,
     pairUpPromptOpen,
     pairUpModalOpen,
+    pairUpProducts,
     handlePairUpYes,
     handlePairUpNo,
     handlePairUpAddProduct,
     handlePairUpSkip,
     handlePairUpDone,
+    handlePairUpProceed,
     handleAddToCart,
     cartItems,
     cartTotals,

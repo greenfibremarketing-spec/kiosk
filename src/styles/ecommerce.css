@@ -687,54 +687,6 @@
   color: var(--muted);
 }
 
-/* Avatar Suggestions */
-.pdp-suggestions-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 0;
-}
-
-.pdp-suggestions-tag {
-  font-family: var(--font-heading);
-  font-size: 12px;
-  font-weight: 800;
-  color: #007a2d;
-  white-space: nowrap;
-}
-
-.pdp-suggestions-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.pdp-suggest-button {
-  padding: 8px 14px;
-  min-height: 40px;
-  border-radius: var(--radius-pill);
-  background: #ffffff;
-  border: 1px solid var(--line);
-  font-family: var(--font-heading);
-  font-size: 12.5px;
-  font-weight: 700;
-  color: #14271c;
-  cursor: pointer;
-  transition: all 0.16s ease;
-}
-
-.pdp-suggest-button:active {
-  transform: scale(0.96);
-  background: #eaf8ef;
-  border-color: #00A63E;
-}
-
-.pdp-suggest-button--take {
-  background: #00A63E;
-  color: #ffffff;
-  border-color: #00A63E;
-  box-shadow: 0 2px 8px rgba(0, 166, 62, 0.3);
-}
 
 /* Sticky Bottom Action Bar */
 .pdp-sticky-action-bar {

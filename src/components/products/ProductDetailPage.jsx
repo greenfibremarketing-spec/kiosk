@@ -118,7 +118,16 @@ function SlideImage({ src, alt, isFirst = false, onFirstImageLoaded = null }) {
   const [retryCount, setRetryCount] = useState(0);
   const imgRef = React.useRef(null);
 
-  // Check if browser already has the image decoded in memory/cache
+  // Callback ref for instantaneous complete check on mount
+  const setImgNode = useCallback((node) => {
+    imgRef.current = node;
+    if (node && node.complete && node.naturalWidth > 0) {
+      setLoaded(true);
+      if (isFirst) onFirstImageLoaded?.(true);
+    }
+  }, [isFirst, onFirstImageLoaded]);
+
+  // Synchronous and effect-level verification
   useEffect(() => {
     if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
       setLoaded(true);
@@ -127,13 +136,21 @@ function SlideImage({ src, alt, isFirst = false, onFirstImageLoaded = null }) {
       setLoaded(false);
     }
     setError(false);
-  }, [src, retryCount, isFirst]);
+
+    // Safety fallback: ensure opacity never stays 0 if browser completed load silently
+    const timer = setTimeout(() => {
+      if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+        setLoaded(true);
+      }
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [src, retryCount, isFirst, onFirstImageLoaded]);
 
   if (error || !src) {
     return (
       <div className="pdp-slide-fallback" aria-label={alt}>
         <Sprout size={48} strokeWidth={1.5} className="pdp-fallback-icon" />
-        <span className="pdp-fallback-text">{alt}</span>
+        <span className="pdp-fallback-text">{alt || "Product image"}</span>
       </div>
     );
   }
@@ -163,7 +180,7 @@ function SlideImage({ src, alt, isFirst = false, onFirstImageLoaded = null }) {
     <div className="pdp-slide-img-wrap" style={{ aspectRatio: "1 / 1" }}>
       {!loaded && <div className="pdp-slide-skeleton" />}
       <img
-        ref={imgRef}
+        ref={setImgNode}
         src={activeSrc}
         alt={alt}
         className={`pdp-slide-img ${loaded ? "pdp-slide-img--loaded" : ""}`}
@@ -307,11 +324,6 @@ export default function ProductDetailPage({
   const discountPct = hasDiscount ? Math.round(((mrp - unitPrice) / mrp) * 100) : 0;
   const totalPrice = unitPrice * quantity;
   const savings = hasDiscount ? (mrp - unitPrice) * quantity : 0;
-
-  const displayButtons =
-    buttons && buttons.length > 0
-      ? buttons
-      : ["Next", "Cheaper", "Compare", "I'll take it"];
 
   return (
     <div className="pdp-redesign-wrapper" aria-label={`Details for ${product.name}`}>
@@ -579,53 +591,6 @@ export default function ProductDetailPage({
             </div>
           </div>
 
-          {/* Avatar Suggestions (Preserved Functionality) */}
-          {displayButtons && displayButtons.length > 0 && (
-            <div className="pdp-suggestions-row">
-              <span className="pdp-suggestions-tag">⚡ Greenie:</span>
-              <div className="pdp-suggestions-chips">
-                {displayButtons.map((btn, idx) => {
-                  const label =
-                    typeof btn === "string" ? btn : btn.label || btn.name || btn.id;
-                  const isTakeIt = /take it|i'll take it|buy/i.test(label);
-                  return (
-                    <button
-                      key={idx}
-                      type="button"
-                      className={`pdp-suggest-button ${
-                        isTakeIt ? "pdp-suggest-button--take" : ""
-                      }`}
-                      onClick={() => {
-                        if (isTakeIt) {
-                          if (onAddToCart) {
-                            onAddToCart({
-                              product,
-                              quantity,
-                              selectedColor,
-                              totalPrice,
-                              savings,
-                            });
-                          } else {
-                            onProceedToCheckout?.({
-                              product,
-                              quantity,
-                              selectedColor,
-                              totalPrice,
-                              savings,
-                            });
-                          }
-                        } else {
-                          onButtonClick?.(btn);
-                        }
-                      }}
-                    >
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
       </div>
 

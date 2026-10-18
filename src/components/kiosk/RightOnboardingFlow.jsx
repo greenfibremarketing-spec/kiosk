@@ -48,40 +48,8 @@ export default function RightOnboardingFlow({
     }
   }, [name]);
 
-  const autoAdvanceTimerRef = React.useRef(null);
-  const [autoSubmitting, setAutoSubmitting] = useState(false);
+  // Note: Only final transcript via sendTranscript in useKiosk submits the name.
 
-  // Live voice input for name during step 1 + Auto-advance progression
-  useEffect(() => {
-    if (step === 1 && liveTranscript) {
-      const lower = liveTranscript.toLowerCase().trim();
-      if (/^(?:skip|skip name|no|pass|not now|no name|just browse|never mind)$/i.test(lower)) {
-        handleSkipStep1();
-        return;
-      }
-      const clean = liveTranscript
-        .replace(/^(?:my name is|i am|i'm|this is|call me|myself|it's|it is)\s+/i, "")
-        .replace(/[.,!?]/g, "")
-        .trim();
-      const words = clean.toLowerCase().split(/\s+/).filter(Boolean);
-      const containsStopWord = words.some((w) => STOP_NAME_WORDS.has(w));
-      if (clean && words.length >= 1 && words.length <= 3 && !containsStopWord) {
-        const formatted = words
-          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-          .join(" ");
-        setInputName(formatted);
-
-        // Auto-advance after 800ms pause once name is spoken
-        clearTimeout(autoAdvanceTimerRef.current);
-        setAutoSubmitting(true);
-        autoAdvanceTimerRef.current = setTimeout(() => {
-          setAutoSubmitting(false);
-          handleProceedFromStep1(formatted);
-        }, 800);
-      }
-    }
-    return () => clearTimeout(autoAdvanceTimerRef.current);
-  }, [step, liveTranscript]);
 
   // Sync if controlledStep changes dynamically (from AI backend action)
   useEffect(() => {

@@ -27,14 +27,14 @@ export default function CheckoutPage({
 
   // Customer delivery form state
   const [formData, setFormData] = useState({
-    fullName: "Aarav Sharma",
-    phone: "9876543210",
-    email: "aarav.sharma@gmail.com",
-    address: "B-402, Green Acre Residences, S.G. Highway",
-    city: "Ahmedabad",
-    state: "Gujarat",
-    pincode: "380054",
-    landmark: "Near Green Arcades",
+    fullName: "",
+    phone: "",
+    email: "",
+    address: "",
+    city: "",
+    state: "",
+    pincode: "",
+    landmark: "",
   });
 
   // UI adapter status: "idle" | "preparing" | "paying" | "verifying" | "pending" | "confirmed" | "review" | "problem"

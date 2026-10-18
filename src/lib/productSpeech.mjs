@@ -2,6 +2,8 @@
  * Product speech generator for Greeny avatar on the product details screen.
  * Generates natural, short, friendly chunks (~10-12s, max 3 chunks) from real product data.
  */
+import { getAllStaticLines } from "./staticSpeechLines.mjs";
+
 
 // Helper to format currency
 export function formatRupees(num) {
@@ -73,7 +75,8 @@ export function normalizeForSpeech(text) {
     return num > 0 ? `${num.toLocaleString("en-IN")} rupees` : m;
   });
   // Plain price numbers like 1199 or 1499 that match catalog item prices without 'rupees'
-  t = t.replace(/\b(799|899|999|1199|1299|1499|1599|1699|3199|6999|7999)\b(?!\s*(?:millilitres|ml|percent|%|cm|mm|inches|gm|g|kg))/gi, (m, p1) => {
+  // Lookahead MUST include rupees|rupee so it is strictly idempotent
+  t = t.replace(/\b(799|899|999|1199|1299|1499|1599|1699|3199|6999|7999)\b(?!\s*(?:rupees|rupee|millilitres|ml|percent|%|cm|mm|inches|gm|g|kg))/gi, (m, p1) => {
     const num = Math.round(Number(p1) || 0);
     return `${num.toLocaleString("en-IN")} rupees`;
   });
@@ -85,24 +88,108 @@ export function normalizeForSpeech(text) {
   t = t.replace(/[*#_`~|>{}\[\]]/g, " ");
   t = t.replace(/\.{2,}/g, ".");
   t = t.replace(/,{2,}/g, ",");
+
+  // Idempotency guarantee: collapse any consecutive repeated words case-insensitively ("rupees rupees" -> "rupees", etc.)
+  t = t.replace(/\b([a-zA-Z]+)(?:\s+\1\b)+/gi, "$1");
   t = t.replace(/\s+/g, " ").trim();
+
+  // Dev assertion for repeated words
+  if (typeof process !== "undefined" && process.env?.NODE_ENV !== "production") {
+    const repeated = t.match(/\b([a-zA-Z]{3,})\s+\1\b/i);
+    if (repeated) {
+      console.warn(`[SpeechNorm] Dev assertion warning: repeated word "${repeated[1]}" found in "${t}"`);
+    }
+  }
+
   return t;
 }
 
 /**
+ * Splits a single long sentence (> 110 chars) into natural speech clauses.
+ * Priority order:
+ *  1. Comma (not inside formatted numbers)
+ *  2. Before conjunctions (" but ", " or ", " and ")
+ *  3. Word space as last resort
+ * Length max ~110 chars, min ~25 chars.
+ */
+function splitLongSegment(text, maxLen = 110, minLen = 25) {
+  const chunks = [];
+  let remaining = text.trim();
+
+  while (remaining.length > maxLen) {
+    const slice = remaining.slice(0, maxLen);
+    let splitIdx = -1;
+
+    // 1. Comma (not in numbers) between minLen and maxLen
+    for (let i = slice.length - 1; i >= minLen; i--) {
+      if (slice[i] === ',') {
+        const isNumComma = i > 0 && /\d/.test(slice[i - 1]) && i + 1 < slice.length && /\d/.test(slice[i + 1]);
+        if (!isNumComma) {
+          splitIdx = i + 1; // split right after comma
+          break;
+        }
+      }
+    }
+
+    // 2. Before conjunctions (" but ", " or ", " and ")
+    if (splitIdx === -1) {
+      const conjRegex = /\s+(?=(?:but|or|and)\b)/gi;
+      let match;
+      let bestConjIdx = -1;
+      while ((match = conjRegex.exec(slice)) !== null) {
+        if (match.index >= minLen && match.index <= maxLen) {
+          bestConjIdx = match.index;
+        }
+      }
+      if (bestConjIdx !== -1) {
+        splitIdx = bestConjIdx;
+      }
+    }
+
+    // 3. Word boundary (space) as last resort
+    if (splitIdx === -1) {
+      const spaceIdx = slice.lastIndexOf(" ");
+      if (spaceIdx >= minLen) {
+        splitIdx = spaceIdx;
+      }
+    }
+
+    // Fallback if no clean delimiter found
+    if (splitIdx === -1) {
+      splitIdx = maxLen;
+    }
+
+    const part = remaining.slice(0, splitIdx).trim();
+    if (part) chunks.push(part);
+    remaining = remaining.slice(splitIdx).trim();
+  }
+
+  if (remaining) {
+    if (chunks.length > 0 && remaining.length < minLen && (chunks[chunks.length - 1].length + remaining.length + 1 <= maxLen + 10)) {
+      chunks[chunks.length - 1] += " " + remaining;
+    } else {
+      chunks.push(remaining);
+    }
+  }
+
+  return chunks;
+}
+
+/**
  * Single chunker used by live speech and pre-warm.
- * Rules:
- *  - Split only at sentence ends (. ! ?)
- *  - Never at commas
- *  - Never inside numbers (1,199 stays together)
- *  - Max chunk ~80 chars, min chunk ~25 chars
+ * Split order priority:
+ *  1. Sentence end (. ! ?)
+ *  2. Comma (not in numbers)
+ *  3. Before "but" / "or" / "and"
+ *  4. Space as last resort
+ * Length max ~110 chars, min ~25 chars.
  */
 export function chunkText(text) {
   if (!text || typeof text !== "string") return [];
   const normalized = normalizeForSpeech(text);
   if (!normalized) return [];
 
-  // Split ONLY on sentence boundaries (. ? !) - never at commas
+  // Split on sentence boundaries (. ? !)
   const rawSentences = normalized
     .split(/(?<=[.?!])\s+(?=[A-Z0-9"'])/)
     .map((s) => s.trim())
@@ -112,50 +199,33 @@ export function chunkText(text) {
   let buffer = "";
 
   for (const s of rawSentences) {
-    if (!buffer) {
-      buffer = s;
-    } else if (buffer.length + s.length + 1 <= 80) {
-      buffer += " " + s;
+    if (s.length > 110) {
+      if (buffer) {
+        chunks.push(buffer);
+        buffer = "";
+      }
+      const subChunks = splitLongSegment(s, 110, 25);
+      chunks.push(...subChunks);
     } else {
-      chunks.push(buffer);
-      buffer = s;
+      if (!buffer) {
+        buffer = s;
+      } else if (buffer.length + s.length + 1 <= 110) {
+        buffer += " " + s;
+      } else {
+        chunks.push(buffer);
+        buffer = s;
+      }
     }
   }
   if (buffer) {
-    if (chunks.length > 0 && buffer.length < 25 && chunks[chunks.length - 1].length + buffer.length + 1 <= 85) {
+    if (chunks.length > 0 && buffer.length < 25 && chunks[chunks.length - 1].length + buffer.length + 1 <= 115) {
       chunks[chunks.length - 1] += " " + buffer;
     } else {
       chunks.push(buffer);
     }
   }
 
-  // Handle sentences that exceed 80 characters: split ONLY at word spaces, NEVER at commas
-  const finalChunks = [];
-  for (const c of chunks) {
-    if (c.length <= 80) {
-      finalChunks.push(c);
-      continue;
-    }
-
-    let remaining = c;
-    while (remaining.length > 80) {
-      const spaceIdx = remaining.slice(0, 80).lastIndexOf(" ");
-      const splitIdx = spaceIdx >= 20 ? spaceIdx : 80;
-
-      const part = remaining.slice(0, splitIdx).trim();
-      if (part) finalChunks.push(part);
-      remaining = remaining.slice(splitIdx).trim();
-    }
-    if (remaining) {
-      if (finalChunks.length > 0 && remaining.length < 25 && finalChunks[finalChunks.length - 1].length + remaining.length + 1 <= 85) {
-        finalChunks[finalChunks.length - 1] += " " + remaining;
-      } else {
-        finalChunks.push(remaining);
-      }
-    }
-  }
-
-  return finalChunks.filter(Boolean);
+  return chunks.filter(Boolean);
 }
 
 /**
@@ -240,43 +310,12 @@ export function buildProductSpeech(product, options = {}) {
 export function getAllProductSpeechLines(catalog = []) {
   const lines = new Set();
 
-  // Static greeting flow lines (Part C)
-  const staticGreetingLines = [
-    "Nice to meet you,",
-    "Wonderful to meet you,",
-    "Great to meet you,",
-    "Hello, welcome to Green Fibre!",
-    "You can pick a category here. We have a lovely variety of eco-friendly products.",
-    "Take a look at our categories above. We have a lovely variety of eco-friendly products.",
-    "Choose any category to start exploring. We have a lovely variety of eco-friendly products.",
-    "If you have any questions, just ask me, I'm here to help.",
-    "I'm Greeny, your shopping guide. If you have any questions, just ask me, I'm here to help.",
-    // Static Small Talk & Out-of-Context variants (excluding customer name)
-    "I'm doing great, thank you for asking! How can I help you today?",
-    "I'm having a wonderful day, thank you! What can I help you find today?",
-    "Doing very well, thank you! What would you like to explore today?",
-    "You're most welcome! I'm right here if you need anything.",
-    "Always happy to help! Let me know if you'd like to see more items.",
-    "Anytime! Feel free to tap the screen or ask me about any product.",
-    "I'm Greeny, your shopping guide. I can show you products, prices and colours, just ask me.",
-    "I'm Greeny, your store assistant. You can ask me about our sustainable collection, prices, or tap the screen to explore.",
-    "I'm Greeny! I help you find eco-friendly tableware, bottles and gifts. Tell me what you need, or tap any category.",
-    "Thank you for visiting Green Fibre! Have a lovely day.",
-    "Goodbye! Thank you for stopping by Green Fibre. Have a wonderful day ahead.",
-    "Take care! Thank you for exploring Green Fibre. See you soon.",
-    "I couldn't find that here, but you can browse our categories on the screen, or tap the item you like. You can try the touch navigation too.",
-    "We don't have that in our collection today, but you can check our categories on the screen or tap any item to explore.",
-    "That item isn't available with us, but you can explore our eco-friendly products on the screen or ask me about our bottles and tableware.",
-    "I'm best at helping with our eco-friendly products. Please tell me what you're looking for, or tap on the screen to explore.",
-    "I'm here to help you shop our sustainable collection. Tell me what you'd like to see, or browse the screen.",
-    "I specialize in our Green Fibre products. Feel free to ask about our tableware, bottles, or tap the screen.",
-    "Sorry, I couldn't catch that, it may be some noise around. Please say it again, or use the touch screen.",
-    "I didn't quite get that through the background sound. Please try saying it again, or tap on the screen.",
-    "Pardon me, I couldn't hear that clearly. Could you please repeat, or explore using the touch screen.",
-  ];
-  for (const l of staticGreetingLines) {
-    lines.add(normalizeForSpeech(l));
+  // All shared static lines (single source of truth)
+  for (const l of getAllStaticLines()) {
+    const norm = normalizeForSpeech(l);
+    if (norm) lines.add(norm);
   }
+
 
   if (Array.isArray(catalog)) {
     for (const product of catalog) {

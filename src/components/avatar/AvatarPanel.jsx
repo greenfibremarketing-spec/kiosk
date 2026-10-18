@@ -51,6 +51,7 @@ export default function AvatarPanel({
   evidence,
   speakingForMs,
   silentForMs,
+  showSubtitles = true,
 }) {
   const isEngaged = presenceState === "ENGAGED";
   const stageRef = useRef(null);
@@ -201,7 +202,7 @@ export default function AvatarPanel({
       {/* Floating Greenie Anchor - anchored bottom-right, transparent, pointer-events: none */}
       <div
         className={`greenie-avatar-anchor ${showDetail ? "greenie-avatar-anchor--pdp" : ""}`}
-        style={{ display: isEngaged && !isPairUpOpen ? "block" : "none", pointerEvents: "none" }}
+        style={{ display: isEngaged ? "block" : "none", pointerEvents: "none" }}
       >
         <GreenieStage
           ref={stageCallbackRef}
@@ -213,8 +214,8 @@ export default function AvatarPanel({
         />
       </div>
 
-      {/* Speech Bubble floating above Greenie (hidden when pair-up modal is open; caption is inside modal) */}
-      {isEngaged && !isPairUpOpen && (
+      {/* Speech Bubble floating above Greenie (visible whenever engaged and subtitles enabled) */}
+      {isEngaged && showSubtitles && (
         <Captions
           text={caption}
           activeChunkText={activeChunkText}
@@ -225,8 +226,8 @@ export default function AvatarPanel({
         />
       )}
 
-      {/* User Voice-to-Text Transcript Bubble (Bottom-Left) */}
-      {isEngaged && (
+      {/* User Voice-to-Text Transcript Bubble (Bottom-Left; hidden if showSubtitles is false) */}
+      {isEngaged && showSubtitles && (
         <UserTranscriptBubble
           liveTranscript={liveTranscript}
           lastUserSpeech={lastUserSpeech}

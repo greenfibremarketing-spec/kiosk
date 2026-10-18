@@ -309,13 +309,21 @@ export class SpeechController {
 
   /**
    * Cancel all playback immediately (session reset, user barge-in, or disengage).
+   * Only real user actions may cancel speech (UI updates, timers, modal opens must not cancel speech).
    */
-  cancelAll(reason = "user_interrupt") {
+  cancelAll(reason = "user_interrupt", turnId = null) {
+    const activeTurnId = turnId || this.currentReplyId || "none";
+    const disallowed = ["ui_update", "timer", "modal_open", "render", "state_change"];
+    if (disallowed.includes(reason)) {
+      console.warn(`[SpeechController] cancelAll IGNORED for disallowed reason="${reason}" turnId=${activeTurnId}`);
+      return;
+    }
+
     const droppedCount = this.queue.length;
     this.generation++;
     const currentGen = this.generation;
 
-    console.log(`[SpeechController] cancelAll reason=${reason} queueDropped=${droppedCount} generation=${currentGen}`);
+    console.log(`[SpeechController] cancelAll reason=${reason} turnId=${activeTurnId} queueDropped=${droppedCount} generation=${currentGen}`);
 
     // Clear subtitle hold timer and clear active subtitles immediately on reset/interrupt
     if (this._subtitleHoldTimer) {

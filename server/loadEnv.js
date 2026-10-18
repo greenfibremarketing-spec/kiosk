@@ -11,6 +11,10 @@ const candidates = [
   path.join(process.cwd(), ".env"),
 ].filter(Boolean);
 
+const _serverStartTs = Date.now();
+globalThis._serverStartTs = _serverStartTs;
+console.log(`[StartupTiming:Server] 01_loadEnv_start at ${new Date().toISOString()}`);
+
 for (const envFile of candidates) {
   if (fs.existsSync(envFile)) {
     try {
@@ -34,3 +38,4 @@ for (const envFile of candidates) {
     }
   }
 }
+console.log(`[StartupTiming:Server] 02_loadEnv_end (+${Date.now() - _serverStartTs}ms)`);

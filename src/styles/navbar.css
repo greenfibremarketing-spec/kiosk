@@ -901,3 +901,26 @@
   border-color: #00A63E;
   color: #007a2d;
 }
+
+.sidebar__admin-btn {
+  padding: 7px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: #f4f6f5;
+  color: #4b5563;
+  font-family: var(--font-heading);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar__admin-btn:hover {
+  background: #e5e7eb;
+  border-color: #9ca3af;
+  color: #111827;
+}
+

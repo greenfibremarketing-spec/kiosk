@@ -59,8 +59,8 @@ function splitIntoSubtitles(fullText, wordsPerChunk = 6) {
 }
 
 export default function Captions({ text, speaking, status, charIndex = 0, activeChunkText = "", showDetail = false }) {
-  // Show Greeny's current spoken line as text in the existing avatar bubble, in sync with each chunk as it starts playing, and clear it when she finishes.
-  const displayText = speaking ? (activeChunkText || text || "") : "";
+  // Show Greeny's current spoken line as text in the existing avatar bubble: full sentence even while chunks play.
+  const displayText = speaking ? (text || activeChunkText || "") : "";
   const isVisible = Boolean(speaking && displayText);
 
   if (!displayText && !isVisible) return null;

@@ -86,12 +86,36 @@ export const KioskStepCache = {
 
   // ── Customer Name ────────────────────────────────────────
   getCustomerName() {
-    return storageGet(CACHE_KEYS.CUSTOMER_NAME) || "";
+    const raw = storageGet(CACHE_KEYS.CUSTOMER_NAME) || "";
+    if (!raw) return "";
+    const words = raw.split(/\s+/).filter(Boolean);
+    const dedup = [];
+    for (let i = 0; i < words.length; i++) {
+      if (i === 0 || words[i].toLowerCase() !== words[i - 1].toLowerCase()) {
+        dedup.push(words[i]);
+      }
+    }
+    const clean = dedup.join(" ");
+    if (clean !== raw) {
+      storageSet(CACHE_KEYS.CUSTOMER_NAME, clean);
+    }
+    return clean;
   },
 
   setCustomerName(name) {
     const trimmed = String(name || "").trim();
-    storageSet(CACHE_KEYS.CUSTOMER_NAME, trimmed);
+    if (!trimmed) {
+      storageSet(CACHE_KEYS.CUSTOMER_NAME, "");
+      return;
+    }
+    const words = trimmed.split(/\s+/).filter(Boolean);
+    const dedup = [];
+    for (let i = 0; i < words.length; i++) {
+      if (i === 0 || words[i].toLowerCase() !== words[i - 1].toLowerCase()) {
+        dedup.push(words[i]);
+      }
+    }
+    storageSet(CACHE_KEYS.CUSTOMER_NAME, dedup.join(" "));
     this.setCurrentStep(KIOSK_STEPS.NAME_SET);
   },
 

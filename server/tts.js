@@ -26,6 +26,7 @@ try {
   fs.mkdirSync(resolvedCacheDir, { recursive: true });
 }
 export const CACHE_DIR = resolvedCacheDir;
+console.log(`[StartupTiming:Server] 03_tts_cache_dir_ready (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms) cacheDir="${resolvedCacheDir}"`);
 
 function getApiKey() {
   return (
@@ -73,7 +74,7 @@ export async function synth(text, requestedModel, signal = null, isLive = true) 
     : DEFAULT_MODEL;
 
   const cacheKey = crypto.createHash("md5").update(`${CACHE_VERSION}:${model}:${clean}`).digest("hex") + ".mp3";
-  const file = path.join(CACHE_DIR, cacheKey);
+  let file = path.join(CACHE_DIR, cacheKey);
 
   if (fs.existsSync(file)) {
     const stats = fs.statSync(file);
@@ -84,6 +85,19 @@ export async function synth(text, requestedModel, signal = null, isLive = true) 
     // Remove corrupt/empty cache file
     try { fs.unlinkSync(file); } catch (_) {}
   }
+
+  // Check legacy v1 cache key without CACHE_VERSION prefix
+  const legacyKey = crypto.createHash("md5").update(`${model}:${clean}`).digest("hex") + ".mp3";
+  const legacyFile = path.join(CACHE_DIR, legacyKey);
+  if (fs.existsSync(legacyFile)) {
+    const stats = fs.statSync(legacyFile);
+    if (stats.size > 100) {
+      console.log(`[TTS] synth_ms=0 chars=${clean.length} (cached legacy)`);
+      return { file: legacyFile, model };
+    }
+    try { fs.unlinkSync(legacyFile); } catch (_) {}
+  }
+
 
   console.log(`[TTS] cache MISS text="${clean}"`);
 
@@ -233,8 +247,21 @@ export async function prewarmTtsCache(lines, model = DEFAULT_MODEL, firstVisitLi
       }
       try { fs.unlinkSync(file); } catch (_) {}
     }
+
+    const legacyKey = crypto.createHash("md5").update(`${model}:${line}`).digest("hex") + ".mp3";
+    const legacyFile = path.join(CACHE_DIR, legacyKey);
+    if (fs.existsSync(legacyFile)) {
+      const stats = fs.statSync(legacyFile);
+      if (stats.size > 100) {
+        cachedCount++;
+        continue;
+      }
+      try { fs.unlinkSync(legacyFile); } catch (_) {}
+    }
+
     toSynth.push(line);
   }
+
 
   // Synthesize missing lines with controlled concurrency (2 at a time), pausing for live requests
   const CONCURRENCY = 2;

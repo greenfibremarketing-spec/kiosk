@@ -6,6 +6,7 @@ import fs from "fs";
 import path from "path";
 import { synth, checkTtsHealth, prewarmTtsCache, DEFAULT_MODEL, CACHE_DIR } from "./tts.js";
 import { getAllProductSpeechLines, buildProductSpeech, normalizeForSpeech } from "../src/lib/productSpeech.mjs";
+import { getAllStaticLines } from "../src/lib/staticSpeechLines.mjs";
 
 const app = express();
 app.use(cors());
@@ -66,31 +67,19 @@ app.get("/health", async (req, res) => {
   });
 });
 
-// Static lines to pre-warm into the persistent disk cache
-// Load shared lines configuration (single source of truth)
-let SHARED_LINES = { first_visit: [], name_clauses: [], openers: [], pair_up: [], cart_and_common: [], small_talk: [] };
-try {
-  const sharedPath = new URL("./shared_lines.json", import.meta.url);
-  SHARED_LINES = JSON.parse(fs.readFileSync(sharedPath, "utf-8"));
-} catch (e) {
-  console.warn("[TTS Pre-Warm] Could not load shared_lines.json:", e.message);
-}
+// Static lines to pre-warm into the persistent disk cache (single source of truth)
+const STATIC_PREWARM_LINES = getAllStaticLines();
 
-const STATIC_PREWARM_LINES = [
-  ...(SHARED_LINES.first_visit || []),
-  ...(SHARED_LINES.name_clauses || []),
-  ...(SHARED_LINES.openers || []),
-  ...(SHARED_LINES.pair_up || []),
-  ...(SHARED_LINES.cart_and_common || []),
-  ...(SHARED_LINES.small_talk || []),
-];
 
+console.log(`[StartupTiming:Server] 04_before_listen (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms)`);
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, async () => {
+  console.log(`[StartupTiming:Server] 05_listen_ready (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms) on http://localhost:${PORT}`);
   console.log(`Deepgram Aura Voice server running on http://localhost:${PORT}`);
   // Startup self-test
   try {
     const test = await checkTtsHealth();
+    console.log(`[StartupTiming:Server] 06_health_check_done (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms) ok=${test.ok}`);
     if (test.ok) {
       console.log("[TTS] format check OK");
     } else {
@@ -146,7 +135,7 @@ app.listen(PORT, async () => {
         lines.push(...getAllProductSpeechLines(catalogProducts));
       }
 
-      await prewarmTtsCache(lines, DEFAULT_MODEL, SHARED_LINES.first_visit);
+      await prewarmTtsCache(lines, DEFAULT_MODEL, STATIC_PREWARM_LINES.slice(0, 15));
 
       // Dev dry-run check: verify 0 cache misses for all catalog product chunks
       if (catalogProducts) {
@@ -159,11 +148,14 @@ app.listen(PORT, async () => {
               total++;
               const norm = normalizeForSpeech(ch);
               const key = crypto.createHash("md5").update(`v2:${DEFAULT_MODEL}:${norm}`).digest("hex") + ".mp3";
+              const legacyKey = crypto.createHash("md5").update(`${DEFAULT_MODEL}:${norm}`).digest("hex") + ".mp3";
               const filePath = path.join(CACHE_DIR, key);
-              if (!fs.existsSync(filePath)) {
+              const legacyPath = path.join(CACHE_DIR, legacyKey);
+              if (!fs.existsSync(filePath) && !fs.existsSync(legacyPath)) {
                 misses++;
                 console.warn(`[TTS Dry-Run] Cache miss on chunk: "${norm}"`);
               }
+
             }
           }
         }

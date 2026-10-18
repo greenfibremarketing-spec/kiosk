@@ -1,5 +1,5 @@
 // safetyNet.js — Grounding & Fallback Safety Net for Greenie Kiosk
-// Protects against hallucinated prices, unauthorized discounts, and unexpected AI latency.
+// Protects against hallucinated prices, unauthorized discounts, invented specifications, and unexpected AI latency.
 
 export const HONEST_FALLBACKS = {
   // a. Not understood (empty, noise, very short, low confidence)
@@ -29,6 +29,13 @@ export const HONEST_FALLBACKS = {
     "I focus on our sustainable lifestyle collection here at GreenFibre. What can I help you find today?",
     "I'm here to help you shop our sustainable essentials! Tell me what you'd like to explore.",
   ],
+
+  // e. Slow AI reply (watchdog timeout)
+  taking_longer: [
+    "Sorry, that's taking a little longer. Could you ask me again, or tap on the screen?",
+    "Pardon me, that took longer than usual. Would you mind asking once more, or tap any item to explore?",
+    "Sorry for the delay, that's taking a moment. Could you say that again, or touch the screen to browse?",
+  ],
 };
 
 const _rotationIndices = {
@@ -36,6 +43,7 @@ const _rotationIndices = {
   not_in_data: 0,
   not_in_catalog: 0,
   unrelated_topic: 0,
+  taking_longer: 0,
 };
 
 export function getHonestFallback(type) {
@@ -46,51 +54,148 @@ export function getHonestFallback(type) {
 }
 
 /**
- * Extracts and verifies every number in an AI reply against contextual products.
- * If any number (price, dimensions, percentages) does not exist in the context,
- * flags the reply as ungrounded.
+ * Extracts and verifies every number and factual claim in an AI reply
+ * strictly against the product(s) currently in context.
+ *
+ * @param {string} replyText - The proposed response from Greeny
+ * @param {Array|Object} contextProducts - The active product(s) in context (open product, or products being discussed)
+ * @returns {{ valid: boolean, text: string, reason?: string, hallucinatedNumber?: string }}
  */
 export function verifyReplyGrounding(replyText, contextProducts = []) {
   if (!replyText || typeof replyText !== "string") {
-    return { valid: true, text: replyText };
+    return { valid: true, text: replyText || "" };
   }
 
-  // Permitted universal constants (e.g., 100% rice husk, 10% discount, 5% pair-up discount, small counts)
-  const allowedNumbers = new Set([0, 1, 2, 3, 4, 5, 10, 100]);
+  // 1. Permitted universal constants (standard counts, universal discounts, 100% eco)
+  const allowedNumbers = new Set([0, 1, 2, 3, 4, 5, 6, 10, 100]);
 
-  // Extract all valid numbers from contextProducts
-  const prods = Array.isArray(contextProducts) ? contextProducts : [contextProducts].filter(Boolean);
+  const prods = Array.isArray(contextProducts)
+    ? contextProducts.filter(Boolean)
+    : (contextProducts ? [contextProducts] : []);
+
+  // Concatenate context product text for factual grounding verification
+  let combinedProductText = "";
+
   for (const p of prods) {
     if (!p) continue;
-    if (p.price) allowedNumbers.add(Math.round(Number(p.price)));
-    if (p.salePrice) allowedNumbers.add(Math.round(Number(p.salePrice)));
-    if (p.mrp) allowedNumbers.add(Math.round(Number(p.mrp)));
-    if (p.rating) allowedNumbers.add(Math.round(Number(p.rating)));
-    if (p.reviews) allowedNumbers.add(Math.round(Number(p.reviews)));
 
-    // Extract numbers from name, specs, blurb, description
-    const textBlob = `${p.name || ""} ${p.description || ""} ${p.blurb || ""} ${(p.specs || []).join(" ")} ${(p.tags || []).join(" ")}`;
-    const foundNums = textBlob.match(/\b\d+(?:\.\d+)?\b/g);
+    const basePrice = Number(p.price || p.salePrice || p.mrp || 0);
+    const mrp = Number(p.mrp || p.price || 0);
+
+    if (basePrice > 0) allowedNumbers.add(Math.round(basePrice));
+    if (mrp > 0) allowedNumbers.add(Math.round(mrp));
+
+    // 10% standard kiosk discount: e.g. 1199 * 0.9 = 1079.1 -> 1079
+    if (mrp > 0) {
+      allowedNumbers.add(Math.round(mrp * 0.9));
+      allowedNumbers.add(Math.floor(mrp * 0.9));
+      allowedNumbers.add(Math.ceil(mrp * 0.9));
+    }
+    if (basePrice > 0) {
+      allowedNumbers.add(Math.round(basePrice * 0.9));
+      allowedNumbers.add(Math.floor(basePrice * 0.9));
+      allowedNumbers.add(Math.ceil(basePrice * 0.9));
+    }
+
+    // 5% pair-up discount on bundle
+    if (mrp > 0) allowedNumbers.add(Math.round(mrp * 0.85));
+
+    // Extract numbers from name, specs, blurb, description, variants
+    const variantNames = (p.variants || []).map((v) => v?.name || "").join(" ");
+    const textBlob = `${p.name || ""} ${p.description || ""} ${p.blurb || ""} ${(p.specs || []).join(" ")} ${(p.tags || []).join(" ")} ${variantNames}`;
+    combinedProductText += " " + textBlob;
+
+    const foundNums = textBlob.match(/\b\d+(?:[\.,]\d+)?\b/g);
     if (foundNums) {
       for (const n of foundNums) {
-        allowedNumbers.add(Math.round(Number(n)));
+        const clean = n.replace(/,/g, "");
+        allowedNumbers.add(Math.round(Number(clean)));
       }
     }
   }
 
-  // Extract numbers from reply text
-  const replyNumbers = replyText.match(/\b\d+(?:\.\d+)?\b/g);
+  const pTextLower = combinedProductText.toLowerCase();
+
+  // 2. Fact Grounding Checks
+
+  // (a) Heat / temperature retention claims (e.g. "hot for 12 hours", "keeps drinks hot for 12 hours")
+  const heatClaimMatch = replyText.match(/(?:hot|cold|keep(?:s)?\s+drinks?\s+hot|insulat(?:ed|ion))\s+(?:for\s+)?(\d+)\s*(?:hours|hrs)/i);
+  if (heatClaimMatch) {
+    const hoursClaimed = heatClaimMatch[1];
+    const hasHoursInData = pTextLower.includes(`${hoursClaimed} hour`) || pTextLower.includes(`${hoursClaimed} hr`) || pTextLower.includes(`${hoursClaimed}hour`);
+    if (!hasHoursInData) {
+      console.warn(`[SafetyNet] Ungrounded heat retention claim "${heatClaimMatch[0]}" detected. Replacing with fallback.`);
+      return {
+        valid: false,
+        text: getHonestFallback("not_in_data"),
+        reason: `ungrounded_heat_claim: ${heatClaimMatch[0]}`,
+      };
+    }
+  }
+
+  // (b) Dishwasher / microwave claims
+  if (/\b(?:dishwasher\s*(?:safe|friendly)?|safe\s+(?:in|for)\s+(?:the\s+)?dishwasher)\b/i.test(replyText)) {
+    if (!pTextLower.includes("dishwasher")) {
+      console.warn(`[SafetyNet] Ungrounded dishwasher claim detected in "${replyText}". Replacing with fallback.`);
+      return {
+        valid: false,
+        text: getHonestFallback("not_in_data"),
+        reason: "ungrounded_dishwasher_claim",
+      };
+    }
+  }
+  if (/\b(?:microwave\s*(?:safe|friendly)?|safe\s+(?:in|for)\s+(?:the\s+)?microwave)\b/i.test(replyText)) {
+    if (!pTextLower.includes("microwave")) {
+      console.warn(`[SafetyNet] Ungrounded microwave claim detected in "${replyText}". Replacing with fallback.`);
+      return {
+        valid: false,
+        text: getHonestFallback("not_in_data"),
+        reason: "ungrounded_microwave_claim",
+      };
+    }
+  }
+
+  // (c) Delivery timeline promises (kiosk does not promise specific delivery dates)
+  const deliveryClaimMatch = replyText.match(/\b(?:deliver(?:y|ed)?\s+(?:tomorrow|today|in\s+\d+\s+days?|same\s*day)|by\s+tomorrow)\b/i);
+  if (deliveryClaimMatch) {
+    console.warn(`[SafetyNet] Ungrounded delivery claim "${deliveryClaimMatch[0]}" detected. Replacing with fallback.`);
+    return {
+      valid: false,
+      text: getHonestFallback("not_in_data"),
+      reason: `ungrounded_delivery_claim: ${deliveryClaimMatch[0]}`,
+    };
+  }
+
+  // (d) Warranty claims
+  const warrantyClaimMatch = replyText.match(/\b(?:\d+|one|two|three)\s*(?:year|yr|month)s?\s*(?:warranty|guarantee)\b/i) ||
+                             replyText.match(/\blifetime\s*(?:warranty|guarantee)\b/i);
+  if (warrantyClaimMatch && !pTextLower.includes("warranty") && !pTextLower.includes("guarantee")) {
+    console.warn(`[SafetyNet] Ungrounded warranty claim "${warrantyClaimMatch[0]}" detected. Replacing with fallback.`);
+    return {
+      valid: false,
+      text: getHonestFallback("not_in_data"),
+      reason: `ungrounded_warranty_claim: ${warrantyClaimMatch[0]}`,
+    };
+  }
+
+  // 3. Numerical Verification against active context
+  // Match numbers (including with commas like 1,079 or 6,999)
+  const replyNumbers = replyText.match(/\b\d{1,3}(?:,\d{3})*(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b/g);
   if (!replyNumbers) {
     return { valid: true, text: replyText };
   }
 
   for (const rawNum of replyNumbers) {
-    const parsed = Math.round(Number(rawNum));
+    const cleanNum = rawNum.replace(/,/g, "");
+    const parsed = Math.round(Number(cleanNum));
+
+    // If context products exist and this number is not permitted by context or universal rules:
     if (!allowedNumbers.has(parsed)) {
-      console.warn(`[SafetyNet] Hallucinated/unverified number "${rawNum}" detected in reply: "${replyText}". Replacing with fallback.`);
+      console.warn(`[SafetyNet] Hallucinated/unverified number "${rawNum}" (${parsed}) detected in reply: "${replyText}". Context products: ${prods.map(p => p?.name || p?.id).join(", ")}. Replacing with fallback.`);
       return {
         valid: false,
         text: getHonestFallback("not_in_data"),
+        reason: `unverified_number: ${rawNum}`,
         hallucinatedNumber: rawNum,
       };
     }

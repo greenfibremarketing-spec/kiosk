@@ -315,8 +315,30 @@ export default function KioskShell() {
   const k = useKiosk();
   const isEngaged = k.kioskMode === "ENGAGED";
 
+  const [showSubtitles, setShowSubtitles] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return localStorage.getItem("kiosk_show_subtitles") !== "false";
+  });
+
+  useEffect(() => {
+    const handleSettingsChange = (e) => {
+      if (e?.detail?.showSubtitles !== undefined) {
+        setShowSubtitles(e.detail.showSubtitles);
+      } else if (typeof window !== "undefined") {
+        setShowSubtitles(localStorage.getItem("kiosk_show_subtitles") !== "false");
+      }
+    };
+    window.addEventListener("kiosk_settings_changed", handleSettingsChange);
+    window.addEventListener("storage", handleSettingsChange);
+    return () => {
+      window.removeEventListener("kiosk_settings_changed", handleSettingsChange);
+      window.removeEventListener("storage", handleSettingsChange);
+    };
+  }, []);
+
   // Diagnostic: 5-second Blank Area / Layout Health Check (Requirement 5)
   useEffect(() => {
+
     const timer = setInterval(() => {
       if (typeof window === "undefined" || typeof document === "undefined") return;
       const pane = document.querySelector(".kiosk-right-pane");
@@ -450,6 +472,7 @@ export default function KioskShell() {
         evidence={k.evidence}
         speakingForMs={k.speakingForMs}
         silentForMs={k.silentForMs}
+        showSubtitles={showSubtitles}
       />
 
       {/* ── Help Tooltip / Suggestions (SHOW_HINT) ── */}
@@ -521,7 +544,7 @@ export default function KioskShell() {
                 k.markOnboardingDone?.("onboarding_closed");
               }}
               name={k.name}
-              liveTranscript={k.liveTranscript}
+              liveTranscript={showSubtitles ? k.liveTranscript : ""}
               onSubmitName={(name) => {
                 k.submitName(name);
               }}
