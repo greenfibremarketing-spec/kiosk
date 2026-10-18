@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { trace } from "@/lib/debugTrace";
+import { isVideoOnly } from "@/lib/kioskMode";
 
 import {
   GREETING,
@@ -693,6 +694,7 @@ export function useKiosk() {
   }, [handleLateRestore]);
 
   const engage = useCallback(async (reasonString = "unknown", { restoreFrom } = {}) => {
+    if (isVideoOnly()) return;
     const reason = typeof reasonString === "string" ? reasonString : "unknown";
 
     if (kioskModeRef.current === "ENGAGED") return;

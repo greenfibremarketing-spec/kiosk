@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import speechConfig from "@/lib/speechConfig";
+import { isVideoOnly } from "@/lib/kioskMode";
 
 const RING_CHUNKS = 50; // 50 x 20 ms = 1 s of pre-roll
 
@@ -8,6 +9,13 @@ export function useMic({ isEngaged = false } = {}) {
   const [vadSpeech, setVadSpeech] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [micError, setMicError] = useState(null);
+  const [videoOnly, setVideoOnly] = useState(() => isVideoOnly());
+
+  useEffect(() => {
+    const onSettings = () => setVideoOnly(isVideoOnly());
+    window.addEventListener("kiosk_settings_changed", onSettings);
+    return () => window.removeEventListener("kiosk_settings_changed", onSettings);
+  }, []);
 
   const listeners = useRef(new Set());
   const ring = useRef([]);
@@ -19,6 +27,7 @@ export function useMic({ isEngaged = false } = {}) {
   const getRecent = useCallback(() => ring.current.slice(), []);
 
   useEffect(() => {
+    if (videoOnly || isVideoOnly()) return;
     // Always start mic capture — the kiosk is always listening.
     // The PCM gate in useSpeech prevents avatar self-hearing.
     let cancelled = false;
@@ -102,7 +111,7 @@ export function useMic({ isEngaged = false } = {}) {
       setVadSpeech(false);
       setAudioLevel(0);
     };
-  }, []); // mount-only — always-on mic
+  }, [videoOnly]);
 
   return { vadSpeech, audioLevel, micError, subscribePcm, getRecent };
 }

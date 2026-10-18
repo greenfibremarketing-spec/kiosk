@@ -17,6 +17,8 @@ import { useKiosk } from "@/hooks/useKiosk";
 import ErrorBoundary from "@/components/debug/ErrorBoundary";
 import TranscriptDebug from "@/components/debug/TranscriptDebug";
 import { trace } from "@/lib/debugTrace";
+import { isVideoOnly } from "@/lib/kioskMode";
+import { AdminSettingsModal } from "@/components/navigation/PremiumSidebar";
 
 // TEST ONLY: set to true via NEXT_PUBLIC_DEBUG_TRANSCRIPT=true for mic overlay
 const SHOW_TRANSCRIPT_DEBUG = process.env.NEXT_PUBLIC_DEBUG_TRANSCRIPT === "true";
@@ -74,14 +76,34 @@ function interruptibleSleep(ms, signal) {
   });
 }
 
-function IdlePromoVideo({ isEngaged, onTap }) {
+function IdlePromoVideo({ isEngaged, onTap, onOpenAdmin }) {
   const fallbackVideoRef = useRef(null);
   const containerRef = useRef(null);
   const activeControllerRef = useRef(null);
   const [visible, setVisible] = useState(!isEngaged);
   const hasTriggeredRef = useRef(false);
+  const tapCountRef = useRef(0);
+  const tapTimerRef = useRef(null);
+
+  const handleCornerTap = (e) => {
+    e.stopPropagation();
+    tapCountRef.current += 1;
+    if (!tapTimerRef.current) {
+      tapTimerRef.current = setTimeout(() => {
+        tapCountRef.current = 0;
+        tapTimerRef.current = null;
+      }, 3000);
+    }
+    if (tapCountRef.current >= 5) {
+      tapCountRef.current = 0;
+      clearTimeout(tapTimerRef.current);
+      tapTimerRef.current = null;
+      onOpenAdmin?.();
+    }
+  };
 
   const triggerEngaged = () => {
+    if (isVideoOnly()) return;
     if (hasTriggeredRef.current) return;
     hasTriggeredRef.current = true;
     if (activeControllerRef.current) {
@@ -94,6 +116,7 @@ function IdlePromoVideo({ isEngaged, onTap }) {
   };
 
   const handleTap = (e) => {
+    if (isVideoOnly()) return;
     e?.stopPropagation?.();
     triggerEngaged();
   };
@@ -176,6 +199,13 @@ function IdlePromoVideo({ isEngaged, onTap }) {
                 console.log(`[IntroVideo] Sound switched off via NEXT_PUBLIC_INTRO_SOUND=off: muted=${v.muted}`);
               }
             }
+
+            if (isVideoOnly()) {
+              const mgBtn = Array.from(container.querySelectorAll("button")).find(
+                (b) => b.textContent?.trim() === "Meet Greeny"
+              );
+              if (mgBtn) mgBtn.style.display = "none";
+            }
           };
 
           const observer = new MutationObserver(enforceFullscreenAndAudio);
@@ -209,6 +239,10 @@ function IdlePromoVideo({ isEngaged, onTap }) {
           if (!isActive || controller.signal.aborted) break;
 
           if (result === "intro_skipped") {
+            if (isVideoOnly()) {
+              retryDelay = 30000;
+              continue;
+            }
             // "Meet Greeny" button clicked or abort signal resolved: silence instantly
             if (container) {
               const vids = container.querySelectorAll("video");
@@ -303,10 +337,29 @@ function IdlePromoVideo({ isEngaged, onTap }) {
         }}
       />
 
-      <div className="kiosk-idle-gradient-overlay" />
-      <div className="kiosk-idle-cta-container">
-        <div className="attract-tap-hint">✨ Touch Screen or Step Closer to Begin</div>
-      </div>
+      {/* ── Top-Right Invisible 80x80 Multi-Tap Corner (Video Only mode only) ── */}
+      {isVideoOnly() && (
+        <div
+          onClick={handleCornerTap}
+          onTouchStart={handleCornerTap}
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: 0,
+            right: 0,
+            width: 80,
+            height: 80,
+            zIndex: 10,
+          }}
+        />
+      )}
+
+      {!isVideoOnly() && <div className="kiosk-idle-gradient-overlay" />}
+      {!isVideoOnly() && (
+        <div className="kiosk-idle-cta-container">
+          <div className="attract-tap-hint">✨ Touch Screen or Step Closer to Begin</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -315,6 +368,7 @@ export default function KioskShell() {
   const k = useKiosk();
   const isEngaged = k.kioskMode === "ENGAGED";
 
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [showSubtitles, setShowSubtitles] = useState(() => {
     if (typeof window === "undefined") return true;
     return localStorage.getItem("kiosk_show_subtitles") !== "false";
@@ -327,6 +381,9 @@ export default function KioskShell() {
       } else if (typeof window !== "undefined") {
         setShowSubtitles(localStorage.getItem("kiosk_show_subtitles") !== "false");
       }
+      if (e?.detail?.kioskAppMode === "video_only" && isEngaged) {
+        k.resetSession?.("video_only_mode_enabled");
+      }
     };
     window.addEventListener("kiosk_settings_changed", handleSettingsChange);
     window.addEventListener("storage", handleSettingsChange);
@@ -334,7 +391,7 @@ export default function KioskShell() {
       window.removeEventListener("kiosk_settings_changed", handleSettingsChange);
       window.removeEventListener("storage", handleSettingsChange);
     };
-  }, []);
+  }, [isEngaged, k]);
 
   // Diagnostic: 5-second Blank Area / Layout Health Check (Requirement 5)
   useEffect(() => {
@@ -381,16 +438,16 @@ export default function KioskShell() {
     <main
       className="kiosk"
       onClick={() => {
-        if (!isEngaged) k.enterEngaged("screen_touch");
-        k.presence?.triggerTouchEngaged?.();
+        if (!isEngaged && !isVideoOnly()) k.enterEngaged("screen_touch");
+        if (!isVideoOnly()) k.presence?.triggerTouchEngaged?.();
       }}
       onTouchStart={() => {
-        if (!isEngaged) k.enterEngaged("screen_touch");
-        k.presence?.triggerTouchEngaged?.();
+        if (!isEngaged && !isVideoOnly()) k.enterEngaged("screen_touch");
+        if (!isVideoOnly()) k.presence?.triggerTouchEngaged?.();
       }}
       onPointerDown={() => {
-        if (!isEngaged) k.enterEngaged("screen_touch");
-        k.presence?.triggerTouchEngaged?.();
+        if (!isEngaged && !isVideoOnly()) k.enterEngaged("screen_touch");
+        if (!isVideoOnly()) k.presence?.triggerTouchEngaged?.();
       }}
     >
       {SHOW_TRANSCRIPT_DEBUG && (
@@ -407,9 +464,18 @@ export default function KioskShell() {
       <IdlePromoVideo
         isEngaged={isEngaged}
         onTap={() => {
-          k.enterEngaged("screen_touch");
-          k.presence?.triggerTouchEngaged?.("screen_touch");
+          if (!isVideoOnly()) {
+            k.enterEngaged("screen_touch");
+            k.presence?.triggerTouchEngaged?.("screen_touch");
+          }
         }}
+        onOpenAdmin={() => setIsAdminOpen(true)}
+      />
+
+      {/* ── Standalone Admin Settings Modal (for Video Only multi-tap or drawer) ── */}
+      <AdminSettingsModal
+        isOpen={isAdminOpen}
+        onClose={() => setIsAdminOpen(false)}
       />
 
       {/* ── Identity Verification Modal (Step 3: Short Gap Return) ── */}

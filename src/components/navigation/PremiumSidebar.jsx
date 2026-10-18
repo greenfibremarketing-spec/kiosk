@@ -1,14 +1,8 @@
 "use client";
 import React, { useState, useEffect } from "react";
-export default function PremiumSidebar({
-  isOpen,
-  onClose,
-  activeCategory,
-  onSelectCategory,
-  categories = [],
-  products = [],
-}) {
-  const [isAdminOpen, setIsAdminOpen] = useState(false);
+import { isVideoOnly } from "@/lib/kioskMode";
+
+export function AdminSettingsModal({ isOpen, onClose }) {
   const [isAdminAuthed, setIsAdminAuthed] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [authError, setAuthError] = useState("");
@@ -16,6 +10,32 @@ export default function PremiumSidebar({
     if (typeof window === "undefined") return true;
     return localStorage.getItem("kiosk_show_subtitles") !== "false";
   });
+  const [kioskAppMode, setKioskAppMode] = useState(() => {
+    if (typeof window === "undefined") return "default";
+    return isVideoOnly() ? "video_only" : "default";
+  });
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let timer = setTimeout(() => {
+      setIsAdminAuthed(false);
+      onClose();
+    }, 60000);
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        setIsAdminAuthed(false);
+        onClose();
+      }, 60000);
+    };
+    window.addEventListener("pointerdown", resetTimer);
+    window.addEventListener("keydown", resetTimer);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", resetTimer);
+      window.removeEventListener("keydown", resetTimer);
+    };
+  }, [isOpen, onClose]);
 
   const handleAdminAuth = (e) => {
     e?.preventDefault();
@@ -38,11 +58,319 @@ export default function PremiumSidebar({
     }
   };
 
-  const handleCloseAdmin = () => {
-    setIsAdminOpen(false);
+  const handleToggleAppMode = () => {
+    const next = kioskAppMode === "video_only" ? "default" : "video_only";
+    setKioskAppMode(next);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("kiosk_app_mode", next);
+      window.dispatchEvent(new CustomEvent("kiosk_settings_changed", { detail: { kioskAppMode: next } }));
+    }
+  };
+
+  const handleClose = () => {
     setPasswordInput("");
     setAuthError("");
+    onClose?.();
   };
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      className="admin-modal-backdrop"
+      onClick={handleClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        backgroundColor: "rgba(0, 0, 0, 0.75)",
+        backdropFilter: "blur(6px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 99999,
+      }}
+    >
+      <div
+        className="admin-modal-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          backgroundColor: "#111827",
+          color: "#f9fafb",
+          borderRadius: "16px",
+          padding: "24px 28px",
+          width: "90%",
+          maxWidth: "420px",
+          boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
+          border: "1px solid rgba(255,255,255,0.12)",
+        }}
+      >
+        {!isAdminAuthed ? (
+          <form onSubmit={handleAdminAuth}>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
+              <span style={{ fontSize: "22px" }}>🔒</span>
+              <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#ffffff" }}>
+                Admin Authentication
+              </h3>
+            </div>
+            <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#9ca3af" }}>
+              Enter administrator password to access kiosk system settings.
+            </p>
+
+            <div style={{ marginBottom: "14px" }}>
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(e) => {
+                  setPasswordInput(e.target.value);
+                  if (authError) setAuthError("");
+                }}
+                placeholder="Enter password..."
+                autoFocus
+                style={{
+                  width: "100%",
+                  padding: "12px 14px",
+                  borderRadius: "10px",
+                  border: authError ? "1px solid #ef4444" : "1px solid #374151",
+                  backgroundColor: "#1f2937",
+                  color: "#ffffff",
+                  fontSize: "15px",
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+              {authError && (
+                <p style={{ margin: "6px 0 0 0", color: "#f87171", fontSize: "12.5px", fontWeight: "500" }}>
+                  {authError}
+                </p>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={handleClose}
+                style={{
+                  padding: "9px 16px",
+                  borderRadius: "8px",
+                  border: "1px solid #4b5563",
+                  backgroundColor: "transparent",
+                  color: "#d1d5db",
+                  cursor: "pointer",
+                  fontSize: "13.5px",
+                  fontWeight: "600",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                style={{
+                  padding: "9px 20px",
+                  borderRadius: "8px",
+                  border: "none",
+                  backgroundColor: "#00A63E",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  fontSize: "13.5px",
+                  fontWeight: "700",
+                }}
+              >
+                Unlock
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ fontSize: "22px" }}>⚙️</span>
+                <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#ffffff" }}>
+                  Kiosk Admin Settings
+                </h3>
+              </div>
+              <span
+                style={{
+                  backgroundColor: "rgba(0, 166, 62, 0.2)",
+                  color: "#4ade80",
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 8px",
+                  borderRadius: "12px",
+                  border: "1px solid rgba(74, 222, 128, 0.4)",
+                }}
+              >
+                Authenticated
+              </span>
+            </div>
+            <p style={{ margin: "0 0 20px 0", fontSize: "13px", color: "#9ca3af" }}>
+              Terminal ID: <strong>#GF-04</strong> • Mode: Production Kiosk
+            </p>
+
+            {/* Setting: Voice to Text Subtitles Toggle */}
+            <div
+              style={{
+                backgroundColor: "#1f2937",
+                borderRadius: "12px",
+                padding: "16px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "14px",
+                border: "1px solid #374151",
+                marginBottom: "14px",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: "14.5px", fontWeight: "600", color: "#ffffff", marginBottom: "4px" }}>
+                  Show Voice to Text on Screen
+                </div>
+                <div style={{ fontSize: "12px", color: "#9ca3af", lineHeight: "1.4" }}>
+                  Display live speech-to-text transcription and subtitles during conversations.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleToggleSubtitles}
+                aria-checked={showSubtitles}
+                role="switch"
+                style={{
+                  position: "relative",
+                  width: "52px",
+                  height: "28px",
+                  borderRadius: "14px",
+                  backgroundColor: showSubtitles ? "#00A63E" : "#4b5563",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "2px",
+                  transition: "background-color 0.2s",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    display: "block",
+                    width: "24px",
+                    height: "24px",
+                    borderRadius: "50%",
+                    backgroundColor: "#ffffff",
+                    boxShadow: "0 2px 4px rgba(0,0,0,0.3)",
+                    transform: showSubtitles ? "translateX(24px)" : "translateX(0px)",
+                    transition: "transform 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+                  }}
+                />
+              </button>
+            </div>
+
+            {/* Setting: Kiosk Mode Toggle (Default vs Video Only) */}
+            <div
+              style={{
+                backgroundColor: "#1f2937",
+                borderRadius: "12px",
+                padding: "16px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "14px",
+                border: "1px solid #374151",
+                marginBottom: "20px",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: "14.5px", fontWeight: "600", color: "#ffffff", marginBottom: "4px" }}>
+                  Video Only Mode
+                </div>
+                <div style={{ fontSize: "12px", color: "#9ca3af", lineHeight: "1.4" }}>
+                  Continuous loop of intro videos. Avatar, camera presence and store disabled.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleToggleAppMode}
+                aria-checked={kioskAppMode === "video_only"}
+                role="switch"
+                style={{
+                  position: "relative",
+                  width: "52px",
+                  height: "28px",
+                  borderRadius: "14px",
+                  backgroundColor: kioskAppMode === "video_only" ? "#00A63E" : "#4b5563",
+                  border: "none",
+                  cursor: "pointer",
+                  padding: "2px",
+                  transition: "background-color 0.2s",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    display: "block",
+                    width: "24px",
+                    height: "24px",
+                    borderRadius: "50%",
+                    backgroundColor: "#ffffff",
+                    boxShadow: "0 2px 4px rgba(0,0,0,0.3)",
+                    transform: kioskAppMode === "video_only" ? "translateX(24px)" : "translateX(0px)",
+                    transition: "transform 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+                  }}
+                />
+              </button>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAdminAuthed(false);
+                  handleClose();
+                }}
+                style={{
+                  padding: "9px 16px",
+                  borderRadius: "8px",
+                  border: "1px solid #4b5563",
+                  backgroundColor: "transparent",
+                  color: "#9ca3af",
+                  cursor: "pointer",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                }}
+              >
+                Lock Admin
+              </button>
+              <button
+                type="button"
+                onClick={handleClose}
+                style={{
+                  padding: "9px 20px",
+                  borderRadius: "8px",
+                  border: "none",
+                  backgroundColor: "#00A63E",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                  fontSize: "13.5px",
+                  fontWeight: "700",
+                }}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function PremiumSidebar({
+  isOpen,
+  onClose,
+  activeCategory,
+  onSelectCategory,
+  categories = [],
+  products = [],
+}) {
+  const [isAdminOpen, setIsAdminOpen] = useState(false);
 
   // Close on Escape key press
   useEffect(() => {
@@ -265,235 +593,10 @@ export default function PremiumSidebar({
         </div>
 
         {/* ── Admin Settings Modal ── */}
-        {isAdminOpen && (
-          <div
-            className="admin-modal-backdrop"
-            onClick={handleCloseAdmin}
-            style={{
-              position: "fixed",
-              inset: 0,
-              backgroundColor: "rgba(0, 0, 0, 0.75)",
-              backdropFilter: "blur(6px)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 99999,
-            }}
-          >
-            <div
-              className="admin-modal-card"
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                backgroundColor: "#111827",
-                color: "#f9fafb",
-                borderRadius: "16px",
-                padding: "24px 28px",
-                width: "90%",
-                maxWidth: "420px",
-                boxShadow: "0 20px 40px rgba(0,0,0,0.5)",
-                border: "1px solid rgba(255,255,255,0.12)",
-              }}
-            >
-              {!isAdminAuthed ? (
-                <form onSubmit={handleAdminAuth}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "8px" }}>
-                    <span style={{ fontSize: "22px" }}>🔒</span>
-                    <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#ffffff" }}>
-                      Admin Authentication
-                    </h3>
-                  </div>
-                  <p style={{ margin: "0 0 16px 0", fontSize: "13px", color: "#9ca3af" }}>
-                    Enter administrator password to access kiosk system settings.
-                  </p>
-
-                  <div style={{ marginBottom: "14px" }}>
-                    <input
-                      type="password"
-                      value={passwordInput}
-                      onChange={(e) => {
-                        setPasswordInput(e.target.value);
-                        if (authError) setAuthError("");
-                      }}
-                      placeholder="Enter password..."
-                      autoFocus
-                      style={{
-                        width: "100%",
-                        padding: "12px 14px",
-                        borderRadius: "10px",
-                        border: authError ? "1px solid #ef4444" : "1px solid #374151",
-                        backgroundColor: "#1f2937",
-                        color: "#ffffff",
-                        fontSize: "15px",
-                        outline: "none",
-                        boxSizing: "border-box",
-                      }}
-                    />
-                    {authError && (
-                      <p style={{ margin: "6px 0 0 0", color: "#f87171", fontSize: "12.5px", fontWeight: "500" }}>
-                        {authError}
-                      </p>
-                    )}
-                  </div>
-
-                  <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
-                    <button
-                      type="button"
-                      onClick={handleCloseAdmin}
-                      style={{
-                        padding: "9px 16px",
-                        borderRadius: "8px",
-                        border: "1px solid #4b5563",
-                        backgroundColor: "transparent",
-                        color: "#d1d5db",
-                        cursor: "pointer",
-                        fontSize: "13.5px",
-                        fontWeight: "600",
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      style={{
-                        padding: "9px 20px",
-                        borderRadius: "8px",
-                        border: "none",
-                        backgroundColor: "#00A63E",
-                        color: "#ffffff",
-                        cursor: "pointer",
-                        fontSize: "13.5px",
-                        fontWeight: "700",
-                      }}
-                    >
-                      Unlock
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <span style={{ fontSize: "22px" }}>⚙️</span>
-                      <h3 style={{ margin: 0, fontSize: "18px", fontWeight: "700", color: "#ffffff" }}>
-                        Kiosk Admin Settings
-                      </h3>
-                    </div>
-                    <span
-                      style={{
-                        backgroundColor: "rgba(0, 166, 62, 0.2)",
-                        color: "#4ade80",
-                        fontSize: "11px",
-                        fontWeight: "700",
-                        padding: "3px 8px",
-                        borderRadius: "12px",
-                        border: "1px solid rgba(74, 222, 128, 0.4)",
-                      }}
-                    >
-                      Authenticated
-                    </span>
-                  </div>
-                  <p style={{ margin: "0 0 20px 0", fontSize: "13px", color: "#9ca3af" }}>
-                    Terminal ID: <strong>#GF-04</strong> • Mode: Production Kiosk
-                  </p>
-
-                  {/* Setting: Voice to Text Subtitles Toggle */}
-                  <div
-                    style={{
-                      backgroundColor: "#1f2937",
-                      borderRadius: "12px",
-                      padding: "16px",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: "14px",
-                      border: "1px solid #374151",
-                      marginBottom: "20px",
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontSize: "14.5px", fontWeight: "600", color: "#ffffff", marginBottom: "4px" }}>
-                        Show Voice to Text on Screen
-                      </div>
-                      <div style={{ fontSize: "12px", color: "#9ca3af", lineHeight: "1.4" }}>
-                        Display live speech-to-text transcription and subtitles during conversations.
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleToggleSubtitles}
-                      aria-checked={showSubtitles}
-                      role="switch"
-                      style={{
-                        position: "relative",
-                        width: "52px",
-                        height: "28px",
-                        borderRadius: "14px",
-                        backgroundColor: showSubtitles ? "#00A63E" : "#4b5563",
-                        border: "none",
-                        cursor: "pointer",
-                        padding: "2px",
-                        transition: "background-color 0.2s",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <span
-                        style={{
-                          display: "block",
-                          width: "24px",
-                          height: "24px",
-                          borderRadius: "50%",
-                          backgroundColor: "#ffffff",
-                          boxShadow: "0 2px 4px rgba(0,0,0,0.3)",
-                          transform: showSubtitles ? "translateX(24px)" : "translateX(0px)",
-                          transition: "transform 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
-                        }}
-                      />
-                    </button>
-                  </div>
-
-                  <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAdminAuthed(false);
-                        handleCloseAdmin();
-                      }}
-                      style={{
-                        padding: "9px 16px",
-                        borderRadius: "8px",
-                        border: "1px solid #4b5563",
-                        backgroundColor: "transparent",
-                        color: "#9ca3af",
-                        cursor: "pointer",
-                        fontSize: "13px",
-                        fontWeight: "600",
-                      }}
-                    >
-                      Lock Admin
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCloseAdmin}
-                      style={{
-                        padding: "9px 20px",
-                        borderRadius: "8px",
-                        border: "none",
-                        backgroundColor: "#00A63E",
-                        color: "#ffffff",
-                        cursor: "pointer",
-                        fontSize: "13.5px",
-                        fontWeight: "700",
-                      }}
-                    >
-                      Done
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        <AdminSettingsModal
+          isOpen={isAdminOpen}
+          onClose={() => setIsAdminOpen(false)}
+        />
       </aside>
     </div>
   );

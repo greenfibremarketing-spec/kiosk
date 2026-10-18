@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { trace } from "@/lib/debugTrace";
+import { isVideoOnly } from "@/lib/kioskMode";
 import {
   PRESENCE_CONFIG,
   ENTER_DISTANCE_CM,
@@ -38,6 +39,13 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     cameraActive: false,
   });
   const [cameraError, setCameraError] = useState(null);
+  const [videoOnly, setVideoOnly] = useState(() => isVideoOnly());
+
+  useEffect(() => {
+    const onSettings = () => setVideoOnly(isVideoOnly());
+    window.addEventListener("kiosk_settings_changed", onSettings);
+    return () => window.removeEventListener("kiosk_settings_changed", onSettings);
+  }, []);
 
   const videoRef = useRef(null);
   const detectorRef = useRef(null);
@@ -208,6 +216,7 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
     let isSubscribed = true;
 
     async function startCamera() {
+      if (videoOnly || isVideoOnly()) return;
       try {
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((t) => t.stop());
@@ -259,9 +268,13 @@ export function usePresenceDetection({ onEnterEngaged, onExitToIdle } = {}) {
       isSubscribed = false;
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
       }
     };
-  }, [config.cameraLabel]);
+  }, [config.cameraLabel, videoOnly]);
 
   // Listen for video stalled and waiting events (Requirement 3)
   useEffect(() => {

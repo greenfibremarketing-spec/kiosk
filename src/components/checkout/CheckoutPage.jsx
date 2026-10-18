@@ -779,7 +779,7 @@ export default function CheckoutPage({
                   disabled={isBusy}
                   value={formData.fullName}
                   onChange={(e) => handleInputChange("fullName", e.target.value)}
-                  placeholder="e.g. Aarav Sharma"
+                  placeholder="Enter full name"
                 />
               </div>
 
@@ -793,7 +793,7 @@ export default function CheckoutPage({
                   disabled={isBusy}
                   value={formData.phone}
                   onChange={(e) => handleInputChange("phone", e.target.value)}
-                  placeholder="e.g. 9876543210"
+                  placeholder="10-digit mobile number"
                 />
               </div>
 
@@ -805,7 +805,7 @@ export default function CheckoutPage({
                   disabled={isBusy}
                   value={formData.email}
                   onChange={(e) => handleInputChange("email", e.target.value)}
-                  placeholder="e.g. aarav.sharma@gmail.com"
+                  placeholder="name@example.com"
                 />
               </div>
 
@@ -829,6 +829,7 @@ export default function CheckoutPage({
                   disabled={isBusy}
                   value={formData.city}
                   onChange={(e) => handleInputChange("city", e.target.value)}
+                  placeholder="City"
                 />
               </div>
 
@@ -840,6 +841,7 @@ export default function CheckoutPage({
                   disabled={isBusy}
                   value={formData.state}
                   onChange={(e) => handleInputChange("state", e.target.value)}
+                  placeholder="State"
                 />
               </div>
 
@@ -853,7 +855,7 @@ export default function CheckoutPage({
                   disabled={isBusy}
                   value={formData.pincode}
                   onChange={(e) => handleInputChange("pincode", e.target.value)}
-                  placeholder="e.g. 380054"
+                  placeholder="6-digit PIN code"
                 />
               </div>
             </div>
