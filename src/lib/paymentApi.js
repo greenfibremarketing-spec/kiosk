@@ -117,15 +117,17 @@ export function createPaymentApi({ apiBase, kioskId, getTicket }) {
       if (attempt.order) return attempt.order;
       creating = true;
       try {
-        // AUDIT-TEMP: Log outgoing create order payload
-        console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.createOrder requesting /payments/orders with payload:`, attempt.payload);
+        if (process.env.NEXT_PUBLIC_DEBUG === "true") {
+          console.log(`[paymentApi.createOrder] requesting /payments/orders with payload:`, attempt.payload);
+        }
         const result = await request("/payments/orders", {
           method: "POST",
           headers: { "Idempotency-Key": attempt.key },
           body: attempt.payload,
         });
-        // AUDIT-TEMP: Log received order record from backend
-        console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.createOrder received result from backend:`, result);
+        if (process.env.NEXT_PUBLIC_DEBUG === "true") {
+          console.log(`[paymentApi.createOrder] received result from backend:`, result);
+        }
         attempt.order = { ...result, session_id: attempt.payload.session_id };
         // Store only recovery identifiers, not customer/address/card information.
         try {
@@ -147,8 +149,9 @@ export function createPaymentApi({ apiBase, kioskId, getTicket }) {
     },
 
     verify(order, callback) {
-      // AUDIT-TEMP: Log verify attempt
-      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.verify called with callback:`, callback);
+      if (process.env.NEXT_PUBLIC_DEBUG === "true") {
+        console.log(`[paymentApi.verify] called with callback:`, callback);
+      }
       return request("/payments/verify", {
         method: "POST",
         body: {
@@ -163,12 +166,14 @@ export function createPaymentApi({ apiBase, kioskId, getTicket }) {
     async recover(reference) {
       const id = encodeURIComponent(reference.database_order_id);
       const session = encodeURIComponent(reference.session_id);
-      // AUDIT-TEMP: Log recover check
-      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.recover checking order id=${id}`);
+      if (process.env.NEXT_PUBLIC_DEBUG === "true") {
+        console.log(`[paymentApi.recover] checking order id=${id}`);
+      }
       const proof = await request(`/payments/orders/${id}?session_id=${session}`);
       if (proof.paid === true) return proof;
-      // AUDIT-TEMP: Log reconcile call
-      console.log(`// AUDIT-TEMP [${new Date().toISOString()}] paymentApi.recover order unpaid, calling /reconcile for id=${id}`);
+      if (process.env.NEXT_PUBLIC_DEBUG === "true") {
+        console.log(`[paymentApi.recover] order unpaid, calling /reconcile for id=${id}`);
+      }
       return request(`/payments/orders/${id}/reconcile?session_id=${session}`, {
         method: "POST",
       });

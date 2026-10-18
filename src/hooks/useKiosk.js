@@ -74,6 +74,8 @@ import { prefetchAudio, prewarmVoiceCache } from "@/lib/avatar/GreenieAvatar";
 import { speechController, warmupSpeech } from "@/lib/avatar/SpeechController";
 import { buildProductSpeech, getGreetingFlowLines } from "@/lib/productSpeech.mjs";
 import { getPaymentApi } from "@/lib/paymentApi";
+import { preloadCatalogThumbnails, preloadProductDetailPhotos } from "@/lib/imagePreloader";
+import { getHonestFallback, verifyReplyGrounding } from "@/lib/safetyNet";
 
 // Conversation states
 const S = {
@@ -97,6 +99,26 @@ const STOP_NAME_WORDS = new Set([
   "rice", "husk", "none", "nothing", "kitchen", "best", "cheap", "take", "bye",
   "later", "never", "mind", "browse"
 ]);
+
+/**
+ * Validates candidate customer names against greeting rules:
+ * 1 to 2 words, letters only, 2 to 20 characters, rejects request/product words.
+ */
+export function validateCustomerName(str) {
+  if (!str || typeof str !== "string") return { valid: false, reason: "empty" };
+  const clean = str.replace(/[.,!?]/g, "").trim();
+  if (clean.length < 2 || clean.length > 20) return { valid: false, reason: "length" };
+  if (!/^[a-zA-Z]+(?:\s+[a-zA-Z]+)?$/.test(clean)) return { valid: false, reason: "letters_only" };
+  const words = clean.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length > 2) return { valid: false, reason: "word_count" };
+  for (const w of words) {
+    if (STOP_NAME_WORDS.has(w)) return { valid: false, reason: "stop_word" };
+  }
+  const formatted = words
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+  return { valid: true, name: formatted };
+}
 
 // ── Natural category phrase mapper ─────────────────────────────────────────
 function getCategoryNaturalLine(id, name) {
@@ -279,6 +301,7 @@ export function useKiosk() {
   const turnsWithSentencesRef = useRef(new Set());
   const nameSubmittedRef = useRef(false);
   const categoriesFallbackTimerRef = useRef(null);
+  const aiTurnTimeoutRef = useRef(null);
   const catalogRetryCountRef = useRef(0);
   const lastAppliedTurnIdRef = useRef(null);
   const lastAppliedSeqRef = useRef(0);
@@ -380,6 +403,7 @@ export function useKiosk() {
               setIsLoadingCatalog(false);
               try {
                 prewarmVoiceCache(mapped);
+                preloadCatalogThumbnails(mapped);
               } catch (_) { }
               return;
             }
@@ -1354,6 +1378,7 @@ export function useKiosk() {
     if (pendingId) kioskWS.flushSpeechDone(pendingId);
 
     setSpeaking(false);
+    clearTimeout(aiTurnTimeoutRef.current);
     if (convStateRef.current === S.SPEAKING) setConv(S.ATTENTIVE);
   }, [setConv]);
 
@@ -1803,9 +1828,43 @@ export function useKiosk() {
     const trimmed = String(n || "").trim();
     if (!trimmed) return;
 
+    // Mid-session edit from top header chip or voice
+    if (onboardingDoneRef.current) {
+      const validation = validateCustomerName(trimmed);
+      if (!validation.valid) {
+        console.warn(`[Kiosk] Customer name validation failed: "${trimmed}" (reason=${validation.reason})`);
+        const retryLine = "Sorry, I didn't quite catch that name. Could you say it again?";
+        setCaption(retryLine);
+        const retryTid = `name_retry_${Date.now()}`;
+        speechController.beginReply(retryTid, { source: "name_retry" });
+        speechController.appendSentence(retryTid, retryLine, { turnId: retryTid });
+        speechController.endReply(retryTid);
+        return;
+      }
+
+      const formattedName = validation.name;
+      nameRef.current = formattedName;
+      setName(formattedName);
+      KioskStepCache.setCustomerName(formattedName);
+      setOnboardingOpen(false);
+
+      kioskWS.sendNameSubmitted(formattedName);
+      kioskWS.sendSetName(formattedName);
+
+      // Part 3 Req 4: Greeny says one short line: "Nice to meet you, <name>!" (name as its own short chunk). Do not redo whole greeting.
+      const nameTid = `name_update_${Date.now()}`;
+      speechController.beginReply(nameTid, { source: "name_update" });
+      speechController.appendSentence(nameTid, "Nice to meet you,", { turnId: nameTid });
+      speechController.appendSentence(nameTid, `${formattedName}!`, { turnId: nameTid });
+      speechController.endReply(nameTid);
+      setCaption(`Nice to meet you, ${formattedName}!`);
+      return;
+    }
+
     nameSubmittedRef.current = true;
     KioskStepCache.setCurrentStep(KIOSK_STEPS.NAME_SET);
     KioskStepCache.setCustomerName(trimmed);
+    nameRef.current = trimmed;
     setName(trimmed);
 
     kioskWS.sendNameSubmitted(trimmed);
@@ -1838,6 +1897,23 @@ export function useKiosk() {
       }, 1100);
     }
   }, [stopSpeechForUserAction, openCategoryPicker]);
+
+  const continueAsGuest = useCallback(() => {
+    stopSpeechForUserAction("continue_as_guest");
+    lastInputAtRef.current = Date.now();
+    setName("");
+    nameRef.current = "";
+    KioskStepCache.setCustomerName("");
+    kioskWS.sendSkipName();
+    setOnboardingOpen(false);
+
+    const guestLine = "No problem at all! Continuing as Guest.";
+    setCaption(guestLine);
+    const guestTid = `guest_${Date.now()}`;
+    speechController.beginReply(guestTid, { source: "continue_as_guest" });
+    speechController.appendSentence(guestTid, guestLine, { turnId: guestTid });
+    speechController.endReply(guestTid);
+  }, [stopSpeechForUserAction]);
 
   const skipName = useCallback(() => {
     stopSpeechForUserAction("user_skip_name");
@@ -2406,9 +2482,15 @@ export function useKiosk() {
         return;
       }
       turnsWithSentencesRef.current.add(activeTurnKey);
+      clearTimeout(aiTurnTimeoutRef.current);
       console.log(`[Renderer] SENTENCE received ts=${new Date().toISOString()} turn=${activeTurnKey} text="${sentence.slice(0, 50)}"`);
       setConv(S.SPEAKING);
-      const textToSpeak = sanitizeForMultipleFaces(sentence);
+
+      // Part 1 Req 7: Safety net checking all numbers against active context
+      const groundingCheck = verifyReplyGrounding(sentence, [latestRef.current.product, ...(latestRef.current.backendCatalog || [])]);
+      const safeSentence = groundingCheck.text;
+
+      const textToSpeak = sanitizeForMultipleFaces(safeSentence);
       const userFinalTs = kioskWS.getTurnUserFinalTs(activeTurnKey);
       const firstSentenceReceivedTs = typeof window !== "undefined" ? performance.now() : Date.now();
       speechController.appendSentence(activeTurnKey, textToSpeak, {
@@ -2419,6 +2501,7 @@ export function useKiosk() {
     });
 
     const unsubDone = kioskWS.on("done", (doneData) => {
+      clearTimeout(aiTurnTimeoutRef.current);
       if (replayingRef.current) {
         console.log("[Restore] replay: ignored done");
         return;
@@ -2439,7 +2522,9 @@ export function useKiosk() {
       speechController.endReply(turnId);
 
       if (doneData?.reply && typeof doneData.reply === "string" && doneData.reply.trim().length > 0) {
-        const replyText = sanitizeForMultipleFaces(doneData.reply.trim());
+        // Part 1 Req 7: Safety net checking all numbers in done reply
+        const groundingCheck = verifyReplyGrounding(doneData.reply.trim(), [latestRef.current.product, ...(latestRef.current.backendCatalog || [])]);
+        const replyText = sanitizeForMultipleFaces(groundingCheck.text);
         setCaption(replyText);
 
         const enqueuedCount = speechController.getEnqueuedCount(turnId);
@@ -2470,6 +2555,7 @@ export function useKiosk() {
     });
 
     const unsubError = kioskWS.on("error", (data) => {
+      clearTimeout(aiTurnTimeoutRef.current);
       trace("backend_frame", { type: "error", data });
     });
 
@@ -2496,6 +2582,35 @@ export function useKiosk() {
     const trimmed = String(text ?? "").trim();
     if (!trimmed) return;
 
+    // ── Spoken name change request ("change my name", "edit my name", "not me", "wrong name", "not you") ──
+    if (
+      !latestRef.current.identityPrompt?.active &&
+      /^(?:not me|change my name|edit my name|wrong name|not you|change name|edit name)$/i.test(trimmed)
+    ) {
+      console.log("[Kiosk] Spoken shortcut: open name modal for name change:", trimmed);
+      setOnboardingStep(1);
+      setOnboardingOpen(true);
+      const askNameLine = "What name should I call you?";
+      setCaption(askNameLine);
+      const askTid = `ask_name_${Date.now()}`;
+      speechController.beginReply(askTid, { source: "ask_name" });
+      speechController.appendSentence(askTid, askNameLine, { turnId: askTid });
+      speechController.endReply(askTid);
+      return;
+    }
+
+    // ── Explicit name introduction ("my name is <X>", "call me <X>", etc.) anytime ──
+    const explicitNameMatch = trimmed.match(/^(?:my name is|call me|i am|i'm|this is|myself)\s+([a-zA-Z\s]+)$/i);
+    if (explicitNameMatch && !latestRef.current.identityPrompt?.active) {
+      const candidate = explicitNameMatch[1].trim();
+      const validation = validateCustomerName(candidate);
+      if (validation.valid) {
+        console.log("[Kiosk] Spoken name explicitly provided:", validation.name);
+        submitName(validation.name);
+        return;
+      }
+    }
+
     // ── Spoken Name & Skip handling during ASK_NAME step ──
     const currentStep = KioskStepCache.getCurrentStep();
     const hasNameAlready = Boolean(KioskStepCache.getCustomerName() || nameRef.current);
@@ -2503,9 +2618,7 @@ export function useKiosk() {
       (latestRef.current.onboardingOpen && latestRef.current.onboardingStep === 1) ||
       (!nameSubmittedRef.current && !hasNameAlready && currentStep < KIOSK_STEPS.NAME_SET);
 
-    const hasExplicitIntro = /^(?:my name is|i am|i'm|this is|call me|myself)\s+/i.test(trimmed);
-
-    if (isAwaitingName || (!hasNameAlready && !nameSubmittedRef.current && hasExplicitIntro)) {
+    if (isAwaitingName) {
       if (/^(?:skip|skip name|skip for now|no thanks|later|pass|never mind|no name|just browse)$/i.test(trimmed)) {
         console.log("[Kiosk] Spoken skip name detected:", trimmed);
         skipName();
@@ -2516,15 +2629,10 @@ export function useKiosk() {
         .replace(/[.,!?]/g, "")
         .trim();
 
-      const words = candidate.toLowerCase().split(/\s+/).filter(Boolean);
-      const containsStopWord = words.some((w) => STOP_NAME_WORDS.has(w));
-
-      if (candidate && words.length >= 1 && words.length <= 3 && !containsStopWord) {
-        const formatted = words
-          .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-          .join(" ");
-        console.log("[Kiosk] Spoken name detected:", formatted);
-        submitName(formatted);
+      const validation = validateCustomerName(candidate);
+      if (validation.valid) {
+        console.log("[Kiosk] Spoken name detected in awaiting state:", validation.name);
+        submitName(validation.name);
         return;
       }
     }
@@ -2631,6 +2739,23 @@ export function useKiosk() {
     const uTs = timing?.userFinalTs || (typeof window !== "undefined" ? performance.now() : Date.now());
     const sTs = timing?.sttFinalTs || Date.now();
     const wsSentTs = typeof window !== "undefined" ? performance.now() : Date.now();
+
+    // Part 1 Req 7: 4-second timeout guard: speak fallback so customer is never left in silence
+    clearTimeout(aiTurnTimeoutRef.current);
+    aiTurnTimeoutRef.current = setTimeout(() => {
+      if (kioskModeRef.current !== "ENGAGED") return;
+      if (convStateRef.current === S.THINKING) {
+        console.warn("[Kiosk] AI turn timed out (4000ms). Speaking safe honest fallback.");
+        const fallback = getHonestFallback("not_in_data");
+        setConv(S.SPEAKING);
+        setCaption(fallback);
+        const fbTurnId = `timeout_fb_${Date.now()}`;
+        speechController.beginReply(fbTurnId, { source: "ai_timeout" });
+        speechController.appendSentence(fbTurnId, fallback, { turnId: fbTurnId });
+        speechController.endReply(fbTurnId);
+      }
+    }, 4000);
+
     kioskWS.sendWsMessage(trimmed, {
       userFinalTs: uTs,
       stt_final_ts: sTs,
@@ -2979,6 +3104,8 @@ export function useKiosk() {
     ) || (typeof p === "object" ? p : findMatchingLocalProduct(p, currentCatalog));
 
     if (!fullProd) return;
+
+    preloadProductDetailPhotos(fullProd);
 
     const sku = fullProd?.sku || fullProd?.id || p?.sku || p?.id;
     const prodId = fullProd?.id || fullProd?.sku || p?.id || p?.sku;
@@ -3653,6 +3780,7 @@ export function useKiosk() {
     selectProduct,
     submitName,
     skipName,
+    continueAsGuest,
     showAll,
     navigateBack,
     restartSession,

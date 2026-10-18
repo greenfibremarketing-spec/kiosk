@@ -1,6 +1,7 @@
 "use client";
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useFeedbackSpeech } from "@/hooks/useFeedbackSpeech";
+import { preloadProductDetailPhotos } from "@/lib/imagePreloader";
 import {
   ChevronLeft,
   ChevronRight,
@@ -108,16 +109,25 @@ function getImagesForProductAndVariant(product, selectedColorName) {
 }
 
 /**
- * Slide image component with skeleton placeholder and neutral fallback.
+ * Slide image component with skeleton placeholder, instant cache detection,
+ * high-priority eager loading for the primary slide, and graceful error retry.
  */
-function SlideImage({ src, alt }) {
+function SlideImage({ src, alt, isFirst = false, onFirstImageLoaded = null }) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const imgRef = React.useRef(null);
 
+  // Check if browser already has the image decoded in memory/cache
   useEffect(() => {
-    setLoaded(false);
+    if (imgRef.current && imgRef.current.complete && imgRef.current.naturalWidth > 0) {
+      setLoaded(true);
+      if (isFirst) onFirstImageLoaded?.(true);
+    } else {
+      setLoaded(false);
+    }
     setError(false);
-  }, [src]);
+  }, [src, retryCount, isFirst]);
 
   if (error || !src) {
     return (
@@ -128,16 +138,40 @@ function SlideImage({ src, alt }) {
     );
   }
 
+  const handleImgLoad = () => {
+    setLoaded(true);
+    if (isFirst) {
+      onFirstImageLoaded?.(false);
+    }
+  };
+
+  const handleImgError = () => {
+    if (retryCount === 0 && src) {
+      console.warn(`[SlideImage] Retrying load once for image: ${src}`);
+      setRetryCount(1);
+    } else {
+      setError(true);
+    }
+  };
+
+  const activeSrc =
+    retryCount > 0 && src && !src.includes("retry=1")
+      ? (src.includes("?") ? `${src}&retry=1` : `${src}?retry=1`)
+      : src;
+
   return (
-    <div className="pdp-slide-img-wrap">
+    <div className="pdp-slide-img-wrap" style={{ aspectRatio: "1 / 1" }}>
       {!loaded && <div className="pdp-slide-skeleton" />}
       <img
-        src={src}
+        ref={imgRef}
+        src={activeSrc}
         alt={alt}
         className={`pdp-slide-img ${loaded ? "pdp-slide-img--loaded" : ""}`}
-        onLoad={() => setLoaded(true)}
-        onError={() => setError(true)}
-        loading="lazy"
+        onLoad={handleImgLoad}
+        onError={handleImgError}
+        loading={isFirst ? "eager" : "lazy"}
+        fetchPriority={isFirst ? "high" : "auto"}
+        decoding={isFirst ? "sync" : "async"}
       />
     </div>
   );
@@ -158,6 +192,20 @@ export default function ProductDetailPage({
   const [quantity, setQuantity] = useState(1);
   const [activeSlide, setActiveSlide] = useState(0);
   const { speakFeedback } = useFeedbackSpeech({ kioskModeRef, replayingRef });
+
+  const pdpOpenTimeRef = useRef(typeof window !== "undefined" ? performance.now() : Date.now());
+
+  const handleFirstImageLoaded = useCallback((isInstant = false) => {
+    const elapsed = Math.round((typeof window !== "undefined" ? performance.now() : Date.now()) - pdpOpenTimeRef.current);
+    console.log(`[ImageTiming] Sku: ${product?.sku || product?.id} - Time to first image load: ${elapsed}ms (instant cache hit: ${isInstant})`);
+  }, [product?.id, product?.sku]);
+
+  useEffect(() => {
+    pdpOpenTimeRef.current = typeof window !== "undefined" ? performance.now() : Date.now();
+    if (product) {
+      preloadProductDetailPhotos(product);
+    }
+  }, [product?.id, product?.sku]);
 
   // Derive variants and real color values from data
   const colors = useMemo(() => {
@@ -324,6 +372,8 @@ export default function ProductDetailPage({
                   <SlideImage
                     src={imgUrl}
                     alt={`${product.name} - Angle ${idx + 1}`}
+                    isFirst={idx === 0}
+                    onFirstImageLoaded={idx === 0 ? handleFirstImageLoaded : null}
                   />
                 </div>
               ))}

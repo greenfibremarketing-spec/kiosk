@@ -27,6 +27,8 @@ export default function ProductShowcase({
   onButtonClick,
   name = "",
   onResetSession,
+  onOpenNameModal,
+  onContinueAsGuest,
   kioskModeRef = null,
   replayingRef = null,
   onAddToCart,
@@ -147,6 +149,8 @@ export default function ProductShowcase({
         onSelectCategory={handleSidebarCategory}
         name={name}
         onResetSession={onResetSession}
+        onOpenNameModal={onOpenNameModal}
+        onContinueAsGuest={onContinueAsGuest}
       />
 
       {/* ── Premium Sidebar Drawer ── */}

@@ -2,6 +2,7 @@
 import React, { useEffect, useRef } from "react";
 import ProductArt from "./ProductArt";
 import PriceTag from "./PriceTag";
+import { preloadProductDetailPhotos } from "@/lib/imagePreloader";
 
 export default function ProductCard({ product, active, highlighted, onSelect }) {
   const cardRef = useRef(null);
@@ -12,11 +13,17 @@ export default function ProductCard({ product, active, highlighted, onSelect }) 
     }
   }, [highlighted]);
 
+  const handleWarmup = () => {
+    preloadProductDetailPhotos(product);
+  };
+
   return (
     <article
       ref={cardRef}
       className={`luxury-card ${active ? "luxury-card--active" : ""} ${highlighted ? "luxury-card--highlight" : ""}`}
       onClick={() => onSelect(product)}
+      onPointerDown={handleWarmup}
+      onMouseEnter={handleWarmup}
       role="button"
       tabIndex={0}
       id={`product-card-${product.id}`}

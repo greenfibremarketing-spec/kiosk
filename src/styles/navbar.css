@@ -83,11 +83,67 @@
   text-transform: uppercase;
 }
 
-/* Center Badges */
-.right-navbar__center {
-  display: flex;
+/* Customer Name Chip */
+.navbar-name-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  padding: 6px 14px;
+  min-height: 40px;
+  border-radius: var(--radius-pill);
+  background: #f4efe4;
+  border: 1px solid rgba(48, 74, 57, 0.18);
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: #1a2f23;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.navbar-name-chip--guest {
+  background: #ffffff;
+  border: 1px dashed rgba(48, 74, 57, 0.28);
+}
+
+.navbar-name-greeting {
+  font-weight: 700;
+  color: #1a2f23;
+}
+
+.navbar-name-divider {
+  color: rgba(48, 74, 57, 0.4);
+  font-weight: bold;
+}
+
+.navbar-name-action-btn,
+.navbar-name-notme-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: #008733;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: all 0.15s ease;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.navbar-name-action-btn:hover,
+.navbar-name-notme-btn:hover {
+  color: #005a22;
+}
+
+.navbar-name-notme-btn {
+  color: #6b7280;
+  text-decoration: none;
+}
+.navbar-name-notme-btn:hover {
+  color: #374151;
+  text-decoration: underline;
 }
 
 .navbar-eco-badge {

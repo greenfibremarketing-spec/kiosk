@@ -8,6 +8,8 @@ export default function RightNavbar({
   onSelectCategory,
   name = "",
   onResetSession,
+  onOpenNameModal,
+  onContinueAsGuest,
 }) {
   return (
     <nav className="right-navbar" aria-label="Catalog Navigation Bar">
@@ -30,21 +32,47 @@ export default function RightNavbar({
         </div>
       </div>
 
-      {/* ── Center: Sustainability & Eco Highlights ── */}
+      {/* ── Center: Sustainability Highlights & Customer Name Chip ── */}
       <div className="right-navbar__center">
         {name ? (
-          <div className="navbar-user-chip">
-            <span className="navbar-user-name">👤 {name}</span>
+          <div className="navbar-name-chip" role="region" aria-label="Customer Profile">
+            <span className="navbar-name-greeting">Hi, {name}</span>
+            <span className="navbar-name-divider" aria-hidden="true">·</span>
             <button
               type="button"
-              className="navbar-not-me-btn"
-              onClick={() => onResetSession?.("user_tap")}
-              title={`Not ${name}? Tap to start fresh`}
+              className="navbar-name-action-btn"
+              onClick={onOpenNameModal}
+              title={`Edit name, currently ${name}`}
+              aria-label={`Edit name, currently ${name}`}
             >
-              Not {name}?
+              Edit
+            </button>
+            <span className="navbar-name-divider" aria-hidden="true">·</span>
+            <button
+              type="button"
+              className="navbar-name-notme-btn"
+              onClick={onContinueAsGuest || (() => onResetSession?.("user_tap"))}
+              title={`Not ${name}? Continue as Guest`}
+              aria-label="Not you? Continue as Guest"
+            >
+              Not you?
             </button>
           </div>
-        ) : null}
+        ) : (
+          <div className="navbar-name-chip navbar-name-chip--guest" role="region" aria-label="Customer Profile">
+            <span className="navbar-name-greeting">Hi, Guest</span>
+            <span className="navbar-name-divider" aria-hidden="true">·</span>
+            <button
+              type="button"
+              className="navbar-name-action-btn"
+              onClick={onOpenNameModal}
+              title="Add your name"
+              aria-label="Add your name"
+            >
+              Add your name
+            </button>
+          </div>
+        )}
         <div className="navbar-eco-badge">
           <span className="eco-leaf-icon">🌾</span>
           <span>Zero Virgin Plastic</span>

@@ -147,28 +147,49 @@ function IdlePromoVideo({ isEngaged, onTap }) {
           // Clean container before starting new playlist round
           container.innerHTML = "";
 
-          // Ensure any video rendered inside container fills full 1080x1920 with object-fit: cover
-          const enforceFullscreenCover = () => {
+          // Ensure any video rendered inside container fills full 1080x1920 with object-fit: cover and configures sound
+          const enforceFullscreenAndAudio = () => {
             const v = container.querySelector("video");
             if (v) {
               v.style.setProperty("object-fit", "cover", "important");
               v.style.setProperty("width", "100vw", "important");
               v.style.setProperty("height", "100vh", "important");
+
+              const soundConfig = (process.env.NEXT_PUBLIC_INTRO_SOUND || "on").toLowerCase().trim();
+              const soundEnabled = soundConfig !== "off";
+              const targetVolume = Math.max(0, Math.min(1, parseFloat(process.env.NEXT_PUBLIC_INTRO_VOLUME || "0.8")));
+
+              if (soundEnabled && v.muted) {
+                v.volume = targetVolume;
+                v.muted = false;
+                console.log(`[IntroVideo] Applied sound: muted=${v.muted} volume=${v.volume} readyState=${v.readyState}`);
+                const playPromise = v.play?.();
+                if (playPromise && typeof playPromise.catch === "function") {
+                  playPromise.catch((err) => {
+                    console.warn(`[IntroVideo] Unmuted autoplay rejected (readyState=${v.readyState}), falling back to muted:`, err.message);
+                    v.muted = true;
+                    v.play?.().catch(() => {});
+                  });
+                }
+              } else if (!soundEnabled && !v.muted) {
+                v.muted = true;
+                console.log(`[IntroVideo] Sound switched off via NEXT_PUBLIC_INTRO_SOUND=off: muted=${v.muted}`);
+              }
             }
           };
 
-          const observer = new MutationObserver(enforceFullscreenCover);
+          const observer = new MutationObserver(enforceFullscreenAndAudio);
           observer.observe(container, {
             childList: true,
             subtree: true,
             attributes: true,
             attributeFilter: ["style", "src"],
           });
-          enforceFullscreenCover();
+          enforceFullscreenAndAudio();
 
           // Once remote video begins playing, pause the fallback video to save resources
           const onRemotePlaying = () => {
-            enforceFullscreenCover();
+            enforceFullscreenAndAudio();
             if (fallbackVideoRef.current) {
               fallbackVideoRef.current.pause();
             }
@@ -188,7 +209,14 @@ function IdlePromoVideo({ isEngaged, onTap }) {
           if (!isActive || controller.signal.aborted) break;
 
           if (result === "intro_skipped") {
-            // "Meet Greeny" button clicked or abort signal resolved
+            // "Meet Greeny" button clicked or abort signal resolved: silence instantly
+            if (container) {
+              const vids = container.querySelectorAll("video");
+              vids.forEach((vid) => {
+                vid.muted = true;
+                vid.pause();
+              });
+            }
             triggerEngaged();
             break;
           } else if (result === "intro_done") {
@@ -224,9 +252,15 @@ function IdlePromoVideo({ isEngaged, onTap }) {
         activeControllerRef.current = null;
       }
       if (fallbackVideoRef.current) {
+        fallbackVideoRef.current.muted = true;
         fallbackVideoRef.current.pause();
       }
       if (containerRef.current) {
+        const vids = containerRef.current.querySelectorAll("video");
+        vids.forEach((vid) => {
+          vid.muted = true;
+          vid.pause();
+        });
         containerRef.current.innerHTML = "";
       }
     };
@@ -463,6 +497,11 @@ export default function KioskShell() {
             onClearFilters={k.clearFilters}
             highlightSku={k.highlightSku}
             sessionId={k.sessionId}
+            onOpenNameModal={() => {
+              k.setOnboardingStep(1);
+              k.setOnboardingOpen(true);
+            }}
+            onContinueAsGuest={k.continueAsGuest}
           />
         </ErrorBoundary>
 
