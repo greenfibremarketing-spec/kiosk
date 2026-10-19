@@ -145,6 +145,9 @@ export async function synth(text, requestedModel, signal = null, isLive = true) 
           const resolvedModel = res.headers.get("dg-model-name") || attemptModel;
           const synthMs = Math.round(performance.now() - t0);
           console.log(`[TTS] synth_ms=${synthMs} chars=${clean.length}`);
+          if (resolvedModel !== model) {
+            console.warn(`[TTS Voice Fallback] Active voice switched: using fallback "${resolvedModel}" instead of requested "${model}" (reason: ${lastError?.message || "model unavailable"})`);
+          }
           return { file, model: resolvedModel };
         }
 
@@ -293,4 +296,33 @@ export async function prewarmTtsCache(lines, model = DEFAULT_MODEL, firstVisitLi
     `[TTS Pre-Warm] Cache ready: ${cachedCount} already cached, ${warmedCount} freshly synthesized, ${errorCount} errors.`
   );
   return { total: ordered.length, cached: cachedCount, warmed: warmedCount, errors: errorCount };
+}
+
+/**
+ * Caps the cache directory to prevent unbounded disk growth.
+ * Keeps up to maxFiles most recently modified files.
+ */
+export function pruneCacheIfNeeded(maxFiles = 600) {
+  try {
+    const files = fs.readdirSync(CACHE_DIR);
+    if (files.length <= maxFiles) return;
+    const fileStats = [];
+    for (const f of files) {
+      if (!f.endsWith(".mp3")) continue;
+      const fullPath = path.join(CACHE_DIR, f);
+      try {
+        const stat = fs.statSync(fullPath);
+        fileStats.push({ path: fullPath, mtime: stat.mtimeMs });
+      } catch (_) {}
+    }
+    if (fileStats.length <= maxFiles) return;
+    fileStats.sort((a, b) => a.mtime - b.mtime);
+    const toDelete = fileStats.slice(0, fileStats.length - maxFiles);
+    for (const item of toDelete) {
+      try { fs.unlinkSync(item.path); } catch (_) {}
+    }
+    console.log(`[TTS] Pruned ${toDelete.length} old cache files (capped at ${maxFiles})`);
+  } catch (err) {
+    console.warn("[TTS] Cache prune warning:", err.message);
+  }
 }

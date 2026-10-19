@@ -11,15 +11,43 @@ export function formatRupees(num) {
   return n > 0 ? `${n.toLocaleString("en-IN")} rupees` : "";
 }
 
-// Clean product name for natural speech
+// Clean product name for natural speech, preserving size/capacity for distinct speech lines
 export function cleanProductName(name) {
   if (!name || typeof name !== "string") return "this product";
   let clean = name.replace(/\s*[–—\-]\s*(?:set\s+of\s+\d+|pair\s+of\s+\d+)/gi, (m) => ", " + m.replace(/\s*[–—\-]\s*/, "").toLowerCase());
-  // Strip size/capacity suffix like - 400 ml, - 900 ml
-  clean = clean.replace(/\s*[–—\-]\s*\d+\s*(?:ml|inch|l|litres?|grams?|g)\b/gi, "");
+  // Preserve size/capacity suffix (e.g. - 400 ml -> , 400 ml) instead of stripping it
+  clean = clean.replace(/\s*[–—\-]\s*(\d+\s*(?:ml|inch|l|litres?|grams?|g)\b)/gi, ", $1");
   clean = clean.replace(/\s+[–—\-]\s+/g, ", ");
   clean = clean.replace(/\s+/g, " ").trim();
   return clean;
+}
+
+/**
+ * Applies authoritative 10% kiosk discount to catalog product for pricing.
+ */
+export function normalizeProductForPricing(p) {
+  if (!p) return p;
+  const rawPrice = Number(String(p.price ?? "").replace(/[^\d.]/g, "")) || 0;
+  const rawMrp = Number(String(p.mrp ?? "").replace(/[^\d.]/g, "")) || 0;
+  const rawSale = Number(String(p.salePrice ?? "").replace(/[^\d.]/g, "")) || 0;
+
+  let numMrp = 0;
+  let numSalePrice = 0;
+
+  if (rawSale > 0 && rawMrp > 0 && rawSale < rawMrp && rawMrp <= Math.round(rawSale * 1.15)) {
+    numMrp = rawMrp;
+    numSalePrice = rawSale;
+  } else {
+    numMrp = rawPrice > 0 ? rawPrice : (rawMrp > 0 ? rawMrp : rawSale);
+    numSalePrice = numMrp > 0 ? Math.round(numMrp * 0.90) : 0;
+  }
+
+  return {
+    ...p,
+    mrp: numMrp,
+    price: numMrp,
+    salePrice: numSalePrice,
+  };
 }
 
 /**
@@ -62,15 +90,15 @@ export function normalizeForSpeech(text) {
   if (!text || typeof text !== "string") return "";
   let t = String(text);
 
-  t = t.replace(/₹\s*([\d,]+(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, (m, p1) => {
+  t = t.replace(/(?<!\w)₹\s*(\d+(?:,\d+)*(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, (m, p1) => {
     const num = Math.round(Number(String(p1).replace(/,/g, "")) || 0);
-    return num > 0 ? `${num.toLocaleString("en-IN")} rupees ` : "";
+    return num > 0 ? `${num.toLocaleString("en-IN")} rupees` : "";
   });
-  t = t.replace(/(?:rs\.?|inr)\s*([\d,]+(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, (m, p1) => {
+  t = t.replace(/\b(?:rs\.?|inr)\s*(\d+(?:,\d+)*(?:\.\d+)?)(?:\s*rupees)?(?!\w)/gi, (m, p1) => {
     const num = Math.round(Number(String(p1).replace(/,/g, "")) || 0);
-    return num > 0 ? `${num.toLocaleString("en-IN")} rupees ` : "";
+    return num > 0 ? `${num.toLocaleString("en-IN")} rupees` : "";
   });
-  t = t.replace(/(?<!\d)([\d,]+)\s*rupees\b/gi, (m, p1) => {
+  t = t.replace(/(?<!\d)(\d+(?:,\d+)*(?:\.\d+)?)\s*rupees\b/gi, (m, p1) => {
     const num = Math.round(Number(String(p1).replace(/,/g, "")) || 0);
     return num > 0 ? `${num.toLocaleString("en-IN")} rupees` : m;
   });
@@ -91,6 +119,7 @@ export function normalizeForSpeech(text) {
 
   // Idempotency guarantee: collapse any consecutive repeated words case-insensitively ("rupees rupees" -> "rupees", etc.)
   t = t.replace(/\b([a-zA-Z]+)(?:\s+\1\b)+/gi, "$1");
+  t = t.replace(/\s+([,.;!?])/g, "$1");
   t = t.replace(/\s+/g, " ").trim();
 
   // Dev assertion for repeated words
@@ -247,13 +276,18 @@ export function buildProductSpeech(product, options = {}) {
     };
   }
 
-  const cleanName = cleanProductName(product.name);
+  // Price Guard: guarantee authoritative 10% kiosk discount even if raw record passed
+  const p = (typeof product.salePrice === "number" && product.salePrice > 0)
+    ? product
+    : normalizeProductForPricing(product);
+
+  const cleanName = cleanProductName(p.name);
   const variantIdx = typeof options.variantIndex === "number"
     ? Math.abs(options.variantIndex) % 3
     : (cleanName.length) % 3;
 
   const chunks = [];
-  const keyFeature = extractKeyFeature(product);
+  const keyFeature = extractKeyFeature(p);
 
   // 1. Intro + one key feature
   const introTemplates = [
@@ -264,14 +298,14 @@ export function buildProductSpeech(product, options = {}) {
   chunks.push(normalizeForSpeech(introTemplates[variantIdx]));
 
   // 2. Price in a plain sentence, plus colours only if real
-  const rawPrice = product.salePrice ?? product.price ?? 0;
+  const rawPrice = p.salePrice ?? p.price ?? 0;
   const priceNum = Math.round(
     typeof rawPrice === "number"
       ? rawPrice
       : (Number(String(rawPrice).replace(/[^\d.]/g, "")) || 0)
   );
   const priceStr = priceNum > 0 ? formatRupees(priceNum) : "";
-  const colours = extractProductColours(product);
+  const colours = extractProductColours(p);
 
   if (priceStr && colours.length >= 1) {
     const colourText = colours.length === 1
@@ -318,8 +352,9 @@ export function getAllProductSpeechLines(catalog = []) {
 
 
   if (Array.isArray(catalog)) {
-    for (const product of catalog) {
-      if (!product || !product.name) continue;
+    for (const rawProduct of catalog) {
+      if (!rawProduct || !rawProduct.name) continue;
+      const product = normalizeProductForPricing(rawProduct);
       for (let v = 0; v < 3; v++) {
         // Both with and without pair-up CTA
         const speech = buildProductSpeech(product, { variantIndex: v, hasPairUp: false });
@@ -392,7 +427,29 @@ export function answerProductQuestion(product, question = "") {
     return "You can easily clean it by hand washing with mild dish soap and warm water.";
   }
 
-  // 5. Price
+  // 5. Hot / Cold temperature
+  if (q.includes("hot") || q.includes("cold") || q.includes("temperature") || q.includes("boiling")) {
+    if (desc.includes("stainless steel") || desc.includes("insulated")) {
+      return `Yes, with its stainless steel inner, the ${cleanName} is suitable for both hot and cold beverages.`;
+    }
+    return `The ${cleanName} handles warm and everyday beverages comfortably.`;
+  }
+
+  // 6. Leak proof / travel
+  if (q.includes("leak") || q.includes("spill")) {
+    return `Yes, the ${cleanName} is designed with a secure, spill-resistant seal suitable for travel.`;
+  }
+
+  // 7. Size / Capacity
+  if (q.includes("size") || q.includes("capacity") || q.includes("volume") || q.includes("how big")) {
+    const sizeMatch = product.name?.match(/(\d+\s*(?:ml|l|inch|cm|litres?|grams?|g))\b/i);
+    if (sizeMatch) {
+      return `The ${cleanName} has a capacity of ${sizeMatch[1]}.`;
+    }
+    return `The size and specifications for the ${cleanName} are displayed right on the screen.`;
+  }
+
+  // 8. Price
   if (q.includes("price") || q.includes("cost") || q.includes("how much") || q.includes("rate")) {
     return priceStr ? `The ${cleanName} is ${priceStr}.` : `The price for ${cleanName} is shown on the screen.`;
   }

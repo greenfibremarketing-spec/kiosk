@@ -4,9 +4,14 @@ import cors from "cors";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { synth, checkTtsHealth, prewarmTtsCache, DEFAULT_MODEL, CACHE_DIR } from "./tts.js";
-import { getAllProductSpeechLines, buildProductSpeech, normalizeForSpeech } from "../src/lib/productSpeech.mjs";
-import { getAllStaticLines } from "../src/lib/staticSpeechLines.mjs";
+import { fileURLToPath } from "url";
+let ttsModulePromise = null;
+function getTtsModule() {
+  if (!ttsModulePromise) {
+    ttsModulePromise = import("./tts.js");
+  }
+  return ttsModulePromise;
+}
 
 const app = express();
 app.use(cors());
@@ -29,7 +34,8 @@ app.get("/api/tts", async (req, res) => {
       return res.status(400).send("Text is required");
     }
 
-    const requestedModel = req.query.model || process.env.TTS_MODEL || "aura-2-luna-en";
+    const { synth, DEFAULT_MODEL } = await getTtsModule();
+    const requestedModel = req.query.model || process.env.TTS_MODEL || DEFAULT_MODEL || "aura-2-luna-en";
     console.log(`[VoiceServer] req:${reqId} ts=${reqTs} model=${requestedModel} text="${text.slice(0, 80)}"`);
 
     const { file, model } = await synth(text, requestedModel, abortController.signal);
@@ -56,43 +62,49 @@ app.get("/api/tts", async (req, res) => {
   }
 });
 
-app.get("/health", async (req, res) => {
-  const health = await checkTtsHealth();
+let lastHealth = { ok: true, model: "aura-2-luna-en" };
+
+app.get("/health", (req, res) => {
   res.json({
-    status: health.ok ? "ok" : "degraded",
+    status: lastHealth.ok ? "ok" : "degraded",
     provider: "deepgram",
     defaultModel: "aura-2-luna-en",
-    activeModel: health.model,
-    error: health.error || null,
+    activeModel: lastHealth.model,
+    error: lastHealth.error || null,
   });
 });
 
-// Static lines to pre-warm into the persistent disk cache (single source of truth)
-const STATIC_PREWARM_LINES = getAllStaticLines();
-
-
 console.log(`[StartupTiming:Server] 04_before_listen (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms)`);
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`[StartupTiming:Server] 05_listen_ready (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms) on http://localhost:${PORT}`);
   console.log(`Deepgram Aura Voice server running on http://localhost:${PORT}`);
-  // Startup self-test
-  try {
-    const test = await checkTtsHealth();
-    console.log(`[StartupTiming:Server] 06_health_check_done (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms) ok=${test.ok}`);
-    if (test.ok) {
-      console.log("[TTS] format check OK");
-    } else {
-      console.error(`[TTS] format check failed: ${test.error}`);
-    }
-  } catch (err) {
-    console.error(`[TTS] format check failed: ${err.message}`);
-  }
 
-  // Asynchronously pre-warm static lines & product lines into the persistent disk cache
+  // In the background: load heavy modules, run health check, capped cache prune, and prewarm
   setTimeout(async () => {
     try {
-      const lines = [...STATIC_PREWARM_LINES];
+      const { checkTtsHealth, prewarmTtsCache, pruneCacheIfNeeded, DEFAULT_MODEL, CACHE_DIR } = await getTtsModule();
+      const { getAllStaticLines } = await import("../src/lib/staticSpeechLines.mjs");
+      const { getAllProductSpeechLines, buildProductSpeech, normalizeForSpeech, normalizeProductForPricing } = await import("../src/lib/productSpeech.mjs");
+
+      // Health self-test
+      const test = await checkTtsHealth();
+      lastHealth = test;
+      console.log(`[StartupTiming:Server] 06_health_check_done (+${Date.now() - (globalThis._serverStartTs || Date.now())}ms) ok=${test.ok}`);
+      if (test.ok) {
+        console.log("[TTS] format check OK");
+      } else {
+        console.error(`[TTS] format check failed: ${test.error}`);
+      }
+
+      // Cap cache size
+      if (typeof pruneCacheIfNeeded === "function") {
+        pruneCacheIfNeeded(600);
+      }
+
+      // Prewarm static lines & product lines into the persistent disk cache
+      const staticLines = getAllStaticLines();
+      const lines = [...staticLines];
       let catalogProducts = null;
 
       // Try fetching verified product lines from backend (production or configured URL)
@@ -114,28 +126,25 @@ app.listen(PORT, async () => {
       }
 
       if (!catalogProducts) {
-        const localCandidates = [
-          path.join(process.cwd(), "..", "kiosk-backend", "kiosk_AIML", "docs", "GREENY_FRONTEND_PRODUCT_IDENTITIES.json"),
-          "E:/kiosk-backend/kiosk_AIML/docs/GREENY_FRONTEND_PRODUCT_IDENTITIES.json",
-        ];
-        for (const candidate of localCandidates) {
-          if (fs.existsSync(candidate)) {
-            try {
-              const fileData = JSON.parse(fs.readFileSync(candidate, "utf8"));
-              if (Array.isArray(fileData?.products)) {
-                catalogProducts = fileData.products;
-                break;
-              }
-            } catch (_) {}
-          }
+        const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+        const candidate = path.join(appRoot, "src", "data", "fallbackProducts.json");
+        if (fs.existsSync(candidate)) {
+          try {
+            const fileData = JSON.parse(fs.readFileSync(candidate, "utf8"));
+            const prods = Array.isArray(fileData) ? fileData : fileData?.products;
+            if (Array.isArray(prods) && prods.length > 0) {
+              catalogProducts = prods;
+            }
+          } catch (_) {}
         }
       }
 
       if (catalogProducts) {
+        catalogProducts = catalogProducts.map(normalizeProductForPricing);
         lines.push(...getAllProductSpeechLines(catalogProducts));
       }
 
-      await prewarmTtsCache(lines, DEFAULT_MODEL, STATIC_PREWARM_LINES.slice(0, 15));
+      await prewarmTtsCache(lines, DEFAULT_MODEL, staticLines.slice(0, 15));
 
       // Dev dry-run check: verify 0 cache misses for all catalog product chunks
       if (catalogProducts) {
@@ -155,7 +164,6 @@ app.listen(PORT, async () => {
                 misses++;
                 console.warn(`[TTS Dry-Run] Cache miss on chunk: "${norm}"`);
               }
-
             }
           }
         }
@@ -168,5 +176,5 @@ app.listen(PORT, async () => {
     } catch (prewarmErr) {
       console.warn("[TTS Pre-Warm] Warning during cache pre-warming:", prewarmErr.message);
     }
-  }, 100);
+  }, 50);
 });

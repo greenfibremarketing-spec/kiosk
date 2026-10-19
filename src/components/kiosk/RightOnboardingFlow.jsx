@@ -195,10 +195,10 @@ export default function RightOnboardingFlow({
               <div className="right-name-actions-row">
                 <button
                   type="submit"
-                  className={`right-btn-continue ${autoSubmitting ? "btn-auto-submitting" : ""}`}
+                  className="right-btn-continue"
                   disabled={!inputName.trim()}
                 >
-                  <span>{autoSubmitting ? "Continuing..." : "Continue"}</span>
+                  <span>Continue</span>
                   <span className="btn-arrow">→</span>
                 </button>
                 <button

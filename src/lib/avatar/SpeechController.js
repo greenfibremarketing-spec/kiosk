@@ -75,6 +75,7 @@ export class SpeechController {
     // Subtitle hold timer (2.5s hold)
     this._subtitleHoldTimer = null;
     this._heldSubtitle = "";
+    this._ttsServerReady = false;
 
     // Avatar ref for lipsync & expressions
     this.avatar = null;
@@ -226,7 +227,8 @@ export class SpeechController {
       // De-dupe 1: Greeting prefix repeated in ASK_NAME (frontend-only de-dupe)
       // "Expected audio order: 'Hi! I'm Greeny. Welcome to Green Fibre.' THEN 'Hi! I'm Greeny. What's your name?'"
       // If reply has enqueued 0 chunks so far, and the first chunk matches recently spoken greeting prefix, drop it!
-      if (meta.enqueuedCount === 0 && i === 0 && this.lastSpokenSentences.length > 0) {
+      const isAskName = meta.source === "ask_name" || meta.source === "ASK_NAME";
+      if (isAskName && meta.enqueuedCount === 0 && i === 0 && this.lastSpokenSentences.length > 0) {
         const matchesRecent = this.lastSpokenSentences.some(
           (prev) => prev.includes(normChunk) || normChunk.includes(prev)
         );
@@ -245,18 +247,21 @@ export class SpeechController {
       this.seenReplyKeys.add(dedupeKey);
 
       // De-dupe 3: same words already queued recently, even if chunked differently or under another replyId
-      const flatNorm = normChunk.replace(/\s+/g, " ");
-      const nowTs = Date.now();
-      this.recentEnqueued = this.recentEnqueued.filter((e) => nowTs - e.t < 15000);
-      const recentText = this.recentEnqueued.map((e) => e.norm).join(" ");
-      const isShortEcho =
-        flatNorm.length < 6 &&
-        this.recentEnqueued.some((e) => e.norm.startsWith(flatNorm + " "));
-      if ((flatNorm.length >= 6 && recentText.includes(flatNorm)) || isShortEcho) {
-        console.log(`[SpeechController] Skipping repeated line: "${chunk.slice(0, 40)}" (replyId=${rid})`);
-        continue;
+      // Never drop product intro chunks when user selects/opens a product!
+      if (meta.source !== "select_product") {
+        const flatNorm = normChunk.replace(/\s+/g, " ");
+        const nowTs = Date.now();
+        this.recentEnqueued = this.recentEnqueued.filter((e) => nowTs - e.t < 15000);
+        const recentText = this.recentEnqueued.map((e) => e.norm).join(" ");
+        const isShortEcho =
+          flatNorm.length < 6 &&
+          this.recentEnqueued.some((e) => e.norm.startsWith(flatNorm + " "));
+        if ((flatNorm.length >= 6 && recentText.includes(flatNorm)) || isShortEcho) {
+          console.log(`[SpeechController] Skipping repeated line: "${chunk.slice(0, 40)}" (replyId=${rid})`);
+          continue;
+        }
+        this.recentEnqueued.push({ norm: flatNorm, t: nowTs });
       }
-      this.recentEnqueued.push({ norm: flatNorm, t: nowTs });
 
       const item = {
         id: "chunk_" + (++this._chunkSeq),
@@ -384,10 +389,13 @@ export class SpeechController {
 
     // When the user intentionally interacts or navigates, clear recent deduplication history so new responses are not blocked!
     const isUserNavigation = [
+      "select_product",
       "user_tap_category",
       "user_tap_product",
       "user_tap_show_all",
       "user_tap_back",
+      "navigate_back",
+      "engage",
       "user_action",
       "user_submit_name",
       "user_skip_name",
@@ -481,6 +489,31 @@ export class SpeechController {
     }
   }
 
+  async _ensureTtsServerReady(abortSignal, maxWaitMs = 30000) {
+    if (this._ttsServerReady) return true;
+    const start = Date.now();
+    const healthUrl = TTS_ENDPOINT.replace(/\/api\/tts\/?$/, "/health");
+    let interval = 250;
+    while (Date.now() - start < maxWaitMs) {
+      if (abortSignal?.aborted) return false;
+      try {
+        const res = await fetch(healthUrl, { signal: abortSignal });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (data.status === "ok" || data.status === "degraded" || data.ready !== false) {
+            this._ttsServerReady = true;
+            return true;
+          }
+        }
+      } catch (_) {
+        // Voice server starting up; wait silently in queue without error display
+      }
+      await new Promise((r) => setTimeout(r, interval));
+      interval = Math.min(interval * 1.4, 1000);
+    }
+    return false;
+  }
+
   async _fetchAndDecode(item, gen, cacheKey, model, abortCtrl) {
     const meta = this.replyMap.get(item.replyId);
     if (meta && !meta.firstTtsReqTs) {
@@ -489,6 +522,29 @@ export class SpeechController {
     if (meta && !meta.hasLoggedFirstReq) {
       meta.hasLoggedFirstReq = true;
       console.log(`[SpeechController] first TTS request replyId=${item.replyId} text="${item.sanitized.slice(0, 50)}"`);
+    }
+
+    // Gate speech on /health with a silent queue and bounded retry (up to ~30s)
+    if (!this._ttsServerReady) {
+      const ready = await this._ensureTtsServerReady(abortCtrl.signal, 30000);
+      if (!ready) {
+        const isGreeting = meta?.source === "SHOW_GREETING" || item.replyId.startsWith("greeting");
+        if (isGreeting && !this._retryingGreeting) {
+          this._retryingGreeting = true;
+          this._ensureTtsServerReady(null, 60000).then((nowReady) => {
+            this._retryingGreeting = false;
+            if (nowReady && gen === this.generation && !abortCtrl.signal.aborted) {
+              console.log("[SpeechController] Retrying greeting once now that TTS server is ready");
+              this.appendSentence(item.replyId, item.sanitized, item.opts || {});
+              this.endReply(item.replyId);
+            }
+          });
+        }
+        if (this.onSubtitle) {
+          this.onSubtitle("I'm right here with you! Feel free to explore on screen.");
+        }
+        return null;
+      }
     }
 
     const maxAttempts = 3;

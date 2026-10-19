@@ -289,6 +289,11 @@ class KioskWebSocketClient {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         try {
           this.ws.send(JSON.stringify({ type: "ping" }));
+          clearTimeout(this.pongTimeout);
+          this.pongTimeout = setTimeout(() => {
+            console.warn("[KioskWS] Pong timeout (10s) - closing unresponsive socket to force reconnect");
+            try { this.ws.close(); } catch (_) {}
+          }, 10000);
         } catch (_) {}
       }
     }, 25000);
@@ -298,6 +303,10 @@ class KioskWebSocketClient {
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
+    }
+    if (this.pongTimeout) {
+      clearTimeout(this.pongTimeout);
+      this.pongTimeout = null;
     }
   }
 
@@ -310,8 +319,16 @@ class KioskWebSocketClient {
     }
 
     try {
+      if (this.pongTimeout) {
+        clearTimeout(this.pongTimeout);
+        this.pongTimeout = null;
+      }
+
       const payload = JSON.parse(event.data);
       const { type, data, meta, metadata } = payload;
+      if (type === "pong" || type === "ping") {
+        return;
+      }
 
       // Check session ID if present in payload or meta to drop stale messages from previous session
       const incomingSession = payload.session_id || payload.sessionId || meta?.session_id;

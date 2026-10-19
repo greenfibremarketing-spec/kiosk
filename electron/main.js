@@ -38,6 +38,8 @@ app.commandLine.appendSwitch("log-level", "3");
 
 let win = null;
 let voiceServerProcess = null;
+let voiceServerRestarts = 0;
+let lastRestartTs = 0;
 let isQuitting = false;
 let kioskCurrentState = "IDLE";
 
@@ -240,12 +242,23 @@ function startVoiceServer(loadedEnv) {
       log.info(`[VoiceServer] Exited (code=${code}, signal=${signal})`);
       voiceServerProcess = null;
       if (!isQuitting) {
-        log.warn("[Main] Voice server exited unexpectedly. Auto-restarting in 2s...");
+        const now = Date.now();
+        if (now - lastRestartTs > 60000) {
+          voiceServerRestarts = 0; // Reset counter after 1 min of stable run
+        }
+        lastRestartTs = now;
+        voiceServerRestarts++;
+        if (voiceServerRestarts > 5) {
+          log.error("[Main] Voice server exceeded max restart attempts (5). Ceasing automatic restarts.");
+          return;
+        }
+        const backoffMs = Math.min(2000 * Math.pow(1.5, voiceServerRestarts - 1), 10000);
+        log.warn(`[Main] Voice server exited unexpectedly. Auto-restarting in ${Math.round(backoffMs)}ms (attempt ${voiceServerRestarts}/5)...`);
         setTimeout(() => {
           if (!isQuitting && !voiceServerProcess) {
             startVoiceServer(loadedEnv);
           }
-        }, 2000);
+        }, backoffMs);
       }
     });
 
@@ -315,11 +328,23 @@ function createWindow() {
     log.warn("[Main] Render process gone, reloading...", details);
     win?.reload();
   });
+  let unresponsiveTimer = null;
   win.webContents.on("unresponsive", () => {
-    log.warn("[Main] [DIAGNOSTIC] webContents unresponsive");
+    log.warn("[Main] webContents unresponsive; scheduling recovery in 5s if still hung");
+    if (!unresponsiveTimer) {
+      unresponsiveTimer = setTimeout(() => {
+        unresponsiveTimer = null;
+        log.warn("[Main] webContents unresponsive timeout reached, reloading window...");
+        win?.reload();
+      }, 5000);
+    }
   });
   win.webContents.on("responsive", () => {
-    log.info("[Main] [DIAGNOSTIC] webContents responsive");
+    log.info("[Main] webContents recovered responsiveness");
+    if (unresponsiveTimer) {
+      clearTimeout(unresponsiveTimer);
+      unresponsiveTimer = null;
+    }
   });
   win.on("unresponsive", () => {
     log.warn("[Main] [DIAGNOSTIC] Window unresponsive event, reloading...");

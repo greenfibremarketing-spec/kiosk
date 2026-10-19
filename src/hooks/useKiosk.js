@@ -98,7 +98,11 @@ const STOP_NAME_WORDS = new Set([
   "cart", "checkout", "greenie", "greenfibre", "water", "cups", "set",
   "collection", "sustainable", "eco", "good", "more", "cheaper", "glass",
   "rice", "husk", "none", "nothing", "kitchen", "best", "cheap", "take", "bye",
-  "later", "never", "mind", "browse"
+  "later", "never", "mind", "browse",
+  // Number words (one..ten)
+  "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+  // Filler and request words
+  "yeah", "yep", "nope", "we", "i", "you", "they", "need", "want", "like", "give", "get", "look", "looking", "find", "check"
 ]);
 
 /**
@@ -145,16 +149,26 @@ function prewarmNameLines(name) {
     `No problem, ${name}!`,
     `Lovely, ${name}!`,
   ];
-  setTimeout(() => {
-    for (const text of lines) {
-      try {
-        fetch(`${ttsUrl}?text=${encodeURIComponent(text)}&model=aura-2-luna-en`, {
-          method: "GET",
-          priority: "low",
-        }).catch(() => {});
-      } catch (_) {}
+
+  // Sequentially throttled after greeting finishes (1 line every 600 ms)
+  let attempts = 0;
+  const checkInterval = setInterval(() => {
+    attempts++;
+    if (!speechController.isSpeaking() || attempts > 20) {
+      clearInterval(checkInterval);
+      setTimeout(async () => {
+        for (const text of lines) {
+          try {
+            await fetch(`${ttsUrl}?text=${encodeURIComponent(text)}&model=aura-2-luna-en`, {
+              method: "GET",
+              priority: "low",
+            });
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }, 500);
     }
-  }, 100);
+  }, 500);
 }
 
 
@@ -721,6 +735,11 @@ export function useKiosk() {
       greetingDoneRef.current = false;
       nameDoneRef.current = false;
       introPlayedRef.current = false;
+      convStateRef.current = S.IDLE;
+      lastProductSpokenRef.current = null;
+      speechController.cancelledReplyIds?.clear?.();
+      speechController.cancelAll("engage");
+      setConv(S.IDLE);
 
       // On entering ENGAGED for a new session, make sure onboardingOpen is true and onboardingStep is 1 (Requirement 4)
       setOnboardingOpen(true);
@@ -2306,7 +2325,15 @@ export function useKiosk() {
         }
 
         if (target) {
-          selectProductRef.current?.(target, { fromServer: true, actionTurnId, speechId: action?.speech_id });
+          const targetSku = target.sku || target.id;
+          const currentOpenSku = latestRef.current.product?.sku || latestRef.current.product?.id || latestRef.current.productId;
+          const isAlreadyOpenAndSpeaking = Boolean(latestRef.current.showDetail && targetSku && (targetSku === currentOpenSku) && speechController.isSpeaking());
+
+          if (isAlreadyOpenAndSpeaking) {
+            console.log(`[selectProduct] SHOW_PRODUCT ignored: product ${targetSku} already open and speaking (no re-trigger, no cancel)`);
+          } else {
+            selectProductRef.current?.(target, { fromServer: true, actionTurnId, speechId: action?.speech_id, source: "server_SHOW_PRODUCT" });
+          }
         }
         break;
       }
@@ -3254,6 +3281,22 @@ export function useKiosk() {
   const selectProduct = useCallback((p, options = {}) => {
     cancelPendingReturnFromDetail("select_product");
 
+    const skuCandidate = p?.sku || p?.id;
+    const currentOpenSku = latestRef.current.product?.sku || latestRef.current.product?.id || latestRef.current.productId;
+    const isAlreadyOpenAndSpeaking = Boolean(
+      latestRef.current.showDetail &&
+      skuCandidate &&
+      (skuCandidate === currentOpenSku) &&
+      speechController.isSpeaking()
+    );
+
+    if (isAlreadyOpenAndSpeaking) {
+      console.log(`[selectProduct] Ignored duplicate select for ${skuCandidate}: already open and speaking (source=${options.source || (options.fromServer ? 'server' : 'user_tap')})`);
+      return;
+    }
+
+    console.log(`[selectProduct] Triggered: sku=${skuCandidate} source=${options.source || (options.fromServer ? 'server' : 'user_tap')}`);
+
     // Remember category before entering detail (only if not already in detail)
     if (!latestRef.current.showDetail && !productDetailOpenedRef.current) {
       categoryBeforeDetailRef.current = latestRef.current.category || "all";
@@ -3277,7 +3320,7 @@ export function useKiosk() {
       (item) =>
         (p?.sku && (item.sku === p.sku || item.id === p.sku)) ||
         (p?.id && (item.id === p.id || item.sku === p.id))
-    ) || (typeof p === "object" ? p : findMatchingLocalProduct(p, currentCatalog));
+    ) || (typeof p === "object" ? (p.salePrice !== undefined ? p : normalizeBackendProduct(p)) : findMatchingLocalProduct(p, currentCatalog));
 
     if (!fullProd) return;
 
@@ -3306,10 +3349,15 @@ export function useKiosk() {
 
     // Immediately update avatar caption and speech to reflect selected product
     const speech = buildProductSpeech(fullProd, { customerName: nameRef.current });
-    setCaption(speech.chunks[0] || speech.fullText);
+    const chunksToSpeak = [...speech.chunks];
+    if (!greetingDoneRef.current) {
+      greetingDoneRef.current = true;
+      chunksToSpeak.unshift("Hello, welcome to Green Fibre!");
+    }
+    setCaption(chunksToSpeak[0] || speech.fullText);
     const activeTid = options.actionTurnId || `prod_${sku}_${Date.now()}`;
     speechController.beginReply(activeTid, { source: "select_product" });
-    for (const chunk of speech.chunks) {
+    for (const chunk of chunksToSpeak) {
       speechController.appendSentence(activeTid, chunk, { turnId: activeTid, speechId: options.speechId });
     }
     speechController.endReply(activeTid);
