@@ -114,27 +114,21 @@ export function normalizeBackendProduct(p) {
   let numMrp = 0;
   let numSalePrice = 0;
 
-  // If already normalized with 10% discount (e.g. mrp: 1199, salePrice: 1079), preserve it without re-discounting
-  if (rawSale > 0 && rawMrp > 0 && rawSale < rawMrp && rawMrp <= Math.round(rawSale * 1.15)) {
+  // Authoritative retail MRP:
+  // Raw catalog items have p.price as the true retail MRP (e.g. 1199 for Viora 400ml),
+  // whereas raw p.mrp is an inflated 1.35x artifact (e.g. 1619). Reject 1.35x inflation.
+  if (rawPrice > 0 && rawMrp > 0 && Math.abs(rawMrp / rawPrice - 1.35) < 0.05) {
+    numMrp = rawPrice;
+  } else if (rawPrice > 0) {
+    numMrp = rawPrice;
+  } else if (rawMrp > 0) {
     numMrp = rawMrp;
-    numSalePrice = rawSale;
-  } else {
-    // Authoritative retail MRP:
-    // Raw catalog items have p.price as the true retail MRP (e.g. 1199 for Viora 400ml),
-    // whereas raw p.mrp is an inflated 1.35x artifact (e.g. 1619). Reject 1.35x inflation.
-    if (rawPrice > 0 && rawMrp > 0 && Math.abs(rawMrp / rawPrice - 1.35) < 0.05) {
-      numMrp = rawPrice;
-    } else if (rawPrice > 0) {
-      numMrp = rawPrice;
-    } else if (rawMrp > 0) {
-      numMrp = rawMrp;
-    } else if (rawSale > 0) {
-      numMrp = rawSale;
-    }
-
-    // Strictly apply 10% discount off authoritative retail MRP
-    numSalePrice = numMrp > 0 ? Math.round(numMrp * 0.90) : 0;
+  } else if (rawSale > 0) {
+    numMrp = rawSale;
   }
+
+  // Strictly apply 20% festive discount (10% + 10% Navratri & Diwali Special) off authoritative retail MRP
+  numSalePrice = numMrp > 0 ? Math.round(numMrp * 0.80) : 0;
 
   const rawCat = String(p.category || "all").toLowerCase().trim();
 
@@ -187,8 +181,10 @@ export function normalizeBackendProduct(p) {
     variants: p.variants || [],
     inStock: p.in_stock !== false,
     rating: 4.9,
-    reviews: 48,
     badge: (numSalePrice || numMrp) > 2000 ? "Premium" : "Bestseller",
+    festiveDiscount: "10% + 10% OFF",
+    festiveOccasion: "Navratri & Diwali Special",
+    discountPercent: 20,
   };
 }
 

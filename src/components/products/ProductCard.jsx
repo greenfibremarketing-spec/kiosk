@@ -37,6 +37,9 @@ export default function ProductCard({ product, active, highlighted, onSelect }) 
     >
       {/* Product Image Stage */}
       <div className="luxury-card__media">
+        <span className="luxury-card__festive-tag">
+          Diwali & Navratri Special
+        </span>
         <ProductArt image={product.image} name={product.name} shape={product.shape} />
       </div>
 

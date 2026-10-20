@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useFeedbackSpeech } from "@/hooks/useFeedbackSpeech";
 import { preloadProductDetailPhotos } from "@/lib/imagePreloader";
+import { getFestivePricing } from "@/lib/format";
 import {
   ChevronLeft,
   ChevronRight,
@@ -318,10 +319,11 @@ export default function ProductDetailPage({
   if (!product) return null;
 
   // Pricing calculations
-  const unitPrice = Number(product.salePrice || product.price) || 0;
-  const mrp = Number(product.mrp || product.price) || 0;
+  const festiveInfo = getFestivePricing(product);
+  const unitPrice = festiveInfo.salePrice;
+  const mrp = festiveInfo.mrp;
   const hasDiscount = mrp > unitPrice;
-  const discountPct = hasDiscount ? Math.round(((mrp - unitPrice) / mrp) * 100) : 0;
+  const discountPct = festiveInfo.discountPct;
   const totalPrice = unitPrice * quantity;
   const savings = hasDiscount ? (mrp - unitPrice) * quantity : 0;
 
@@ -506,11 +508,11 @@ export default function ProductDetailPage({
               {hasDiscount && discountPct > 0 && (
                 <>
                   <span className="pdp-old-mrp">₹{mrp.toLocaleString("en-IN")}</span>
-                  <span className="pdp-save-tag">Save {discountPct}%</span>
+                  <span className="pdp-save-tag">10% + 10% OFF ({discountPct}% OFF)</span>
                 </>
               )}
             </div>
-            <span className="pdp-tax-caption">Inclusive of all taxes</span>
+            <span className="pdp-tax-caption">Inclusive of all taxes • Navratri & Diwali Special</span>
           </div>
 
           {/* Colour Selector: Round Swatch Chips with Guaranteed Label Match */}

@@ -1,20 +1,24 @@
-import { discountPct, inr } from "@/lib/format";
+"use client";
+import React from "react";
+import { inr, getFestivePricing } from "@/lib/format";
 
-export default function PriceTag({ product, size = "md" }) {
+export default function PriceTag({ product, size = "md", showOccasion = false }) {
   if (!product) return null;
-  const off = discountPct(product);
-  const now = product.salePrice ?? product.price;
-  const was = product.mrp ?? product.price;
+  const { mrp, salePrice, discountPct: off, label } = getFestivePricing(product);
 
   return (
     <div className={`price price--${size}`}>
-      <span className="price__now">{inr(now)}</span>
-      {off > 0 && (
+      <span className="price__now">{inr(salePrice)}</span>
+      {mrp > salePrice && (
         <>
-          <s className="price__was">{inr(was)}</s>
-          <span className="price__off">-{off}%</span>
+          <s className="price__was">{inr(mrp)}</s>
+          <span className="price__off">20% OFF</span>
         </>
+      )}
+      {showOccasion && (
+        <span className="price__festive-occasion">{label}</span>
       )}
     </div>
   );
 }
+

@@ -283,6 +283,28 @@
   justify-content: center;
 }
 
+/* Festive Tag on Top Right Side */
+.luxury-card__festive-tag {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  background: rgba(254, 243, 199, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #78350f;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3.5px 10px;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(180, 83, 9, 0.12);
+  letter-spacing: 0.015em;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
 .luxury-card .product-art-img-wrap {
   width: 100%;
   height: 100%;
@@ -346,7 +368,7 @@
 
 .price--md .price__now {
   font-family: var(--font-heading);
-  font-size: clamp(16px, 1.3vw, 21px);
+  font-size: clamp(16px, 1.25vw, 20px);
   font-weight: 800;
   color: #14271c;
 }
@@ -354,7 +376,7 @@
 .price--md .price__was {
   font-family: var(--font-heading);
   font-size: 12.5px;
-  font-weight: 700;
+  font-weight: 600;
   color: #8c9e93;
   text-decoration: line-through;
 }
@@ -362,11 +384,40 @@
 .price--md .price__off {
   font-family: var(--font-heading);
   font-size: 11px;
-  font-weight: 700;
-  color: #007a2d;
-  background: #e6f7ec;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-weight: 800;
+  color: #065f46;
+  background: #d1fae5;
+  border: 1px solid rgba(5, 150, 105, 0.2);
+  padding: 2px 7px;
+  border-radius: 6px;
+  letter-spacing: 0.01em;
+}
+
+/* Large Price (e.g. Modals & Featured) */
+.price--lg .price__now {
+  font-family: var(--font-heading);
+  font-size: clamp(24px, 2.2vw, 32px);
+  font-weight: 800;
+  color: #14271c;
+}
+
+.price--lg .price__was {
+  font-family: var(--font-heading);
+  font-size: 16px;
+  font-weight: 600;
+  color: #8c9e93;
+  text-decoration: line-through;
+}
+
+.price--lg .price__off {
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: 800;
+  color: #065f46;
+  background: #d1fae5;
+  border: 1px solid rgba(5, 150, 105, 0.2);
+  padding: 3px 10px;
+  border-radius: 6px;
 }
 
 /* Fallback Art Component */
